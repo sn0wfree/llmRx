@@ -26,8 +26,11 @@ class TaskQueue(object):
         tasks = self.load_func()
         return tasks
 
+    def qsize(self):
+        return len(self.deque)
+
     def get(self):
-        if len(self.deque) == 0:
+        if self.qsize() == 0:
             tasks = self.load()
             if tasks is None:
                 self.status = 'End'

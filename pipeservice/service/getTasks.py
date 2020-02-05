@@ -18,6 +18,12 @@ class GetTasks(object):
             conn = MySQLNode(name, **visits_mysql_node_conf)
         return conn
 
+    def update_task(self, self_id):
+        db = self.db
+        table = self.table
+        sql = f"UPDATE {db}.{table} SET `self_id` = '{self_id}' WHERE `status` = '2' ;"
+        self.conn.Excutesql(sql)
+
     def reset_tasks(self):
         print('will clean all incomplete tasks!')
         db = self.db
