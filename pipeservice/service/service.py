@@ -37,7 +37,7 @@ def build_api(address='0.0.0.0', port=5000, API_folder=que.__path__[0]):
                     resp.text = f'Tasks {get_task_id}  has end'
                 else:
                     try:
-                        queue_test.update_task(self_id)
+                        queue_test.load_func.update_task(self_id)
                         resp.text = f'task {self_id} updated'
                     except Exception as e:
                         resp.status_code = 417

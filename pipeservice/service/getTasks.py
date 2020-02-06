@@ -21,7 +21,8 @@ class GetTasks(object):
     def update_task(self, self_id):
         db = self.db
         table = self.table
-        sql = f"UPDATE {db}.{table} SET `self_id` = '{self_id}' WHERE `status` = '2' ;"
+        sql = f"UPDATE {db}.{table} SET `status` = '2'  WHERE  `self_id` = '{self_id}' ;"
+        print(sql)
         self.conn.Excutesql(sql)
 
     def reset_tasks(self):
