@@ -1,11 +1,8 @@
 # coding=utf-8
 import requests
 
-CODE = 'asduashduhaskhaskhakhdksa'
 
 from pipeservice.utils.MySQLConn_v004_node import MySQLNode
-
-visits_mysql_node_conf = dict(host='106.13.205.210', port=3306, user='linlu', passwd='Imsn0wfree', db='visits')
 
 
 def get_task(CODE, base_url="http://0.0.0.0:5000/diplomacy_activities/get/"):
@@ -20,6 +17,8 @@ def get_task(CODE, base_url="http://0.0.0.0:5000/diplomacy_activities/get/"):
 
 
 if __name__ == '__main__':
+    from pipeservice.conf.conf import visits_mysql_node_conf,CODE
+
     conn = MySQLNode('test', **visits_mysql_node_conf)
 
     a = get_task(CODE, base_url="http://0.0.0.0:5000/diplomacy_activities/get/")

@@ -4,7 +4,9 @@ from pipeservice.service.getTasks import GetTasks
 
 
 def ext_process(df):
-    return df['full_url'].values.tolist()
+    c = df[['full_url', 'self_id']].to_dict('records')
+    print(c)
+    return c
 
 
 def create_queue_type1(name, table, db, visits_mysql_node_conf, ext_process_func=None, maxlen=10):

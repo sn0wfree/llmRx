@@ -94,6 +94,6 @@ def reset_tasks(table: str, db: str, visits_mysql_node_conf: dict):
 
 
 if __name__ == '__main__':
-    visits_mysql_node_conf = dict(host='106.13.205.210', port=3306, user='linlu', passwd='Imsn0wfree', db='visits')
+    from pipeservice.conf.conf import visits_mysql_node_conf
     reset_tasks('diplomacy_activities', 'visits', visits_mysql_node_conf)()
     pass

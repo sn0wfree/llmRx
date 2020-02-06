@@ -1,12 +1,11 @@
 # coding=utf-8
 
-# from visits.pipeservice.queue_news import Queue_obj
-
 import responder
 
+from pipeservice import que
+# from visits.pipeservice.queue_news import Queue_obj
+from pipeservice.conf.conf import CODE
 from pipeservice.utils.load_modules import load_modules
-
-CODE = 'asduashduhaskhaskhakhdksa'
 
 
 def load_api_settings(API_folder):
@@ -16,7 +15,7 @@ def load_api_settings(API_folder):
     return EXISTS_TASKS_DICT
 
 
-def build_api(address='0.0.0.0', port=5000, API_folder='/Users/sn0wfree/PycharmProjects/pipeservice/pipeservice/que'):
+def build_api(address='0.0.0.0', port=5000, API_folder=que.__path__[0]):
     api = responder.API()
     EXISTS_TASKS_DICT = load_api_settings(API_folder)
     print(EXISTS_TASKS_DICT)

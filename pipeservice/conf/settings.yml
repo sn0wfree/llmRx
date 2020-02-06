@@ -1,0 +1,6 @@
+MySQL:
+  db: visits
+  host: 106.13.205.210
+  passwd: visits
+  port: 3306
+  user: visits
