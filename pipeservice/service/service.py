@@ -1,5 +1,7 @@
 # coding=utf-8
+import json
 
+import click
 import responder
 
 from pipeservice import que
@@ -37,14 +39,21 @@ def build_api(address='0.0.0.0', port=5000, API_folder=que.__path__[0]):
                     resp.text = f'Tasks {get_task_id}  has end'
                 else:
                     try:
+                        data = await req.media(format='json')
+                        data = json.loads(data)
+                        sql = data['sql']
+                        print(data)
+                        res = queue_test.load_func.conn.Excutesql(sql)
+                        print(res)
                         queue_test.load_func.update_task(self_id)
                         resp.text = f'task {self_id} updated'
+
                     except Exception as e:
                         resp.status_code = 417
                         resp.text = str(e)
 
-    @api.route("/{get_task_id}/get/{checker}")
-    async def get_task(req, resp, *, get_task_id, checker):
+    @api.route("/{get_task_id}/get/{checker}/{random}")
+    async def get_task(req, resp, *, get_task_id, checker, random):
         if checker != CODE:
             resp.status_code = 404
             resp.text = 'Not Allowed to do'
@@ -57,13 +66,23 @@ def build_api(address='0.0.0.0', port=5000, API_folder=que.__path__[0]):
                 resp.status_code = 414
                 resp.text = f'Tasks {get_task_id}  has end'
             else:
+                print(1)
                 try:
-                    resp.media = queue_test.get()
+                    a = queue_test.get()
+                    print(a)
+                    resp.media = a
                 except IndexError as e:
                     resp.status_code = 416
                     resp.text = f'Not Found available tasks for {get_task_id}'
 
     api.run(address=address, port=port)
+
+
+@click.command()
+@click.option('--address', default='0.0.0.0', help='host address')
+@click.option('--port', default=5000, help='host port')
+def create_api(address='0.0.0.0', port=5000):
+    return build_api(address=address, port=port)
 
 
 if __name__ == '__main__':
