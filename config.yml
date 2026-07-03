@@ -1,0 +1,41 @@
+server:
+  port: 8787
+  rate_limit: 1000
+  log_level: info
+
+database:
+  driver: sqlite
+  dsn: data/llmrx.db
+
+tokens:
+  - key: sk-test-token-123
+    name: test-token
+    models: [deepseek-chat, deepseek-reasoner]
+
+channels:
+  - name: deepseek-main
+    provider: deepseek
+    base_url: https://api.deepseek.com/v1
+    keys:
+      - ${DEEPSEEK_API_KEY}
+    models:
+      - deepseek-chat
+      - deepseek-reasoner
+    priority: 10
+    input_price_per_1m: 0.14
+    output_price_per_1m: 0.42
+    max_failures: 5
+    reset_timeout_ms: 60000
+
+  - name: minimax-main
+    provider: minimax
+    base_url: https://api.minimax.io/v1
+    keys:
+      - ${MINIMAX_API_KEY}
+    models:
+      - MiniMax-Text-01
+    priority: 5
+    input_price_per_1m: 0.10
+    output_price_per_1m: 0.30
+    max_failures: 5
+    reset_timeout_ms: 60000

@@ -1,0 +1,32 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+llmRx
+
+# Go
+*.test
+*.out
+vendor/
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Web UI
+web/node_modules/
+web/dist/
+web/.env
+
+# Config (local overrides)
+config.local.yml
+*.env
