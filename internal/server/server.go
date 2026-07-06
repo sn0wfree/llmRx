@@ -63,9 +63,7 @@ func (s *Server) registerRoutes() {
 	adminHandler := admin.New(s.store, s.pool, s.router, s.tokens)
 
 	s.engine.With(authmw.Token(s.tokens.Lookup)).
-		Post("/v1/chat/completions", handler.ChatCompletions)
-
-	s.engine.Get("/v1/models", handler.ListModels)
+		Mount("/v1", handler.Routes())
 
 	s.engine.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

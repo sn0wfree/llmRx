@@ -79,6 +79,17 @@ func pathInt(r *http.Request, key string) (int64, error) {
 	return strconv.ParseInt(chi.URLParam(r, key), 10, 64)
 }
 
+// nonNil returns the slice if non-nil, otherwise an empty slice of
+// the same element type via interface{} boxing. We accept the small
+// type-erasure cost to guarantee `"data":[]` rather than `"data":null`
+// in JSON responses.
+func nonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
+}
+
 // ---------- auth ----------
 
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
@@ -88,6 +99,10 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if body.Username == "" || body.Password == "" {
+		writeErr(w, http.StatusBadRequest, "username and password required")
 		return
 	}
 	u, err := h.store.GetUserByUsername(body.Username)
@@ -181,7 +196,7 @@ func (h *Handler) ListChannels(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": chs})
+	writeJSON(w, http.StatusOK, map[string]any{"data": nonNil(chs)})
 }
 
 func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
@@ -296,7 +311,7 @@ func (h *Handler) ListKeys(w http.ResponseWriter, r *http.Request) {
 	for i := range ks {
 		ks[i].Key = ""
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": ks})
+	writeJSON(w, http.StatusOK, map[string]any{"data": nonNil(ks)})
 }
 
 func (h *Handler) CreateKey(w http.ResponseWriter, r *http.Request) {
@@ -358,7 +373,7 @@ func (h *Handler) ListTokens(w http.ResponseWriter, r *http.Request) {
 	for i := range toks {
 		toks[i].Key = ""
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": toks})
+	writeJSON(w, http.StatusOK, map[string]any{"data": nonNil(toks)})
 }
 
 func (h *Handler) CreateToken(w http.ResponseWriter, r *http.Request) {
@@ -427,7 +442,7 @@ func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
 		us[i].PasswordHash = ""
 		us[i].SessionToken = ""
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": us})
+	writeJSON(w, http.StatusOK, map[string]any{"data": nonNil(us)})
 }
 
 func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
@@ -490,7 +505,7 @@ func (h *Handler) ListLogs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": logs})
+	writeJSON(w, http.StatusOK, map[string]any{"data": nonNil(logs)})
 }
 
 // ---------- utils ----------

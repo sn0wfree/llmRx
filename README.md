@@ -76,6 +76,25 @@ npm run build   # 输出到 web/dist/（已 symlink 复制到 internal/webui/dis
 > 修改前端后需把 `web/dist/` 同步到 `internal/webui/dist/` 才能被 Go embed 收录：
 > `cp -r web/dist/* internal/webui/dist/`
 
+## 开发与测试
+
+```bash
+# 跑全部测试
+go test ./...
+
+# race 检测
+go test -race ./...
+
+# 覆盖率（生成 /tmp/cov.out）
+go test -coverprofile=/tmp/cov.out ./...
+go tool cover -func=/tmp/cov.out | grep -E 'internal/(admin|api)/'
+
+# 单跑 handler 测试
+go test -v ./internal/admin ./internal/api
+```
+
+测试走 `httptest` + chi 子路由装配，数据库用 `t.TempDir()` 起的临时 SQLite；provider 在 `testhelper` 中以 mock 注入，避免打外网。详见 [docs/ARCHITECTURE.md §14](docs/ARCHITECTURE.md)。
+
 ## 架构文档
 
 详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
