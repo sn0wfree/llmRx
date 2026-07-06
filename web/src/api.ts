@@ -1,0 +1,145 @@
+const TOKEN_KEY = 'llmrx_session';
+
+export function getSessionToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setSessionToken(t: string | null) {
+  if (t === null) {
+    localStorage.removeItem(TOKEN_KEY);
+  } else {
+    localStorage.setItem(TOKEN_KEY, t);
+  }
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const tok = getSessionToken();
+  if (tok) {
+    headers['X-Session-Token'] = tok;
+  }
+  const res = await fetch(`/api/v1${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 401) {
+    setSessionToken(null);
+    window.location.hash = '#/login';
+    throw new Error('unauthorized');
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    let msg = text;
+    try {
+      const j = JSON.parse(text);
+      msg = j.error?.message || text;
+    } catch {}
+    throw new Error(msg || `HTTP ${res.status}`);
+  }
+  if (res.status === 204) return undefined as unknown as T;
+  return res.json();
+}
+
+export const api = {
+  login: (username: string, password: string) =>
+    request<{ session_token: string; user: { id: number; username: string; role: number } }>(
+      'POST',
+      '/login',
+      { username, password }
+    ),
+  logout: () => request<{ ok: boolean }>('POST', '/logout'),
+
+  dashboard: () =>
+    request<{
+      channels_total: number;
+      channels_active: number;
+      tokens_total: number;
+      tokens_active: number;
+      keys_by_channel: Record<string, number>;
+      logs_total: number;
+      logs_errors: number;
+      prompt_tokens: number;
+      completion_tokens: number;
+      real_cost_usd: number;
+      billed_cost_usd: number;
+    }>('GET', '/dashboard'),
+
+  listChannels: () => request<{ data: Channel[] }>('GET', '/channels'),
+  createChannel: (ch: Partial<Channel>) => request<Channel>('POST', '/channels', ch),
+  updateChannel: (id: number, ch: Partial<Channel>) =>
+    request<Channel>('PUT', `/channels/${id}`, ch),
+  deleteChannel: (id: number) => request<{ ok: boolean }>('DELETE', `/channels/${id}`),
+
+  listKeys: (channelId: number) =>
+    request<{ data: ApiKey[] }>('GET', `/channels/${channelId}/keys`),
+  createKey: (channelId: number, key: string) =>
+    request<ApiKey>('POST', `/channels/${channelId}/keys`, { key }),
+  deleteKey: (channelId: number, keyId: number) =>
+    request<{ ok: boolean }>('DELETE', `/channels/${channelId}/keys/${keyId}`),
+
+  listTokens: () => request<{ data: Token[] }>('GET', '/tokens'),
+  createToken: (body: {
+    name: string;
+    expires_in_days?: number;
+    rpm?: number;
+    tpm?: number;
+    models_whitelist?: string[];
+  }) =>
+    request<{ id: number; key: string; name: string }>('POST', '/tokens', body),
+  deleteToken: (id: number) => request<{ ok: boolean }>('DELETE', `/tokens/${id}`),
+
+  listLogs: (limit = 50, offset = 0) =>
+    request<{ data: LogEntry[] }>('GET', `/logs?limit=${limit}&offset=${offset}`),
+};
+
+export interface Channel {
+  id: number;
+  name: string;
+  provider: string;
+  base_url: string;
+  models: string[];
+  priority: number;
+  input_price_per_1m: number;
+  output_price_per_1m: number;
+  status: number;
+  circuit_breaker: { max_failures: number; reset_timeout: number };
+}
+
+export interface ApiKey {
+  id: number;
+  channel_id: number;
+  key_masked: string;
+  status: number;
+}
+
+export interface Token {
+  id: number;
+  plan_id: number;
+  name: string;
+  status: number;
+  rpm: number;
+  tpm: number;
+  models_whitelist: string[];
+  ip_whitelist: string[];
+  expires_at: string;
+  last_used_at: string;
+  created_at: string;
+}
+
+export interface LogEntry {
+  id: number;
+  token_id: number;
+  channel_id: number;
+  key_id: number;
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  real_cost_usd: number;
+  billed_cost_usd: number;
+  duration_ms: number;
+  status_code: number;
+  router_path: string;
+  request_ip: string;
+  created_at: string;
+}

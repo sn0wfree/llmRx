@@ -24,8 +24,9 @@ Thumbs.db
 
 # Web UI
 web/node_modules/
-web/dist/
 web/.env
+# Note: web/dist/ and internal/webui/dist/ are BOTH committed so the
+# binary embeds the latest UI without requiring `npm run build` on every clone.
 
 # Config (local overrides)
 config.local.yml
