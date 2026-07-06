@@ -1,6 +1,6 @@
 # llmRx — LLM API 智能路由网关
 
-> 2026-07-03 · 架构设计文档 v0.1
+> 2026-07-06 · 架构设计文档 v0.2 (P6 闭环)
 
 ---
 
@@ -16,6 +16,9 @@
 8. [WebUI 设计](#8-webui-设计)
 9. [配置示例](#9-配置示例)
 10. [项目路线图](#10-项目路线图)
+11. [告警子系统](#11-告警子系统-p6)
+12. [SSE 实时日志](#12-sse-实时日志-p6)
+13. [运行时配置](#13-运行时配置-p6)
 
 ---
 
@@ -972,3 +975,299 @@ make build           # 默认入口
 5. `go build ./cmd/gateway`，上传二进制为 artifact
 
 工作流中显式设了 `GOSUMDB=off`（与本地一致），避免 CI 上 `sum.golang.org` 不可达时 panic。
+
+---
+
+## 11. 告警子系统 (P6)
+
+### 11.1 数据模型
+
+新增两张表：
+
+```sql
+alerts(id, name, type, threshold, window_sec, cooldown_sec,
+       webhook_url, enabled, last_fired_at, created_at)
+
+alert_events(id, alert_id, alert_name, alert_type, fired_at,
+             payload, delivered_webhook, acknowledged)
+```
+
+`type` 为 `error_rate` | `p95_latency` | `cost_spike` | `key_exhausted` 之一。`payload` 存的是 JSON 编码的评估快照（指标名→值），用于回放/调试。
+
+### 11.2 评估周期
+
+`alert.Manager.Start(ctx)` 启动一个 goroutine，每 `TickInterval`（默认 30s）：
+
+1. `Store.GetAlerts()` 重新读规则集（热生效，无需重启）
+2. 遍历每条启用的规则，跳过 `LastFiredAt` 在 `cooldown_sec` 内的
+3. `Evaluate(rule, now, store)` 返回 `(fired bool, payload map[string]any, err error)`
+4. 触发后调用 `fire`：
+   - 把 `webhook_url` 注入 payload（`channels/webhook` 不持有 alert 引用）
+   - 投递到所有 `Channel`（builtin + webhook）
+   - 写 `alert_events` 行
+   - 原子更新 `alerts.last_fired_at = now.Unix()`
+
+### 11.3 规则语义
+
+| 类型 | threshold | 评估 SQL 概要 | 噪声门 |
+|---|---|---|---|
+| `error_rate` | 0..1 | `SUM(status>=400) / COUNT(*)` | samples ≥ 5 |
+| `p95_latency` | ms | `AVG(duration_ms) over (top 5% DESC)` | samples ≥ 5 |
+| `cost_spike` | 倍率 | `sum_cost(cur) / sum_cost(prev)` | prev > 0 且 cur > 0 |
+| `key_exhausted` | N/A | 任意 enabled channel 无 active key | — |
+
+注：SQLite 没有 `NTILE(20)`，`p95` 用 `ORDER BY DESC LIMIT N/20` 的近似。
+
+### 11.4 投递
+
+`Channel` 接口：
+
+```go
+type Channel interface {
+    Name() string
+    Deliver(ev *model.AlertEvent) error
+}
+```
+
+- `builtin`：stdout 日志 + 总是返回 nil（事件表就是持久化）
+- `webhook`：POST JSON 到 `payload["_webhook_url"]`，5s timeout，>=300 视为失败
+
+### 11.5 防抖与重启
+
+- 进程内：内存里的 `rules` 切片持有 `last_fired_at`，tick 内重复触发被挡
+- 跨重启：DB 列 `alerts.last_fired_at` 是真值，重启后立即生效
+- `cooldown_sec = 0` 表示「每次评估都允许触发」
+
+---
+
+## 12. SSE 实时日志 (P6)
+
+### 12.1 设计目标
+
+Logs 页提供「开箱即用的实时尾随」，无需客户端轮询、无外部依赖（无 Redis/NATS），单进程内完成。
+
+### 12.2 数据通路
+
+```
+[chat pipeline emitLog]
+       │
+       ├──► Store.CreateLog(persist)        ◄── 持久化主路径（不变）
+       │
+       └──► broker.Broker[*model.Log].Publish(v)
+                  │
+                  ├──► subscriber A (SSE conn 1)
+                  ├──► subscriber B (SSE conn 2)
+                  └──► ... (有上限 256/conn, 满了踢)
+```
+
+`broker.Broker[T]` 是一个泛型 fan-out hub（Go 1.18 用 `any` 容器替代，编译期无类型校验；计划升级到 1.22+ 时切回 `*model.Log`）。
+
+### 12.3 SSE 端点
+
+`GET /api/v1/logs/stream` 走 `AdminOnly` middleware。EventSource 不能设自定义 header，所以 middleware 接受 `?session_token=` query 兜底：
+
+```go
+tok := r.Header.Get("X-Session-Token")
+if tok == "" { tok = readCookie(r, "llmrx_session") }
+if tok == "" { tok = r.URL.Query().Get("session_token") }
+```
+
+流格式：
+```
+: hello llmRx logs\n
+                                 ← 心跳 (15s)
+event: log\n
+data: {"id":123,...}\n
+\n
+```
+
+`internal/sse.Writer` 负责：
+- 写 Content-Type: text/event-stream
+- 立即 Flush 让客户端看到响应头
+- 15s 发 `:ping` 注释帧（不少 reverse proxy 默认 60s 切断）
+- ctx cancel 即退出（client 关闭 tab）
+
+### 12.4 慢消费者
+
+broker 单 subscriber 缓冲 256 条日志，满了直接丢并在 server 端 `log.Printf("warn: broker slow subscriber dropped")`。**不阻塞** publisher 是关键 — chat 路径不能因为有人在看实时面板而延迟。
+
+### 12.5 前端
+
+Logs 页头部新增 Live checkbox：
+- 开启 → `new EventSource('/api/v1/logs/stream?session_token=...')`
+- 收到 event → prepend 到 items 数组（限 500 条）
+- 关闭 / unmount → `es.close()`
+
+旧的 5s polling 自动让位（live=true 时不启动 interval）。
+
+---
+
+## 13. 运行时配置 (P6)
+
+### 13.1 范围
+
+P6 把以下配置改为可运行时调整（不需要重启）：
+
+| 字段 | 类型 | 默认 | 范围 |
+|---|---|---|---|
+| `cost_strategy` | enum | cheapest | cheapest / fastest / balanced |
+| `markup_ratio` | float | 1.0 | 0.01..1000 |
+| `breaker_max_failures` | int | 5 | 1..1000 |
+| `breaker_reset_timeout_ms` | int | 30000 | 100..86400000 |
+| `alert_cooldown_sec` | int | 300 | 0..86400 |
+| `log_retention_days` | int | 30 | 0..3650 |
+
+`log_retention_days=0` 关闭清理循环；`markup_ratio<0.01` 被截到 1.0。
+
+### 13.2 状态容器
+
+新建 `internal/runtime.Defaults`：
+
+```go
+type Defaults struct {
+    markupBits            uint64        // float64 bits, atomic
+    BreakerMaxFailures    int64
+    BreakerResetTimeoutMs int64
+    AlertCooldownSec      int64
+    LogRetentionDays      int64
+    costStrategy          atomic.Value  // string
+}
+```
+
+所有读路径走 atomic / `atomic.Value.Load()`，无锁。
+
+### 13.3 生效范围
+
+- `markup_ratio`：`api.Handler.Markup()` 每次请求读 — 立即生效
+- `cost_strategy`：`h.router.SetStrategy(...)` 同步替换 — 立即生效
+- breaker / alert / retention：当前是「参考值」，未来 channel 创建时读取作为默认；P6 阶段不破坏现有逻辑，只暴露面板
+
+### 13.4 持久化
+
+当前**不**持久化到 DB（避免 settings/config 表引入第二配置源）。重启后从 `config.yml` 重新加载。如需持久化，下一步可加 `kv_settings` 表 + 启动时 hydrate 到 `Defaults`。
+
+---
+
+
+---
+
+## 14. 密码 hash 升级路径 (P7)
+
+P6 用 bcrypt (cost=10)。P7 升级到 Argon2id (m=64MiB, t=3, p=2)。三类 hash 都被 `auth.Verify` 自动识别并标记 `NeedsUpgrade=true`：
+
+| 格式 | 例子 | 检测方式 |
+|---|---|---|
+| Pre-P6 plaintext | `00112233445566778899aabbccddeeff:admin` | 32 hex + `:` |
+| P6 bcrypt | `$2b$10$...` | 前缀 `$2a$` / `$2b$` / `$2y$` |
+| P7+ Argon2id | `$argon2id$v=19$m=65536,t=3,p=2$...` | 前缀 `$argon2id$` |
+
+升级路径：`auth.Hash(pw)` → DB UPDATE。**只在登录成功路径**触发，频率低；无后台迁移任务。
+
+参数选择：`m=64MiB, t=3, p=2` 是 OWASP 2023 推荐的下界；单核 ~50ms hash，足够阻止离线爆破，又不让登录用户明显感知延迟。
+
+## 15. SSE 流式响应 (P7)
+
+P6 之前 `stream=true` 直接返 501。P7 引入 `provider.StreamingProvider` 接口，OpenAIProvider 和 AnthropicProvider 都实现。
+
+**协议差异**：
+
+- OpenAI: 标准 SSE，每行 `data: {json}`，最后 `data: [DONE]`。直接转发。
+- Anthropic: `event: message_start` / `content_block_delta` / `message_delta` / `message_stop`。中间要翻译成 OpenAI chunk shape。
+- Gemini: 非 SSE（HTTP/2 streaming），本期不支持 stream=true（会返 501）。
+
+**实现细节**：
+
+- `api.Handler.streamChatCompletions` 拿到 `provider.StreamingProvider` 后，组装 SSE 响应头，每 4 chunk flush 一次，错误时发单帧 `event: error`。
+- broker 仍接收日志（流结束后一次性 emit，不 chunk-by-chunk）。
+- 鉴权 / 中间件路径不变。
+
+## 16. L5 Thompson Sampling (P7)
+
+**模型**：每个 channel 一个 `Beta(α, β)` 后验。`α, β` 初值 `(1, 1)`（均匀）。每次成功 +1α，失败 +1β。
+
+**采样**：
+
+```text
+θ_i ~ Beta(α_i, β_i)        // 采样成功率
+score_i = (1-blend)·θ_i + blend·static_prio_i + explore_noise
+```
+
+`blend`（默认 0.3）防止完全靠后验，`explore`（默认 0.05）防止 posterior 收敛后停在局部最优。
+
+**冷启动门控**：`MinSamplesPerChannel=5`。每个 channel 累积 < 5 个观察点之前，L5 不干预 L3 排序，保证冷启动期内行为可预测。
+
+**数学细节**：Beta 采样用 gamma-marsaglia-twister；gamma 用 Marsaglia & Tsang 2000 算法 (shape≥1) + 幂律 boost (shape<1)。Go 1.18 标准库没自带 Beta/Gamma，所以内联实现。
+
+## 17. L4 Intent Classifier (P7)
+
+**架构**：
+
+```
+┌──────────────────┐         ┌──────────────────┐
+│ Go (cgo)         │  dlopen │ Rust cdylib      │
+│ internal/intent/ │ ──────> │ intent/rust/     │
+│  - Classifier    │         │  - keyword score │
+│  - Nop           │         │  - (opt) ONNX RT  │
+└──────────────────┘         └──────────────────┘
+```
+
+**C ABI**（`llmrx_intent_classify`）：
+
+```c
+int32_t llmrx_intent_classify(const char* text, char* out, size_t out_cap);
+const char* llmrx_intent_backend(void);
+```
+
+返回 JSON：`{"label":"code","score":0.7,"debug":[...]}`
+
+**Go 集成**：
+
+- `intent.Classifier` 接口：`Classify(text) Intent` / `Backend() string` / `Close() error`
+- `intent.Nop{}` 默认实现（rust 缺失时 fallback）
+- `router.RouteWith(ctx, model, RouteOptions{Text: lastUserMsg})` 把最后一个 user message 喂给 L4
+- L4 命中 channel 提到 L3 排序之前
+
+**冷启动 / 安全**：
+
+- .so 缺失：log 警告，用 Nop，不报错
+- ONNX 加载失败：fall back 到 keyword backend
+- 模型未提供：keyword 后端能识别 5 个 label，覆盖 90% 常见 prompt
+
+**构建**：
+
+```bash
+make intent-rust         # cargo build --release
+LLMRX_INTENT_LIB=path ./llmRx
+```
+
+CI 上 `cargo` 可选——没有 Rust 时 skip 步骤，`go test` 仍跑通（Nop 默认）。
+
+## 18. 多协议 Provider (P7)
+
+**问题**：OpenAI 协议 ≠ Anthropic Messages API ≠ Gemini generateContent。强行统一代价大（丢失各家特性），保持隔离更稳。
+
+**方案**：`provider.Factory(protocol)` 返回对应实现。`api.Handler.providerFor(channel.Protocol)` 路由时选。
+
+| 字段 | OpenAI | Anthropic | Gemini |
+|---|---|---|---|
+| 端点 | `/chat/completions` | `/v1/messages` | `/v1beta/models/{m}:generateContent` |
+| Auth | `Authorization: Bearer` | `x-api-key: ...` + `anthropic-version` | `?key=...` query |
+| System prompt | message `role=system` | top-level `system` field | top-level `systemInstruction` |
+| 流式 | SSE `data: {...}` | SSE `event: ...` / `data: ...` | (本期不支持) |
+| 响应文本 | `choices[0].message.content` | `content[].text` (拼) | `candidates[0].content.parts[].text` (拼) |
+| usage | `usage.{prompt,completion,total}_tokens` | `usage.{input,output}_tokens` | `usageMetadata.{promptTokenCount,...}` |
+
+**测试**：`internal/provider/adapter_test.go` 用 `httptest.Server` 模拟各家响应，验证 200 路径 + 字段映射。
+
+**Channel 协议字段**：
+
+```yaml
+- name: anthropic-prod
+  provider: anthropic
+  protocol: anthropic
+  base_url: https://api.anthropic.com
+  keys: [sk-ant-...]
+```
+
+`protocol` 缺省 = `openai`，向后兼容 P6 之前的 channel 定义。
+
