@@ -1,0 +1,59 @@
+name: test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Download modules
+        env:
+          GOPROXY: https://goproxy.cn,https://goproxy.io,direct
+          GOSUMDB: off
+        run: go mod download
+
+      - name: go vet
+        env:
+          GOPROXY: https://goproxy.cn,https://goproxy.io,direct
+          GOSUMDB: off
+        run: go vet ./...
+
+      - name: go test (race)
+        env:
+          GOPROXY: https://goproxy.cn,https://goproxy.io,direct
+          GOSUMDB: off
+        run: go test -race -coverprofile=cov.out -covermode=atomic ./...
+
+      - name: Coverage gate
+        env:
+          GOPROXY: https://goproxy.cn,https://goproxy.io,direct
+          GOSUMDB: off
+        run: |
+          total=$(go tool cover -func=cov.out | awk '/^total:/ {gsub("%","",$3); print $3}')
+          echo "total coverage: ${total}%"
+          awk -v t="$total" 'BEGIN{exit !(t+0 >= 50)}' \
+            || (echo "coverage ${total}% < 50%"; exit 1)
+
+      - name: Build
+        env:
+          GOPROXY: https://goproxy.cn,https://goproxy.io,direct
+          GOSUMDB: off
+        run: go build -o llmRx ./cmd/gateway
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: llmRx
+          path: llmRx
