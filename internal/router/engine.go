@@ -5,9 +5,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
+	"github.com/sn0wfree/llmRx/internal/store"
 )
 
 type RouterEngine struct {
@@ -15,6 +15,7 @@ type RouterEngine struct {
 	breaker *CircuitBreaker
 	cost    *CostRouter
 	pool    *pool.ChannelPool
+	store   store.Store
 }
 
 type RouteResult struct {
@@ -22,44 +23,50 @@ type RouteResult struct {
 	Key       *model.Key
 	KeyValue  string
 	RouterLog string
+	TokenID   int64
 }
 
-func New(cfg *config.Config, pool *pool.ChannelPool) *RouterEngine {
+// New constructs the router from the live store, so per-channel
+// circuit-breaker config and channels always reflect the latest DB
+// state without restarting.
+func New(st store.Store, pool *pool.ChannelPool) *RouterEngine {
 	return &RouterEngine{
-		static:  NewStaticRouter(cfg),
-		breaker: NewCircuitBreaker(cfg),
+		static:  NewStaticRouter(st),
+		breaker: NewCircuitBreaker(st),
 		cost:    NewCostRouter(),
 		pool:    pool,
+		store:   st,
 	}
+}
+
+// ReloadChannel picks up new circuit-breaker settings after the
+// admin updates a channel.
+func (e *RouterEngine) ReloadChannel(channelID int64) {
+	e.breaker.reload(channelID)
 }
 
 func (e *RouterEngine) Route(ctx context.Context, modelName string) (*RouteResult, error) {
 	start := time.Now()
 	var logParts []string
 
-	// L1: Static routing — match model to channels
 	candidates := e.static.Match(modelName)
 	logParts = append(logParts, "L1(static)")
 	if len(candidates) == 0 {
 		return nil, ErrNoChannel
 	}
 
-	// L2: Circuit breaker — filter out broken channels
 	candidates = e.breaker.Filter(candidates)
 	logParts = append(logParts, "L2(breaker)")
 	if len(candidates) == 0 {
 		return nil, ErrAllBroken
 	}
 
-	// L3: Cost optimization — sort by price
 	candidates = e.cost.Sort(candidates)
 	logParts = append(logParts, "L3(cost)")
 
-	// Select the best channel
 	ch := candidates[0]
 	logParts = append(logParts, "select="+ch.Name)
 
-	// Get an API key from the pool
 	key, err := e.pool.NextKey(ch.ID)
 	if err != nil {
 		return nil, err

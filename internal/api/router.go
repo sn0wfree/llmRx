@@ -8,34 +8,31 @@ import (
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/config"
+	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/provider"
 	"github.com/sn0wfree/llmRx/internal/router"
+	"github.com/sn0wfree/llmRx/internal/store"
 )
 
 type Handler struct {
-	router    *router.RouterEngine
-	pool      *pool.ChannelPool
-	provider  provider.Provider
-	cfg       *config.Config
+	router        *router.RouterEngine
+	pool          *pool.ChannelPool
+	provider      provider.Provider
+	cfg           *config.Config
+	store         store.Store
 	defaultMarkup float64
 }
 
-// New wires the HTTP handler. P0 uses a single OpenAI-compatible
-// provider for every channel; channel.Provider is only carried for
-// /v1/models display and future multi-protocol adapters.
-func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool) *Handler {
-	markup := 1.0
-	if cfg.Server.RateLimit <= 0 {
-		// intentionally unused in P0; reserved for per-plan override
-	}
+func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store) *Handler {
 	return &Handler{
 		router:        eng,
 		pool:          cp,
 		provider:      provider.NewOpenAIProvider(),
 		cfg:           cfg,
-		defaultMarkup: markup,
+		store:         st,
+		defaultMarkup: 1.0,
 	}
 }
 
@@ -104,55 +101,82 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	resp, statusCode, err := h.provider.Chat(&req, route.KeyValue, route.Channel.BaseURL)
 	duration := time.Since(start).Milliseconds()
 
+	tokenID := lookupTokenID(r.Context(), h.store)
+
 	if err != nil {
 		h.router.RecordFailure(route.Channel.ID)
 		writeError(w, statusCode, "upstream error: "+err.Error(), "upstream_error")
-		h.emitLog(req.Model, route, nil, duration, statusCode, true)
+		h.emitLog(tokenID, req.Model, route, nil, duration, statusCode, true, clientIP(r))
 		return
 	}
 
 	h.router.RecordSuccess(route.Channel.ID)
-	h.emitLog(req.Model, route, &resp.Usage, duration, statusCode, false)
+	h.emitLog(tokenID, req.Model, route, &resp.Usage, duration, statusCode, false, clientIP(r))
 	writeJSON(w, resp)
 }
 
-func (h *Handler) emitLog(modelName string, route *router.RouteResult, usage *provider.Usage, durationMs int64, statusCode int, failed bool) {
+func clientIP(r *http.Request) string {
+	if v := r.Header.Get("X-Forwarded-For"); v != "" {
+		return v
+	}
+	if v := r.Header.Get("X-Real-IP"); v != "" {
+		return v
+	}
+	return r.RemoteAddr
+}
+
+func lookupTokenID(ctx context.Context, st store.Store) int64 {
+	v, ok := ctx.Value(middleware.TokenIDKey).(int64)
+	if !ok {
+		return 0
+	}
+	return v
+}
+
+func (h *Handler) emitLog(tokenID int64, modelName string, route *router.RouteResult, usage *provider.Usage, durationMs int64, statusCode int, failed bool, ip string) {
 	real := 0.0
 	if usage != nil {
 		real = calcCost(route.Channel, *usage)
-	}
-	entry := model.Log{
-		TokenID:         0,
-		ChannelID:       route.Channel.ID,
-		KeyID:           route.Key.ID,
-		Model:           modelName,
-		PromptTokens:    intField(usage, "prompt"),
-		CompletionTokens: intField(usage, "completion"),
-		RealCostUSD:     real,
-		BilledCostUSD:   real * h.defaultMarkup,
-		DurationMs:      durationMs,
-		StatusCode:      statusCode,
-		RouterPath:      route.RouterLog,
-		CreatedAt:       time.Now(),
 	}
 	status := "ok"
 	if failed {
 		status = "fail"
 	}
 	log.Printf("log status=%s model=%s channel=%s key=%s prompt=%d completion=%d real_usd=%.6f billed_usd=%.6f duration_ms=%d code=%d path=%s",
-		status, entry.Model, route.Channel.Name, route.Key.KeyMasked,
-		entry.PromptTokens, entry.CompletionTokens,
-		entry.RealCostUSD, entry.BilledCostUSD,
-		entry.DurationMs, entry.StatusCode, entry.RouterPath,
+		status, modelName, route.Channel.Name, route.Key.KeyMasked,
+		promptTokens(usage), completionTokens(usage),
+		real, real*h.defaultMarkup,
+		durationMs, statusCode, route.RouterLog,
 	)
+	entry := &model.Log{
+		TokenID:         tokenID,
+		ChannelID:       route.Channel.ID,
+		KeyID:           route.Key.ID,
+		Model:           modelName,
+		PromptTokens:    promptTokens(usage),
+		CompletionTokens: completionTokens(usage),
+		RealCostUSD:     real,
+		BilledCostUSD:   real * h.defaultMarkup,
+		DurationMs:      durationMs,
+		StatusCode:      statusCode,
+		RouterPath:      route.RouterLog,
+		RequestIP:       ip,
+	}
+	if err := h.store.CreateLog(entry); err != nil {
+		log.Printf("warn: persist log: %v", err)
+	}
 }
 
-func intField(u *provider.Usage, which string) int {
+func promptTokens(u *provider.Usage) int {
 	if u == nil {
 		return 0
 	}
-	if which == "prompt" {
-		return u.PromptTokens
+	return u.PromptTokens
+}
+
+func completionTokens(u *provider.Usage) int {
+	if u == nil {
+		return 0
 	}
 	return u.CompletionTokens
 }
