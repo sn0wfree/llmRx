@@ -8,7 +8,7 @@ PKG := ./...
 # The committed internal/webui/dist/ is the source of truth for
 # Node-less builds, so a clean checkout builds out of the box.
 
-.PHONY: all build test test-race cover web-sync web-build run clean build-go-only
+.PHONY: all build test test-race cover web-sync web-build run clean build-go-only intent-rust
 
 all: build
 
@@ -90,3 +90,16 @@ run: build
 
 clean:
 	rm -f $(BIN) /tmp/llmrx.cov.out
+
+# ----- L4 intent (Rust cdylib) -----
+#
+# The intent classifier is a Rust crate that compiles to a .so the
+# Go side loads via dlopen. Build with `make intent-rust`; the
+# default `make build` does not require Rust.
+
+INTENT_DIR := internal/intent/rust
+INTENT_LIB := $(INTENT_DIR)/target/release/libllmrx_intent.so
+
+intent-rust:
+	cd $(INTENT_DIR) && cargo build --release
+	@echo "intent: built $(INTENT_LIB)"

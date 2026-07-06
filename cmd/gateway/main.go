@@ -1,16 +1,20 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/hex"
+	"context"
 	"flag"
 	"log"
 	"time"
 
+	"github.com/sn0wfree/llmRx/internal/alert"
+	"github.com/sn0wfree/llmRx/internal/alert/channels"
+	"github.com/sn0wfree/llmRx/internal/auth"
+	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/router"
+	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/server"
 	"github.com/sn0wfree/llmRx/internal/store"
 	"github.com/sn0wfree/llmRx/internal/tokencache"
@@ -45,9 +49,42 @@ func main() {
 	if s := cfg.Strategy.CostStrategy; s != "" {
 		eng.SetStrategy(model.CostStrategy(s))
 	}
-	srv := server.New(cfg, eng, cp, st, tokCache)
+	logBroker := broker.New[*model.Log]()
+	defer logBroker.Close()
 
-	go cleanupLoop(st)
+	rt := runtime.New()
+	rt.SetMarkupRatio(cfg.Server.MarkupRatio)
+	rt.BreakerMaxFailures = int64(cfg.Server.BreakerMax)
+	if rt.BreakerMaxFailures <= 0 {
+		rt.BreakerMaxFailures = 5
+	}
+	rt.BreakerResetTimeoutMs = int64(cfg.Server.BreakerResetMs)
+	if rt.BreakerResetTimeoutMs <= 0 {
+		rt.BreakerResetTimeoutMs = 30000
+	}
+	rt.AlertCooldownSec = int64(cfg.Server.AlertCooldownSec)
+	if rt.AlertCooldownSec <= 0 {
+		rt.AlertCooldownSec = 300
+	}
+	rt.LogRetentionDays = int64(cfg.Server.LogRetentionDays)
+	if rt.LogRetentionDays <= 0 {
+		rt.LogRetentionDays = 30
+	}
+
+	alertMgr := alert.NewManager(st, []alert.Channel{
+		channels.NewBuiltin(),
+		channels.NewWebhook(),
+	}, alert.Config{
+		DefaultCooldown: time.Duration(cfg.Server.AlertCooldownSec) * time.Second,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go cleanupLoop(ctx, st)
+	go logRetentionLoop(ctx, st, int(rt.LogRetentionDays))
+	go alertMgr.Start(ctx)
+
+	srv := server.New(cfg, eng, cp, st, tokCache, logBroker, rt)
 
 	log.Printf("starting llmRx gateway on :%d (channels=%d tokens=%d db=%s)",
 		cfg.Server.Port, len(cp.GetAllChannels()), tokCache.Size(), cfg.Database.DSN)
@@ -57,16 +94,44 @@ func main() {
 }
 
 // cleanupLoop periodically clears admin session tokens whose
-// session_exp is in the past. Runs every 5 minutes; exits when the
-// process exits.
-func cleanupLoop(st store.Store) {
+// session_exp is in the past. Runs every 5 minutes; exits when ctx
+// is cancelled or the process exits.
+func cleanupLoop(ctx context.Context, st store.Store) {
 	t := time.NewTicker(5 * time.Minute)
 	defer t.Stop()
-	for range t.C {
-		if n, err := st.CleanupExpiredSessions(); err != nil {
-			log.Printf("cleanup sessions: %v", err)
-		} else if n > 0 {
-			log.Printf("cleanup: cleared %d expired admin sessions", n)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if n, err := st.CleanupExpiredSessions(); err != nil {
+				log.Printf("cleanup sessions: %v", err)
+			} else if n > 0 {
+				log.Printf("cleanup: cleared %d expired admin sessions", n)
+			}
+		}
+	}
+}
+
+// logRetentionLoop deletes log rows older than retentionDays once a
+// day. retentionDays <= 0 disables the loop.
+func logRetentionLoop(ctx context.Context, st store.Store, retentionDays int) {
+	if retentionDays <= 0 {
+		return
+	}
+	t := time.NewTicker(24 * time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour).Unix()
+			if n, err := st.DeleteLogsBefore(cutoff); err != nil {
+				log.Printf("log retention: %v", err)
+			} else if n > 0 {
+				log.Printf("log retention: deleted %d rows older than %d days", n, retentionDays)
+			}
 		}
 	}
 }
@@ -91,9 +156,13 @@ func seedAdmin(st store.Store, cfg *config.Config) error {
 	if pw == "" {
 		pw = "admin"
 	}
+	hashed, err := auth.Hash(pw)
+	if err != nil {
+		return err
+	}
 	u := &model.User{
 		Username:     "admin",
-		PasswordHash: hashPassword(pw),
+		PasswordHash: hashed,
 		Role:         model.RoleRoot,
 		Status:       1,
 	}
@@ -137,9 +206,14 @@ func seedChannels(st store.Store, cfg *config.Config) error {
 		return nil
 	}
 	for _, cc := range cfg.Channels {
+		proto := cc.Protocol
+		if proto == "" {
+			proto = "openai"
+		}
 		ch := &model.Channel{
 			Name:        cc.Name,
 			Provider:    cc.Provider,
+			Protocol:    proto,
 			BaseURL:     cc.BaseURL,
 			Models:      cc.Models,
 			Priority:    cc.Priority,
@@ -176,28 +250,4 @@ func maskKey(k string) string {
 		return k[:4] + "***" + k[len(k)-4:]
 	}
 	return k
-}
-
-// hashPassword is a minimal deterministic hash for the seed path
-// only; real authentication is handled by the admin handler.
-func hashPassword(pw string) string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	salt := hex.EncodeToString(b)
-	return salt + ":" + pw
-}
-
-func verifyPassword(hash, pw string) bool {
-	for i := 0; i+1 < len(hash); i++ {
-		if hash[i] == ':' {
-			return hash[i+1:] == pw
-		}
-	}
-	return hash == pw
-}
-
-func newSessionToken() string {
-	b := make([]byte, 24)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
 }

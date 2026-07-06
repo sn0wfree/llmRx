@@ -6,6 +6,7 @@
 package testhelper
 
 import (
+	"context"
 	"net/http"
 	"path/filepath"
 	"sync"
@@ -14,12 +15,15 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/sn0wfree/llmRx/internal/admin"
 	"github.com/sn0wfree/llmRx/internal/api"
+	"github.com/sn0wfree/llmRx/internal/auth"
+	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/config"
 	authmw "github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/provider"
 	"github.com/sn0wfree/llmRx/internal/router"
+	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
 	"github.com/sn0wfree/llmRx/internal/tokencache"
 )
@@ -33,6 +37,8 @@ type App struct {
 	Admin    *admin.Handler
 	Chat     *api.Handler
 	Provider *MockProvider
+	LogBroker *broker.Broker[*model.Log]
+	RT       *runtime.Defaults
 	Cfg      *config.Config
 	Mux      http.Handler // fully wired mux: /v1/chat/completions, /v1/models, /api/v1, /health
 }
@@ -50,7 +56,7 @@ func New(t *testing.T) *App {
 	t.Cleanup(func() { _ = st.Close() })
 
 	if err := st.CreateUser(&model.User{
-		Username: "admin", PasswordHash: hashForAdminSeed(), Role: model.RoleRoot, Status: 1,
+		Username: "admin", PasswordHash: hashForAdminSeed(t), Role: model.RoleRoot, Status: 1,
 	}); err != nil {
 		t.Fatalf("seed admin: %v", err)
 	}
@@ -62,11 +68,21 @@ func New(t *testing.T) *App {
 
 	cache := tokencache.New(st)
 	eng := router.New(st, cp)
-	adminH := admin.New(st, cp, eng, cache)
+	logBroker := broker.New[*model.Log]()
+	rt := runtime.New()
+	adminH := admin.New(st, cp, eng, cache, logBroker, rt)
 
 	mp := &MockProvider{}
-	chatH := api.New(&config.Config{}, eng, cp, st)
+	chatH := api.New(&config.Config{}, eng, cp, st, logBroker, rt)
 	chatH.SetProvider(mp)
+	// Also override the per-protocol map so the chat handler picks
+	// the mock regardless of the channel's Protocol field.
+	chatH.SetProviders(map[string]provider.Provider{
+		"":                 mp,
+		"openai":           mp,
+		"anthropic":        mp,
+		"gemini":           mp,
+	})
 
 	mux := chi.NewRouter()
 	mux.With(authmw.Token(cache.Lookup)).Mount("/v1", chatH.Routes())
@@ -77,16 +93,18 @@ func New(t *testing.T) *App {
 	})
 
 	return &App{
-		T:        t,
-		Store:    st,
-		Pool:     cp,
-		Cache:    cache,
-		Engine:   eng,
-		Admin:    adminH,
-		Chat:     chatH,
-		Provider: mp,
-		Cfg:      &config.Config{},
-		Mux:      mux,
+		T:         t,
+		Store:     st,
+		Pool:      cp,
+		Cache:     cache,
+		Engine:    eng,
+		Admin:     adminH,
+		Chat:      chatH,
+		Provider:  mp,
+		LogBroker: logBroker,
+		RT:        rt,
+		Cfg:       &config.Config{},
+		Mux:       mux,
 	}
 }
 
@@ -141,15 +159,22 @@ func maskKey(k string) string {
 	return k
 }
 
-// hashForAdminSeed mirrors admin.handler's verifyPassword contract:
-// seed expects "salt:plaintext" and verify compares after the colon.
-func hashForAdminSeed() string {
-	return "seedsalt:admin"
+// hashForAdminSeed returns a bcrypt hash of "admin" using the same
+// cost factor as production code.
+func hashForAdminSeed(t *testing.T) string {
+	t.Helper()
+	h, err := auth.Hash("admin")
+	if err != nil {
+		t.Fatalf("seed hash: %v", err)
+	}
+	return h
 }
 
 // ---------------- Mock provider ----------------
 
 // MockProvider scripts responses / errors per call. Concurrency-safe.
+// Also implements StreamingProvider: when StreamChunks is non-empty,
+// StreamChat emits those chunks in order.
 type MockProvider struct {
 	mu        sync.Mutex
 	Responses []*provider.ChatResponse
@@ -158,6 +183,9 @@ type MockProvider struct {
 	Calls     int
 	LastKey   string
 	LastURL   string
+
+	StreamChunks []provider.StreamChunk
+	StreamErr    error
 }
 
 func (m *MockProvider) Name() string { return "mock" }
@@ -184,6 +212,25 @@ func (m *MockProvider) Chat(req *provider.ChatRequest, apiKey string, baseURL st
 		Model: req.Model,
 		Usage: provider.Usage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30},
 	}, httpStatusAt(m.Statuses, idx, 200), nil
+}
+
+// StreamChat implements StreamingProvider for tests.
+func (m *MockProvider) StreamChat(ctx context.Context, req *provider.ChatRequest, apiKey, baseURL string) (<-chan provider.StreamEvent, error) {
+	if m.StreamErr != nil {
+		return nil, m.StreamErr
+	}
+	out := make(chan provider.StreamEvent, len(m.StreamChunks)+1)
+	go func() {
+		defer close(out)
+		for _, c := range m.StreamChunks {
+			select {
+			case <-ctx.Done():
+				return
+			case out <- provider.StreamEvent{Chunk: c}:
+			}
+		}
+	}()
+	return out, nil
 }
 
 func httpStatusAt(s []int, idx, def int) int {

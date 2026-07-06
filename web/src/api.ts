@@ -144,9 +144,45 @@ export const api = {
   listChannelsForFilter: () => request<{ data: Channel[] }>('GET', '/channels'),
   listTokensForFilter: () => request<{ data: Token[] }>('GET', '/tokens'),
 
-  getConfig: () => request<{ cost_strategy: string }>('GET', '/config'),
-  updateConfig: (body: { cost_strategy: string }) =>
-    request<{ cost_strategy: string }>('PUT', '/config', body),
+  getConfig: () =>
+    request<{
+      cost_strategy: string;
+      breaker_max_failures: number;
+      breaker_reset_timeout_ms: number;
+      alert_cooldown_sec: number;
+      log_retention_days: number;
+      markup_ratio: number;
+    }>('GET', '/config'),
+  updateConfig: (body: {
+    cost_strategy?: string;
+    breaker_max_failures?: number;
+    breaker_reset_timeout_ms?: number;
+    alert_cooldown_sec?: number;
+    log_retention_days?: number;
+    markup_ratio?: number;
+  }) =>
+    request<{
+      cost_strategy: string;
+      breaker_max_failures: number;
+      breaker_reset_timeout_ms: number;
+      alert_cooldown_sec: number;
+      log_retention_days: number;
+      markup_ratio: number;
+    }>('PUT', '/config', body),
+
+  changePassword: (userId: number, body: { old_password?: string; new_password: string }) =>
+    request<{ ok: boolean }>('POST', `/users/${userId}/password`, body),
+
+  listAlerts: () =>
+    request<{ data: AlertConfig[] }>('GET', '/alerts'),
+  createAlert: (a: Partial<AlertConfig>) => request<AlertConfig>('POST', '/alerts', a),
+  updateAlert: (id: number, a: Partial<AlertConfig>) =>
+    request<AlertConfig>('PUT', `/alerts/${id}`, a),
+  deleteAlert: (id: number) => request<{ ok: boolean }>('DELETE', `/alerts/${id}`),
+  listAlertEvents: (limit = 100) =>
+    request<{ data: AlertEvent[] }>('GET', `/alerts/events?limit=${limit}`),
+  ackAlertEvent: (id: number) =>
+    request<{ ok: boolean }>('POST', `/alerts/events/${id}/ack`),
 };
 
 export interface Channel {
@@ -215,4 +251,28 @@ export interface NamedMetric {
   count: number;
   tokens: number;
   cost: number;
+}
+
+export interface AlertConfig {
+  id: number;
+  name: string;
+  type: 'error_rate' | 'p95_latency' | 'cost_spike' | 'key_exhausted';
+  threshold: number;
+  window_sec: number;
+  cooldown_sec: number;
+  webhook_url: string;
+  enabled: boolean;
+  last_fired_at: number;
+  created_at: string;
+}
+
+export interface AlertEvent {
+  id: number;
+  alert_id: number;
+  alert_name: string;
+  alert_type: string;
+  fired_at: string;
+  payload: string;
+  delivered_webhook: boolean;
+  acknowledged: boolean;
 }

@@ -11,10 +11,13 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/sn0wfree/llmRx/internal/admin"
 	"github.com/sn0wfree/llmRx/internal/api"
+	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/config"
 	authmw "github.com/sn0wfree/llmRx/internal/middleware"
+	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/router"
+	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
 	"github.com/sn0wfree/llmRx/internal/tokencache"
 	"github.com/sn0wfree/llmRx/internal/webui"
@@ -29,7 +32,7 @@ type Server struct {
 	engine *chi.Mux
 }
 
-func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, tc *tokencache.Cache) *Server {
+func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Server {
 	s := &Server{
 		cfg:    cfg,
 		router: eng,
@@ -39,7 +42,7 @@ func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st 
 		engine: chi.NewRouter(),
 	}
 	s.registerMiddleware()
-	s.registerRoutes()
+	s.registerRoutes(lb, rt)
 	return s
 }
 
@@ -58,9 +61,9 @@ func (s *Server) registerMiddleware() {
 	}))
 }
 
-func (s *Server) registerRoutes() {
-	handler := api.New(s.cfg, s.router, s.pool, s.store)
-	adminHandler := admin.New(s.store, s.pool, s.router, s.tokens)
+func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defaults) {
+	handler := api.New(s.cfg, s.router, s.pool, s.store, lb, rt)
+	adminHandler := admin.New(s.store, s.pool, s.router, s.tokens, lb, rt)
 
 	s.engine.With(authmw.Token(s.tokens.Lookup)).
 		Mount("/v1", handler.Routes())

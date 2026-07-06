@@ -28,6 +28,10 @@ web/.env
 # Note: web/dist/ and internal/webui/dist/ are BOTH committed so the
 # binary embeds the latest UI without requiring `npm run build` on every clone.
 
+# Rust build artifacts
+internal/intent/rust/target/
+internal/intent/rust/Cargo.lock
+
 # Config (local overrides)
 config.local.yml
 *.env

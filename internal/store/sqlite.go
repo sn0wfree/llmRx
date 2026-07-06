@@ -62,6 +62,7 @@ func (s *SQLite) migrate() error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT UNIQUE NOT NULL,
 			provider TEXT NOT NULL,
+			protocol TEXT NOT NULL DEFAULT 'openai',
 			base_url TEXT NOT NULL,
 			models TEXT NOT NULL,
 			priority INTEGER NOT NULL DEFAULT 0,
@@ -126,13 +127,43 @@ func (s *SQLite) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_keys_channel ON keys(channel_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_tokens_plan ON tokens(plan_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_users_session_exp ON users(session_exp) WHERE session_exp > 0`,
+		`CREATE TABLE IF NOT EXISTS alerts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			type TEXT NOT NULL,
+			threshold REAL NOT NULL,
+			window_sec INTEGER NOT NULL,
+			cooldown_sec INTEGER NOT NULL,
+			webhook_url TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 1,
+			last_fired_at INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS alert_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			alert_id INTEGER NOT NULL,
+			alert_name TEXT NOT NULL DEFAULT '',
+			alert_type TEXT NOT NULL DEFAULT '',
+			fired_at INTEGER NOT NULL,
+			payload TEXT NOT NULL DEFAULT '',
+			delivered_webhook INTEGER NOT NULL DEFAULT 0,
+			acknowledged INTEGER NOT NULL DEFAULT 0,
+			FOREIGN KEY (alert_id) REFERENCES alerts(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_alert_events_fired ON alert_events(fired_at DESC)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
 			return fmt.Errorf("exec %q: %w", q, err)
 		}
 	}
-	return s.addColumnIfMissing("users", "session_exp", "INTEGER NOT NULL DEFAULT 0")
+	if err := s.addColumnIfMissing("users", "session_exp", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing("channels", "protocol", "TEXT NOT NULL DEFAULT 'openai'"); err != nil {
+		return err
+	}
+	return s.addColumnIfMissing("channels", "intents", "TEXT NOT NULL DEFAULT '[]'")
 }
 
 func (s *SQLite) addColumnIfMissing(table, column, decl string) error {
@@ -195,7 +226,7 @@ func decodeCB(s string) model.CircuitBreakerConfig {
 // ---------------- Channels ----------------
 
 func (s *SQLite) GetChannels() ([]model.Channel, error) {
-	rows, err := s.db.Query(`SELECT id, name, provider, base_url, models, priority, input_price, output_price, circuit_breaker, status, created_at, updated_at FROM channels ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, name, provider, protocol, base_url, models, intents, priority, input_price, output_price, circuit_breaker, status, created_at, updated_at FROM channels ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +243,7 @@ func (s *SQLite) GetChannels() ([]model.Channel, error) {
 }
 
 func (s *SQLite) GetChannel(id int64) (*model.Channel, error) {
-	row := s.db.QueryRow(`SELECT id, name, provider, base_url, models, priority, input_price, output_price, circuit_breaker, status, created_at, updated_at FROM channels WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT id, name, provider, protocol, base_url, models, intents, priority, input_price, output_price, circuit_breaker, status, created_at, updated_at FROM channels WHERE id = ?`, id)
 	return scanChannel(row)
 }
 
@@ -220,10 +251,14 @@ func (s *SQLite) CreateChannel(ch *model.Channel) error {
 	now := time.Now().UTC()
 	ch.CreatedAt = now
 	ch.UpdatedAt = now
+	if ch.Protocol == "" {
+		ch.Protocol = "openai"
+	}
 	res, err := s.db.Exec(
-		`INSERT INTO channels(name, provider, base_url, models, priority, input_price, output_price, circuit_breaker, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ch.Name, ch.Provider, ch.BaseURL, encodeStrings(ch.Models),
+		`INSERT INTO channels(name, provider, protocol, base_url, models, intents, priority, input_price, output_price, circuit_breaker, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ch.Name, ch.Provider, ch.Protocol, ch.BaseURL,
+		encodeStrings(ch.Models), encodeStrings(ch.Intents),
 		ch.Priority, ch.InputPrice, ch.OutputPrice, encodeCB(ch.CircuitBreaker),
 		int(ch.Status), toUnix(ch.CreatedAt), toUnix(ch.UpdatedAt),
 	)
@@ -237,9 +272,13 @@ func (s *SQLite) CreateChannel(ch *model.Channel) error {
 
 func (s *SQLite) UpdateChannel(ch *model.Channel) error {
 	ch.UpdatedAt = time.Now().UTC()
+	if ch.Protocol == "" {
+		ch.Protocol = "openai"
+	}
 	_, err := s.db.Exec(
-		`UPDATE channels SET name=?, provider=?, base_url=?, models=?, priority=?, input_price=?, output_price=?, circuit_breaker=?, status=?, updated_at=? WHERE id=?`,
-		ch.Name, ch.Provider, ch.BaseURL, encodeStrings(ch.Models),
+		`UPDATE channels SET name=?, provider=?, protocol=?, base_url=?, models=?, intents=?, priority=?, input_price=?, output_price=?, circuit_breaker=?, status=?, updated_at=? WHERE id=?`,
+		ch.Name, ch.Provider, ch.Protocol, ch.BaseURL,
+		encodeStrings(ch.Models), encodeStrings(ch.Intents),
 		ch.Priority, ch.InputPrice, ch.OutputPrice, encodeCB(ch.CircuitBreaker),
 		int(ch.Status), toUnix(ch.UpdatedAt), ch.ID,
 	)
@@ -255,10 +294,11 @@ func scanChannel(r interface {
 	Scan(dest ...any) error
 }) (*model.Channel, error) {
 	var ch model.Channel
-	var modelsJSON, cbJSON string
+	var modelsJSON, intentsJSON, cbJSON string
 	var status int
 	var created, updated int64
-	if err := r.Scan(&ch.ID, &ch.Name, &ch.Provider, &ch.BaseURL, &modelsJSON, &ch.Priority,
+	if err := r.Scan(&ch.ID, &ch.Name, &ch.Provider, &ch.Protocol, &ch.BaseURL,
+		&modelsJSON, &intentsJSON, &ch.Priority,
 		&ch.InputPrice, &ch.OutputPrice, &cbJSON, &status, &created, &updated); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
@@ -266,6 +306,10 @@ func scanChannel(r interface {
 		return nil, err
 	}
 	ch.Models = decodeStrings(modelsJSON)
+	ch.Intents = decodeStrings(intentsJSON)
+	if ch.Protocol == "" {
+		ch.Protocol = "openai"
+	}
 	ch.CircuitBreaker = decodeCB(cbJSON)
 	ch.Status = model.ChannelStatus(status)
 	ch.CreatedAt = fromUnix(created)
@@ -610,6 +654,14 @@ func (s *SQLite) CountLogs() (int64, error) {
 	return n, err
 }
 
+func (s *SQLite) DeleteLogsBefore(unixSec int64) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM logs WHERE created_at < ?`, unixSec)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (s *SQLite) LogStats() (LogStats, error) {
 	var st LogStats
 	row := s.db.QueryRow(`SELECT
@@ -792,4 +844,142 @@ func (s *SQLite) TopByChannel(f LogFilter, limit int) ([]NamedMetric, error) {
 
 func (s *SQLite) TopByToken(f LogFilter, limit int) ([]NamedMetric, error) {
 	return s.topByField("token_id", f, limit)
+}
+// ---------------- alerts ----------------
+
+func (s *SQLite) GetAlerts() ([]model.Alert, error) {
+	rows, err := s.db.Query(`SELECT id, name, type, threshold, window_sec, cooldown_sec, webhook_url, enabled, last_fired_at, created_at FROM alerts ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.Alert
+	for rows.Next() {
+		var a model.Alert
+		var enabled int
+		var created int64
+		if err := rows.Scan(&a.ID, &a.Name, &a.Type, &a.Threshold, &a.WindowSec, &a.CooldownSec, &a.WebhookURL, &enabled, &a.LastFiredAt, &created); err != nil {
+			return nil, err
+		}
+		a.Enabled = enabled != 0
+		a.CreatedAt = fromUnix(created)
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) GetAlert(id int64) (*model.Alert, error) {
+	row := s.db.QueryRow(`SELECT id, name, type, threshold, window_sec, cooldown_sec, webhook_url, enabled, last_fired_at, created_at FROM alerts WHERE id=?`, id)
+	var a model.Alert
+	var enabled int
+	var created int64
+	if err := row.Scan(&a.ID, &a.Name, &a.Type, &a.Threshold, &a.WindowSec, &a.CooldownSec, &a.WebhookURL, &enabled, &a.LastFiredAt, &created); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	a.Enabled = enabled != 0
+	a.CreatedAt = fromUnix(created)
+	return &a, nil
+}
+
+func (s *SQLite) CreateAlert(a *model.Alert) error {
+	enabled := 0
+	if a.Enabled {
+		enabled = 1
+	}
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = time.Now()
+	}
+	res, err := s.db.Exec(`INSERT INTO alerts(name, type, threshold, window_sec, cooldown_sec, webhook_url, enabled, last_fired_at, created_at) VALUES(?,?,?,?,?,?,?,?,?)`,
+		a.Name, string(a.Type), a.Threshold, a.WindowSec, a.CooldownSec, a.WebhookURL, enabled, a.LastFiredAt, a.CreatedAt.Unix())
+	if err != nil {
+		return err
+	}
+	id, _ := res.LastInsertId()
+	a.ID = id
+	return nil
+}
+
+func (s *SQLite) UpdateAlert(a *model.Alert) error {
+	enabled := 0
+	if a.Enabled {
+		enabled = 1
+	}
+	_, err := s.db.Exec(`UPDATE alerts SET name=?, type=?, threshold=?, window_sec=?, cooldown_sec=?, webhook_url=?, enabled=?, last_fired_at=? WHERE id=?`,
+		a.Name, string(a.Type), a.Threshold, a.WindowSec, a.CooldownSec, a.WebhookURL, enabled, a.LastFiredAt, a.ID)
+	return err
+}
+
+func (s *SQLite) DeleteAlert(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM alerts WHERE id=?`, id)
+	return err
+}
+
+func (s *SQLite) RecordAlertFired(id int64, atUnix int64) error {
+	_, err := s.db.Exec(`UPDATE alerts SET last_fired_at=? WHERE id=?`, atUnix, id)
+	return err
+}
+
+func (s *SQLite) CreateAlertEvent(e *model.AlertEvent) error {
+	if e.FiredAt.IsZero() {
+		e.FiredAt = time.Now()
+	}
+	delivered := 0
+	if e.DeliveredWebhook {
+		delivered = 1
+	}
+	ack := 0
+	if e.Acknowledged {
+		ack = 1
+	}
+	res, err := s.db.Exec(`INSERT INTO alert_events(alert_id, alert_name, alert_type, fired_at, payload, delivered_webhook, acknowledged) VALUES(?,?,?,?,?,?,?)`,
+		e.AlertID, e.AlertName, string(e.AlertType), e.FiredAt.Unix(), e.Payload, delivered, ack)
+	if err != nil {
+		return err
+	}
+	id, _ := res.LastInsertId()
+	e.ID = id
+	return nil
+}
+
+func (s *SQLite) GetAlertEvents(limit int) ([]model.AlertEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(`SELECT id, alert_id, alert_name, alert_type, fired_at, payload, delivered_webhook, acknowledged FROM alert_events ORDER BY fired_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.AlertEvent
+	for rows.Next() {
+		var e model.AlertEvent
+		var del, ack int
+		var fired int64
+		if err := rows.Scan(&e.ID, &e.AlertID, &e.AlertName, &e.AlertType, &fired, &e.Payload, &del, &ack); err != nil {
+			return nil, err
+		}
+		e.FiredAt = time.Unix(fired, 0)
+		e.DeliveredWebhook = del != 0
+		e.Acknowledged = ack != 0
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) AckAlertEvent(id int64) error {
+	_, err := s.db.Exec(`UPDATE alert_events SET acknowledged=1 WHERE id=?`, id)
+	return err
+}
+
+// ---------------- raw access ----------------
+
+func (s *SQLite) RawQueryRow(query string, args ...any) *sql.Row {
+	return s.db.QueryRow(query, args...)
+}
+
+func (s *SQLite) RawQuery(query string, args ...any) (*sql.Rows, error) {
+	return s.db.Query(query, args...)
 }

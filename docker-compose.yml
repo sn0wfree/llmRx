@@ -1,0 +1,21 @@
+version: "3.8"
+
+services:
+  llmrx:
+    image: ghcr.io/sn0wfree/llmrx:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: llmrx
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      - llmrx-data:/data
+      - ./config.yml:/data/config.yml:ro
+    environment:
+      LLMRX_DB: /data/llmrx.db
+
+volumes:
+  llmrx-data:
+    name: llmrx-data

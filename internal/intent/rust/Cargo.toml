@@ -1,0 +1,26 @@
+[package]
+name = "llmrx_intent"
+version = "0.1.0"
+edition = "2021"
+description = "L4 intent classifier for llmRx. Pure-Rust keyword scorer; ONNX backend behind a feature flag."
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# Enable ONNX Runtime inference. Requires the system to have
+# libonnxruntime installed (apt: libonnxruntime-dev).
+onnx = ["dep:ort"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Pure-Rust scorer uses no extra deps; ONNX backend uses the `ort` crate.
+ort = { version = "2.0.0-alpha.4", optional = true }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
