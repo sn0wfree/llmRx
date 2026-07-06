@@ -21,9 +21,16 @@ type breakerEntry struct {
 }
 
 type CircuitBreaker struct {
-	store   store.Store
+	store   BreakerStore
 	entries map[int64]*breakerEntry
 	mu      sync.RWMutex
+}
+
+// BreakerStore is the narrow contract the breaker actually depends
+// on: a single lookup for a channel's circuit-breaker config. The
+// production code passes a *store.SQLite; tests pass a stub.
+type BreakerStore interface {
+	GetChannel(id int64) (*model.Channel, error)
 }
 
 func NewCircuitBreaker(st store.Store) *CircuitBreaker {
@@ -35,7 +42,7 @@ func NewCircuitBreaker(st store.Store) *CircuitBreaker {
 
 func (b *CircuitBreaker) cfgFor(channelID int64) (int, time.Duration) {
 	ch, err := b.store.GetChannel(channelID)
-	if err != nil {
+	if err != nil || ch == nil {
 		return defaultMaxFailures, defaultResetDur
 	}
 	maxFail := ch.CircuitBreaker.MaxFailures

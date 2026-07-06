@@ -4,7 +4,7 @@ import (
 	"sync"
 
 	"github.com/sn0wfree/llmRx/internal/middleware"
-	"github.com/sn0wfree/llmRx/internal/store"
+	"github.com/sn0wfree/llmRx/internal/model"
 )
 
 // Cache is a thread-safe lookup table for active API tokens, backed
@@ -12,10 +12,16 @@ import (
 type Cache struct {
 	mu    sync.RWMutex
 	items map[string]middleware.TokenInfo
-	store store.Store
+	store TokenSource
 }
 
-func New(st store.Store) *Cache {
+// TokenSource is the narrow contract the cache depends on; the
+// production store satisfies it via its GetTokens method.
+type TokenSource interface {
+	GetTokens() ([]model.Token, error)
+}
+
+func New(st TokenSource) *Cache {
 	c := &Cache{items: make(map[string]middleware.TokenInfo), store: st}
 	_ = c.Reload()
 	return c
