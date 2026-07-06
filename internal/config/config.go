@@ -8,9 +8,10 @@ import (
 
 type Config struct {
 	Server   ServerConfig    `yaml:"server"`
-	Channels []ChannelConfig `yaml:"channels"`
-	Tokens   []TokenConfig   `yaml:"tokens"`
 	Database DatabaseConfig  `yaml:"database"`
+	Strategy StrategyConfig  `yaml:"strategy"`
+	Tokens   []TokenConfig   `yaml:"tokens"`
+	Channels []ChannelConfig `yaml:"channels"`
 }
 
 type ServerConfig struct {
@@ -18,6 +19,10 @@ type ServerConfig struct {
 	RateLimit     int    `yaml:"rate_limit"`
 	LogLevel      string `yaml:"log_level"`
 	AdminPassword string `yaml:"admin_password"`
+}
+
+type StrategyConfig struct {
+	CostStrategy string `yaml:"cost_strategy"` // cheapest | fastest | balanced
 }
 
 type ChannelConfig struct {

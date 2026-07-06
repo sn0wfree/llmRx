@@ -42,6 +42,9 @@ func main() {
 
 	tokCache := tokencache.New(st)
 	eng := router.New(st, cp)
+	if s := cfg.Strategy.CostStrategy; s != "" {
+		eng.SetStrategy(model.CostStrategy(s))
+	}
 	srv := server.New(cfg, eng, cp, st, tokCache)
 
 	go cleanupLoop(st)
