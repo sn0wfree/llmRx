@@ -19,11 +19,20 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
+	validTokens := make(map[string]string, len(cfg.Tokens))
+	for _, t := range cfg.Tokens {
+		if t.Key == "" {
+			continue
+		}
+		validTokens[t.Key] = t.Name
+	}
+
 	cp := pool.NewChannelPool(cfg)
 	eng := router.New(cfg, cp)
-	srv := server.New(cfg, eng, cp)
+	srv := server.New(cfg, eng, cp, validTokens)
 
-	log.Printf("starting llmRx gateway on :%d", cfg.Server.Port)
+	log.Printf("starting llmRx gateway on :%d (channels=%d tokens=%d)",
+		cfg.Server.Port, len(cfg.Channels), len(validTokens))
 	if err := srv.Start(); err != nil {
 		log.Fatalf("server: %v", err)
 	}

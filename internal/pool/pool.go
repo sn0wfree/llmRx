@@ -19,7 +19,7 @@ type ChannelPool struct {
 type channelEntry struct {
 	Channel *model.Channel
 	Keys    []*keyEntry
-	counter atomic.Uint64
+	counter uint64
 }
 
 type keyEntry struct {
@@ -72,22 +72,27 @@ func (p *ChannelPool) NextKey(channelID int64) (*model.Key, error) {
 		return nil, ErrNoKey
 	}
 
-	n := entry.counter.Add(1) - 1
-	idx := int(n) % len(entry.Keys)
-	ke := entry.Keys[idx]
-
-	masked := ke.Key
-	if len(masked) > 8 {
-		masked = masked[:4] + "***" + masked[len(masked)-4:]
+	n := len(entry.Keys)
+	start := atomic.AddUint64(&entry.counter, 1) - 1
+	for i := uint64(0); i < uint64(n); i++ {
+		idx := int((start + i) % uint64(n))
+		ke := entry.Keys[idx]
+		if ke.Status != model.KeyActive {
+			continue
+		}
+		masked := ke.Key
+		if len(masked) > 8 {
+			masked = masked[:4] + "***" + masked[len(masked)-4:]
+		}
+		return &model.Key{
+			ID:        int64(idx + 1),
+			ChannelID: channelID,
+			Key:       ke.Key,
+			KeyMasked: masked,
+			Status:    ke.Status,
+		}, nil
 	}
-
-	return &model.Key{
-		ID:        int64(idx + 1),
-		ChannelID: channelID,
-		Key:       ke.Key,
-		KeyMasked: masked,
-		Status:    ke.Status,
-	}, nil
+	return nil, ErrNoKey
 }
 
 func (p *ChannelPool) GetAllChannels() []*model.Channel {

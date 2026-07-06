@@ -505,4 +505,68 @@ P0 不做：
 
 ---
 
+## 11. P0 实施笔记（2026-07-06）
+
+P0 闭环已可端到端跑通。下面记录 P0 范围内的关键设计决策与已知限制，作为后续阶段的参照。
+
+### 11.1 已落地的接线
+
+| 模块 | 行为 |
+|------|------|
+| `cmd/gateway/main.go` | 启动时把 `cfg.Tokens` 构造成 `map[string]string`，注入到 server |
+| `internal/server/server.go` | `/v1/chat/completions` 挂在 `authmw.Middleware(validTokens)` 下；`/v1/models` 与 `/health` 暂免鉴权便于本地调试 |
+| `internal/middleware/auth.go` | 错误响应改为 OpenAI 兼容的 `error.{message,type,code}` 三元组；401/403/400 区分 |
+| `internal/pool/pool.go` | round-robin 跳过 `KeyStatus != KeyActive`，整圈无 active 才返回 `ErrNoKey` |
+| `internal/router/breaker.go` | 读取 `cfg.Channels[i].MaxFailures / ResetTimeoutMs`，缺省回落 5 / 60s；半开即清零失败计数 |
+| `internal/router/cost.go` | balanced 改为 min-max 归一化 + 等权求和，避免原下标疑似错位 |
+| `internal/api/router.go` | Provider 改为单一 `OpenAIProvider` 字段（覆盖所有 channel.Provider）；`stream=true` 显式 501；`Log` 不再丢弃，走 stdout JSON 行；errorType 按 HTTP 状态动态返回 |
+
+### 11.2 请求生命周期（实测版）
+
+```
+1. POST /v1/chat/completions
+2. authmw.Middleware        校验 Bearer → 401/403
+3. decode ChatRequest       校验 body / model / stream
+4. RouterEngine.Route       L1(static) → L2(breaker) → L3(cost)
+5. pool.NextKey             轮询 + 跳过非 Active
+6. provider.Chat            同步 HTTP → 上游 API
+7. RecordSuccess / Failure  更新熔断器
+8. emitLog                  stdout JSON line（含 router_path、cost、duration_ms）
+9. writeJSON                返回 OpenAI 格式响应
+```
+
+### 11.3 P0 范围未做（明确留给后续阶段）
+
+- 数据库 / 持久化（sqlite driver 在 go.mod 已预拉，仅未接线）
+- Token CRUD / Management API（当前用 YAML 白名单）
+- WebUI / 静态资源嵌入
+- L4 Intent Classifier / L5 Thompson Sampling
+- Streaming（SSE）响应
+- 速率限制（`server.rate_limit` 字段定义但未生效）
+- Plan / Markup 计算（当前 `defaultMarkup=1.0`，实价 = 计费）
+- 健康检查 goroutine（被动等请求触发熔断）
+
+### 11.4 已知折中
+
+- **Provider 单一实现**：`channel.Provider` 字段仅用于 `/v1/models` 的 `owned_by` 显示，所有 channel 都走 OpenAI-compatible 转发。如未来 deepseek/minimax 任一家引入非兼容协议，需按 channel 字段多路分发。
+- **日志输出到 stdout**：未落库/未落文件，方便容器化与 pipe，但 P1 应改写为 sqlite 持久化 + 异步批量 flush。
+- **Go 1.18 兼容**：当前构建以 Go 1.18 为基线，避免要求用户升级工具链。代码刻意避开了 1.19+ 的 `atomic.Uint64` 等。后续升级至 1.22 后可恢复原写法。
+- **错误日志与请求日志混合**：chi middleware 输出 HTTP 访问日志，`emitLog` 输出业务日志，两者在 stdout 交错。P1 可引入结构化 logger（如 `log/slog`）统一。
+
+### 11.5 Smoke Test 验收结果
+
+| Case | 期望 | 实测 |
+|------|------|------|
+| `GET /health` | 200 | ✅ 200 `{"status":"ok"}` |
+| `GET /v1/models`（无 auth） | 200 | ✅ 200 聚合 3 个 model |
+| `POST /v1/chat/completions` 无 token | 401 | ✅ 401 `missing_authorization` |
+| `POST` 错 token | 403 | ✅ 403 `invalid_token` |
+| `POST` 空 model | 400 | ✅ 400 `missing_model` |
+| `POST` 未知 model | 503 | ✅ 503 `no_channel` |
+| `POST` stream=true | 501 | ✅ 501 `stream_unsupported` |
+| `POST` 真实上游调用（fake key） | 上游 401 透传 | ✅ 透传 `Authentication Fails` |
+
+---
+
 *文档版本 v0.1 · 2026-07-03*
+*追加 v0.1.1 · 2026-07-06 · P0 实施笔记*
