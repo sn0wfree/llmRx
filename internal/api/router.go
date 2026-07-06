@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 
@@ -16,17 +17,25 @@ import (
 type Handler struct {
 	router    *router.RouterEngine
 	pool      *pool.ChannelPool
-	providers map[string]provider.Provider
+	provider  provider.Provider
 	cfg       *config.Config
+	defaultMarkup float64
 }
 
-func New(eng *router.RouterEngine, cp *pool.ChannelPool) *Handler {
+// New wires the HTTP handler. P0 uses a single OpenAI-compatible
+// provider for every channel; channel.Provider is only carried for
+// /v1/models display and future multi-protocol adapters.
+func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool) *Handler {
+	markup := 1.0
+	if cfg.Server.RateLimit <= 0 {
+		// intentionally unused in P0; reserved for per-plan override
+	}
 	return &Handler{
-		router: eng,
-		pool:   cp,
-		providers: map[string]provider.Provider{
-			"openai": provider.NewOpenAIProvider(),
-		},
+		router:        eng,
+		pool:          cp,
+		provider:      provider.NewOpenAIProvider(),
+		cfg:           cfg,
+		defaultMarkup: markup,
 	}
 }
 
@@ -38,72 +47,114 @@ type errorResp struct {
 	} `json:"error"`
 }
 
-func writeError(w http.ResponseWriter, status int, msg string) {
+func errorTypeFor(status int) string {
+	switch {
+	case status == http.StatusBadRequest:
+		return "invalid_request_error"
+	case status == http.StatusUnauthorized, status == http.StatusForbidden:
+		return "invalid_request_error"
+	case status == http.StatusNotFound:
+		return "invalid_request_error"
+	case status >= 500:
+		return "api_error"
+	default:
+		return "upstream_error"
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, msg, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	resp := errorResp{}
 	resp.Error.Message = msg
-	resp.Error.Type = "api_error"
-	json.NewEncoder(w).Encode(resp)
+	resp.Error.Type = errorTypeFor(status)
+	resp.Error.Code = code
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func writeJSON(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(data)
 }
 
 func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var req provider.ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error(), "invalid_body")
 		return
 	}
 
 	if req.Model == "" {
-		writeError(w, http.StatusBadRequest, "model is required")
+		writeError(w, http.StatusBadRequest, "model is required", "missing_model")
+		return
+	}
+
+	if req.Stream {
+		writeError(w, http.StatusNotImplemented, "streaming is not supported yet", "stream_unsupported")
 		return
 	}
 
 	route, err := h.router.Route(context.Background(), req.Model)
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "no available channel: "+err.Error())
-		return
-	}
-
-	p, ok := h.providers["openai"]
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "provider not found")
+		writeError(w, http.StatusServiceUnavailable, "no available channel: "+err.Error(), "no_channel")
 		return
 	}
 
 	start := time.Now()
-	resp, statusCode, err := p.Chat(&req, route.KeyValue, route.Channel.BaseURL)
+	resp, statusCode, err := h.provider.Chat(&req, route.KeyValue, route.Channel.BaseURL)
 	duration := time.Since(start).Milliseconds()
 
 	if err != nil {
 		h.router.RecordFailure(route.Channel.ID)
-		writeError(w, statusCode, "upstream error: "+err.Error())
+		writeError(w, statusCode, "upstream error: "+err.Error(), "upstream_error")
+		h.emitLog(req.Model, route, nil, duration, statusCode, true)
 		return
 	}
 
 	h.router.RecordSuccess(route.Channel.ID)
+	h.emitLog(req.Model, route, &resp.Usage, duration, statusCode, false)
+	writeJSON(w, resp)
+}
 
-	logEntry := &model.Log{
+func (h *Handler) emitLog(modelName string, route *router.RouteResult, usage *provider.Usage, durationMs int64, statusCode int, failed bool) {
+	real := 0.0
+	if usage != nil {
+		real = calcCost(route.Channel, *usage)
+	}
+	entry := model.Log{
+		TokenID:         0,
 		ChannelID:       route.Channel.ID,
 		KeyID:           route.Key.ID,
-		Model:           req.Model,
-		PromptTokens:    resp.Usage.PromptTokens,
-		CompletionTokens: resp.Usage.CompletionTokens,
-		RealCostUSD:     calcCost(route.Channel, resp.Usage),
-		BilledCostUSD:   calcCost(route.Channel, resp.Usage),
-		DurationMs:      duration,
+		Model:           modelName,
+		PromptTokens:    intField(usage, "prompt"),
+		CompletionTokens: intField(usage, "completion"),
+		RealCostUSD:     real,
+		BilledCostUSD:   real * h.defaultMarkup,
+		DurationMs:      durationMs,
 		StatusCode:      statusCode,
 		RouterPath:      route.RouterLog,
 		CreatedAt:       time.Now(),
 	}
-	_ = logEntry
+	status := "ok"
+	if failed {
+		status = "fail"
+	}
+	log.Printf("log status=%s model=%s channel=%s key=%s prompt=%d completion=%d real_usd=%.6f billed_usd=%.6f duration_ms=%d code=%d path=%s",
+		status, entry.Model, route.Channel.Name, route.Key.KeyMasked,
+		entry.PromptTokens, entry.CompletionTokens,
+		entry.RealCostUSD, entry.BilledCostUSD,
+		entry.DurationMs, entry.StatusCode, entry.RouterPath,
+	)
+}
 
-	writeJSON(w, resp)
+func intField(u *provider.Usage, which string) int {
+	if u == nil {
+		return 0
+	}
+	if which == "prompt" {
+		return u.PromptTokens
+	}
+	return u.CompletionTokens
 }
 
 func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {

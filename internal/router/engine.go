@@ -27,7 +27,7 @@ type RouteResult struct {
 func New(cfg *config.Config, pool *pool.ChannelPool) *RouterEngine {
 	return &RouterEngine{
 		static:  NewStaticRouter(cfg),
-		breaker: NewCircuitBreaker(),
+		breaker: NewCircuitBreaker(cfg),
 		cost:    NewCostRouter(),
 		pool:    pool,
 	}

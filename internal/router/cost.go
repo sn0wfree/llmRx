@@ -14,6 +14,12 @@ func NewCostRouter() *CostRouter {
 	return &CostRouter{strategy: model.StrategyCheapest}
 }
 
+func totalPrice(ch *model.Channel) float64 {
+	return ch.InputPrice + ch.OutputPrice
+}
+
+// Sort orders channels per the configured cost strategy. The returned
+// slice is a copy, so the input is not mutated.
 func (r *CostRouter) Sort(channels []*model.Channel) []*model.Channel {
 	if len(channels) <= 1 {
 		return channels
@@ -23,30 +29,45 @@ func (r *CostRouter) Sort(channels []*model.Channel) []*model.Channel {
 
 	switch r.strategy {
 	case model.StrategyCheapest:
-		sort.Slice(sorted, func(i, j int) bool {
-			return sorted[i].InputPrice+sorted[i].OutputPrice <
-				sorted[j].InputPrice+sorted[j].OutputPrice
+		sort.SliceStable(sorted, func(i, j int) bool {
+			return totalPrice(sorted[i]) < totalPrice(sorted[j])
 		})
 	case model.StrategyFastest:
-		// priority-as-proxy for latency: higher priority first
-		sort.Slice(sorted, func(i, j int) bool {
+		// Priority is treated as a proxy for latency / SLA: higher wins.
+		sort.SliceStable(sorted, func(i, j int) bool {
 			return sorted[i].Priority > sorted[j].Priority
 		})
 	default:
-		// balanced: score = price * 0.5 + priority_inv * 0.5
+		// Balanced: min-max normalize price (lower is better) and
+		// priority (higher is better), then weighted sum.
 		maxPrice := 0.0
+		maxPrio := 0
 		for _, ch := range sorted {
-			p := ch.InputPrice + ch.OutputPrice
-			if p > maxPrice {
+			if p := totalPrice(ch); p > maxPrice {
 				maxPrice = p
 			}
+			if ch.Priority > maxPrio {
+				maxPrio = ch.Priority
+			}
 		}
-		sort.Slice(sorted, func(i, j int) bool {
-			pi := sorted[i].InputPrice + sorted[i].OutputPrice
-			pj := sorted[j].InputPrice + sorted[j].OutputPrice
-			si := (pi/maxPrice)*0.5 + float64(sorted[j].Priority)/float64(sorted[i].Priority+1)*0.5
-			sj := (pj/maxPrice)*0.5 + float64(sorted[i].Priority)/float64(sorted[j].Priority+1)*0.5
-			return si < sj
+		sort.SliceStable(sorted, func(i, j int) bool {
+			pi, pj := totalPrice(sorted[i]), totalPrice(sorted[j])
+			pri, prj := sorted[i].Priority, sorted[j].Priority
+			priceNorm := func(p float64) float64 {
+				if maxPrice == 0 {
+					return 0
+				}
+				return p / maxPrice
+			}
+			prioNorm := func(p int) float64 {
+				if maxPrio == 0 {
+					return 0
+				}
+				return float64(p) / float64(maxPrio)
+			}
+			scoreI := priceNorm(pi)*0.5 + (1-prioNorm(pri))*0.5
+			scoreJ := priceNorm(pj)*0.5 + (1-prioNorm(prj))*0.5
+			return scoreI < scoreJ
 		})
 	}
 

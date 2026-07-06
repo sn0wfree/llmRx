@@ -7,27 +7,30 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/sn0wfree/llmRx/internal/api"
 	"github.com/sn0wfree/llmRx/internal/config"
+	authmw "github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/router"
 )
 
 type Server struct {
-	cfg    *config.Config
-	router *router.RouterEngine
-	pool   *pool.ChannelPool
-	engine *chi.Mux
+	cfg         *config.Config
+	router      *router.RouterEngine
+	pool        *pool.ChannelPool
+	engine      *chi.Mux
+	validTokens map[string]string
 }
 
-func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool) *Server {
+func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, validTokens map[string]string) *Server {
 	s := &Server{
-		cfg:    cfg,
-		router: eng,
-		pool:   cp,
-		engine: chi.NewRouter(),
+		cfg:         cfg,
+		router:      eng,
+		pool:        cp,
+		engine:      chi.NewRouter(),
+		validTokens: validTokens,
 	}
 	s.registerMiddleware()
 	s.registerRoutes()
@@ -35,10 +38,10 @@ func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool) *Se
 }
 
 func (s *Server) registerMiddleware() {
-	s.engine.Use(middleware.Logger)
-	s.engine.Use(middleware.Recoverer)
-	s.engine.Use(middleware.RealIP)
-	s.engine.Use(middleware.Timeout(120 * time.Second))
+	s.engine.Use(chimw.Logger)
+	s.engine.Use(chimw.Recoverer)
+	s.engine.Use(chimw.RealIP)
+	s.engine.Use(chimw.Timeout(120 * time.Second))
 	s.engine.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
@@ -49,21 +52,25 @@ func (s *Server) registerMiddleware() {
 }
 
 func (s *Server) registerRoutes() {
-	handler := api.New(s.router, s.pool)
+	handler := api.New(s.cfg, s.router, s.pool)
 
-	// OpenAI-compatible proxy endpoints
-	s.engine.Post("/v1/chat/completions", handler.ChatCompletions)
+	// OpenAI-compatible proxy endpoints — auth required for completions.
+	s.engine.With(authmw.Middleware(s.validTokens)).
+		Post("/v1/chat/completions", handler.ChatCompletions)
+
+	// Models listing is left unauthenticated so local tooling can
+	// enumerate supported models without provisioning a token.
 	s.engine.Get("/v1/models", handler.ListModels)
 
 	// Health check
 	s.engine.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 }
 
 func (s *Server) Start() error {
 	addr := fmt.Sprintf(":%d", s.cfg.Server.Port)
-	log.Printf("listening on %s", addr)
+	log.Printf("listening on %s (tokens loaded=%d)", addr, len(s.validTokens))
 	return http.ListenAndServe(addr, s.engine)
 }
