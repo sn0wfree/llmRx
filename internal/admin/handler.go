@@ -698,7 +698,11 @@ func (h *Handler) StreamLogs(w http.ResponseWriter, r *http.Request) {
 	if err := w2.Comment("hello llmRx logs"); err != nil {
 		return
 	}
-	ch, unsub := h.logBroker.Subscribe()
+	ch, unsub, err := h.logBroker.Subscribe()
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
 	defer unsub()
 
 	ctx, cancel := context.WithCancel(r.Context())
