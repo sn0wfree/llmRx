@@ -3,6 +3,7 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -77,9 +78,18 @@ func TestChat_MissingModel(t *testing.T) {
 }
 
 func TestChat_StreamNotSupported(t *testing.T) {
+	// Replace every protocol's provider with a plainProvider that
+	// does NOT implement StreamingProvider. The chat handler must
+	// return 501 in that case.
 	app := testhelper.New(t)
 	app.AddChannel("c", "openai", "https://x", []string{"m"}, "sk-key")
 	app.AddToken("sk-t", "t")
+	app.Chat.SetProviders(map[string]provider.Provider{
+		"":          plainProvider{},
+		"openai":    plainProvider{},
+		"anthropic": plainProvider{},
+		"gemini":    plainProvider{},
+	})
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
@@ -90,6 +100,15 @@ func TestChat_StreamNotSupported(t *testing.T) {
 	if rec.Code != http.StatusNotImplemented {
 		t.Fatalf("expected 501, got %d %s", rec.Code, rec.Body.String())
 	}
+}
+
+// plainProvider is a non-streaming Provider used to exercise the
+// stream_unsupported error path.
+type plainProvider struct{}
+
+func (plainProvider) Name() string { return "plain" }
+func (plainProvider) Chat(req *provider.ChatRequest, _, _ string) (*provider.ChatResponse, int, error) {
+	return &provider.ChatResponse{ID: "x", Model: req.Model, Usage: provider.Usage{}}, 200, nil
 }
 
 func TestChat_NoChannelForModel(t *testing.T) {
@@ -258,5 +277,68 @@ func TestChat_Health(t *testing.T) {
 	rec := do(t, app.Mux, http.MethodGet, "/health", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+func TestChat_StreamingEndpoint(t *testing.T) {
+	app := testhelper.New(t)
+	app.AddChannel("c", "openai", "https://x", []string{"m"}, "sk-aaaa")
+	app.AddToken("sk-tok", "t")
+
+	// Inject 3 chunks into the mock provider.
+	app.Provider.StreamChunks = []provider.StreamChunk{
+		{ID: "chunk1", Object: "chat.completion.chunk", Model: "m", Choices: []provider.StreamChoice{{Index: 0, Delta: provider.Message{Role: "assistant", Content: "Hello"}}}},
+		{ID: "chunk2", Object: "chat.completion.chunk", Model: "m", Choices: []provider.StreamChoice{{Index: 0, Delta: provider.Message{Content: " world"}}}},
+		{ID: "chunk3", Object: "chat.completion.chunk", Model: "m", Choices: []provider.StreamChoice{{Index: 0, Delta: provider.Message{}, FinishReason: "stop"}}, Usage: &provider.Usage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7}},
+	}
+
+	body := `{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer sk-tok")
+	rec := httptest.NewRecorder()
+	app.Mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("content-type: %q", got)
+	}
+	// Each chunk produces "data: {json}\n\n" + a final "data: [DONE]\n\n".
+	if !strings.Contains(rec.Body.String(), `"Hello"`) {
+		t.Fatalf("missing first chunk: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `" world"`) {
+		t.Fatalf("missing second chunk")
+	}
+	if !strings.Contains(rec.Body.String(), `"stop"`) {
+		t.Fatalf("missing finish reason")
+	}
+	if !strings.HasSuffix(rec.Body.String(), "data: [DONE]\n\n") {
+		t.Fatalf("missing [DONE] terminator: %q", rec.Body.String())
+	}
+}
+
+func TestChat_StreamingUpstreamError(t *testing.T) {
+	app := testhelper.New(t)
+	app.AddChannel("c", "openai", "https://x", []string{"m"}, "sk-aaaa")
+	app.AddToken("sk-tok", "t")
+	app.Provider.StreamErr = errors.New("upstream died")
+
+	body := `{"model":"m","stream":true,"messages":[]}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer sk-tok")
+	rec := httptest.NewRecorder()
+	app.Mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "event: error") {
+		t.Fatalf("expected error frame, got: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "upstream died") {
+		t.Fatalf("error message not in body")
 	}
 }

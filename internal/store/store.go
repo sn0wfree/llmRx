@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+
 	"github.com/sn0wfree/llmRx/internal/model"
 )
 
@@ -42,6 +44,7 @@ type Store interface {
 	CreateLog(l *model.Log) error
 	GetLogs(limit, offset int) ([]model.Log, error)
 	CountLogs() (int64, error)
+	DeleteLogsBefore(unixSec int64) (int64, error)
 	LogStats() (LogStats, error)
 	QueryLogs(f LogFilter) ([]model.Log, int64, error)
 
@@ -50,6 +53,22 @@ type Store interface {
 	TopByModel(f LogFilter, limit int) ([]NamedMetric, error)
 	TopByChannel(f LogFilter, limit int) ([]NamedMetric, error)
 	TopByToken(f LogFilter, limit int) ([]NamedMetric, error)
+
+	// Alerts
+	GetAlerts() ([]model.Alert, error)
+	GetAlert(id int64) (*model.Alert, error)
+	CreateAlert(a *model.Alert) error
+	UpdateAlert(a *model.Alert) error
+	DeleteAlert(id int64) error
+	RecordAlertFired(id int64, atUnix int64) error
+	GetAlertEvents(limit int) ([]model.AlertEvent, error)
+	CreateAlertEvent(e *model.AlertEvent) error
+	AckAlertEvent(id int64) error
+
+	// Raw access for subsystems that need bespoke SQL (alerts,
+	// retention jobs). The caller is responsible for the query.
+	RawQueryRow(query string, args ...any) *sql.Row
+	RawQuery(query string, args ...any) (*sql.Rows, error)
 }
 
 type LogStats struct {

@@ -15,10 +15,15 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Port          int    `yaml:"port"`
-	RateLimit     int    `yaml:"rate_limit"`
-	LogLevel      string `yaml:"log_level"`
-	AdminPassword string `yaml:"admin_password"`
+	Port             int     `yaml:"port"`
+	RateLimit        int     `yaml:"rate_limit"`
+	LogLevel         string  `yaml:"log_level"`
+	AdminPassword    string  `yaml:"admin_password"`
+	LogRetentionDays int     `yaml:"log_retention_days"`
+	MarkupRatio      float64 `yaml:"markup_ratio"`
+	BreakerMax       int     `yaml:"breaker_max_failures"`
+	BreakerResetMs   int     `yaml:"breaker_reset_timeout_ms"`
+	AlertCooldownSec int     `yaml:"alert_cooldown_sec"`
 }
 
 type StrategyConfig struct {
@@ -28,6 +33,7 @@ type StrategyConfig struct {
 type ChannelConfig struct {
 	Name           string   `yaml:"name"`
 	Provider       string   `yaml:"provider"`
+	Protocol       string   `yaml:"protocol"` // openai | anthropic | gemini; default openai
 	BaseURL        string   `yaml:"base_url"`
 	Keys           []string `yaml:"keys"`
 	Models         []string `yaml:"models"`

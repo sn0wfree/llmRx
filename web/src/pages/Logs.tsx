@@ -1,11 +1,13 @@
-import { useEffect, useState } from 'react';
-import { api, LogEntry, Channel, Token } from '../api';
+import { useEffect, useRef, useState } from 'react';
+import { api, getSessionToken, LogEntry, Channel, Token } from '../api';
 
 export default function Logs() {
   const [items, setItems] = useState<LogEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [live, setLive] = useState(false);
+  const [liveStatus, setLiveStatus] = useState<'off' | 'connecting' | 'live' | 'error'>('off');
 
   const [channels, setChannels] = useState<Channel[]>([]);
   const [tokens, setTokens] = useState<Token[]>([]);
@@ -49,12 +51,52 @@ export default function Logs() {
   }, []);
 
   useEffect(() => {
+    if (live) return; // SSE drives updates
     reload();
     if (!autoRefresh) return;
     const id = setInterval(reload, 5000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoRefresh, f]);
+  }, [autoRefresh, f, live]);
+
+  // SSE live tailing.
+  const esRef = useRef<EventSource | null>(null);
+  useEffect(() => {
+    if (!live) {
+      esRef.current?.close();
+      esRef.current = null;
+      setLiveStatus('off');
+      return;
+    }
+    const tok = getSessionToken();
+    if (!tok) {
+      setError('no session');
+      setLive(false);
+      return;
+    }
+    setLiveStatus('connecting');
+    const es = new EventSource(`/api/v1/logs/stream?session_token=${encodeURIComponent(tok)}`);
+    esRef.current = es;
+    es.addEventListener('open', () => setLiveStatus('live'));
+    es.addEventListener('log', (ev) => {
+      try {
+        const entry = JSON.parse((ev as MessageEvent).data) as LogEntry;
+        setItems((prev) => [entry, ...prev].slice(0, 500));
+        setTotal((t) => t + 1);
+      } catch {
+        // ignore parse error
+      }
+    });
+    es.addEventListener('error', () => {
+      setLiveStatus('error');
+      es.close();
+      esRef.current = null;
+    });
+    return () => {
+      es.close();
+      esRef.current = null;
+    };
+  }, [live]);
 
   const reset = () =>
     setF({ token_id: '', channel_id: '', model: '', status_code: '', from: '', to: '' });
@@ -66,17 +108,39 @@ export default function Logs() {
           <h1 className="text-2xl font-semibold tracking-tight">Request Logs</h1>
           <p className="text-sm text-slate-500 mt-1">
             {total.toLocaleString()} matching request{total === 1 ? '' : 's'}.
+            {live && liveStatus === 'live' && (
+              <span className="ml-2 inline-flex items-center gap-1 text-green-700">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                live
+              </span>
+            )}
+            {live && liveStatus === 'connecting' && (
+              <span className="ml-2 text-slate-400">connecting…</span>
+            )}
+            {live && liveStatus === 'error' && (
+              <span className="ml-2 text-red-600">stream error (retrying…)</span>
+            )}
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-4">
           <label className="text-sm flex items-center gap-2">
             <input
               type="checkbox"
-              checked={autoRefresh}
-              onChange={(e) => setAutoRefresh(e.target.checked)}
+              checked={live}
+              onChange={(e) => setLive(e.target.checked)}
             />
-            Auto-refresh
+            Live
           </label>
+          {!live && (
+            <label className="text-sm flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={autoRefresh}
+                onChange={(e) => setAutoRefresh(e.target.checked)}
+              />
+              Auto-refresh
+            </label>
+          )}
         </div>
       </div>
 

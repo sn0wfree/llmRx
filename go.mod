@@ -8,4 +8,8 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require github.com/mattn/go-sqlite3 v1.14.24 // indirect
+require (
+	github.com/mattn/go-sqlite3 v1.14.24 // indirect
+	golang.org/x/crypto v0.5.0 // indirect
+	golang.org/x/sys v0.4.0 // indirect
+)

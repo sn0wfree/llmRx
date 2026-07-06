@@ -79,12 +79,19 @@ func Token(lookup TokenLookup) func(http.Handler) http.Handler {
 
 // AdminOnly checks a session_token via the provided lookup. The
 // resolved user is placed in the request context under UserKey.
+//
+// Lookup order: X-Session-Token header, llmrx_session cookie, then
+// the ?session_token= query parameter (needed for EventSource which
+// cannot set custom headers).
 func AdminOnly(lookup func(session string) (any, bool)) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tok := r.Header.Get("X-Session-Token")
 			if tok == "" {
 				tok = readCookie(r, "llmrx_session")
+			}
+			if tok == "" {
+				tok = r.URL.Query().Get("session_token")
 			}
 			if tok == "" {
 				writeAuthError(w, http.StatusUnauthorized, "missing admin session", "missing_session")

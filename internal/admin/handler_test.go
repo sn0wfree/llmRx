@@ -701,3 +701,271 @@ func TestRouter_CostStrategyAffectsRouting(t *testing.T) {
 		t.Fatalf("engine strategy: %q", app.Engine.CostStrategy())
 	}
 }
+
+func TestAdmin_LoginUpgradesLegacyHash(t *testing.T) {
+	app := testhelper.New(t)
+	// Overwrite the seeded admin with a legacy plaintext hash.
+	st := app.Store
+	if err := st.UpdateUser(&model.User{
+		ID: 1, Username: "admin", PasswordHash: "00112233445566778899aabbccddeeff:admin",
+		Role: model.RoleRoot, Status: 1,
+	}); err != nil {
+		t.Fatalf("seed legacy: %v", err)
+	}
+	rec := do(t, app.Admin.Routes(), http.MethodPost, "/login", "", `{"username":"admin","password":"admin"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login with legacy: %d %s", rec.Code, rec.Body.String())
+	}
+	u, err := st.GetUserByUsername("admin")
+	if err != nil {
+		t.Fatalf("re-read user: %v", err)
+	}
+	if u.PasswordHash == "00112233445566778899aabbccddeeff:admin" {
+		t.Fatal("legacy hash was not upgraded")
+	}
+	if !strings.HasPrefix(u.PasswordHash, "$argon2id$") {
+		t.Fatalf("expected argon2id hash, got %q", u.PasswordHash)
+	}
+}
+
+func TestAdmin_ChangePassword(t *testing.T) {
+	app := testhelper.New(t)
+	sess := login(t, app)
+
+	// Self change with wrong old password -> 401.
+	rec := do(t, app.Admin.Routes(), http.MethodPost, "/users/1/password", sess,
+		`{"old_password":"WRONG","new_password":"newpass1"}`)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong old: expected 401, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Self change with correct old password -> 200; session is invalidated.
+	rec = do(t, app.Admin.Routes(), http.MethodPost, "/users/1/password", sess,
+		`{"old_password":"admin","new_password":"newpass1"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("change: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Old session should no longer work.
+	rec = do(t, app.Admin.Routes(), http.MethodGet, "/dashboard", sess, "")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("stale session: expected 403, got %d", rec.Code)
+	}
+
+	// New password should work.
+	rec = do(t, app.Admin.Routes(), http.MethodPost, "/login", "", `{"username":"admin","password":"newpass1"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login with new pw: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdmin_ChangePasswordForbidden(t *testing.T) {
+	app := testhelper.New(t)
+	adminSess := login(t, app)
+
+	// Create a normal (non-admin) user, log in as them.
+	rec := do(t, app.Admin.Routes(), http.MethodPost, "/users", adminSess,
+		`{"username":"bob","password":"bobpass","role":0}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create bob: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Log in as bob.
+	rec = do(t, app.Admin.Routes(), http.MethodPost, "/login", "", `{"username":"bob","password":"bobpass"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login bob: %d %s", rec.Code, rec.Body.String())
+	}
+	var lr struct {
+		SessionToken string `json:"session_token"`
+	}
+	decodeJSON(t, rec, &lr)
+	bobSess := lr.SessionToken
+
+	// Bob trying to change admin's password -> 403.
+	rec = do(t, app.Admin.Routes(), http.MethodPost, "/users/1/password", bobSess,
+		`{"new_password":"hacked123"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("bob->admin: expected 403, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdmin_LogStreamRequiresSession(t *testing.T) {
+	app := testhelper.New(t)
+	app.AddChannel("c", "openai", "https://x", []string{"m"}, "sk-aaaa")
+	app.AddToken("sk-tok", "t")
+	rec := do(t, app.Admin.Routes(), http.MethodGet, "/logs/stream", "", "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no session: %d", rec.Code)
+	}
+}
+
+func TestAdmin_LogStreamPublishesEvents(t *testing.T) {
+	app := testhelper.New(t)
+	ch := app.AddChannel("c", "openai", "https://x", []string{"m"}, "sk-aaaa")
+	app.AddToken("sk-tok", "t")
+	sess := login(t, app)
+
+	req := httptest.NewRequest(http.MethodGet, "/logs/stream?session_token="+sess, nil)
+	rec := httptest.NewRecorder()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Publish after a short delay so the subscriber is in place,
+	// then cancel so ServeHTTP returns.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		app.LogBroker.Publish(&model.Log{ChannelID: ch.ID, Model: "m", StatusCode: 200})
+		time.Sleep(150 * time.Millisecond)
+		cancel()
+	}()
+	req = req.WithContext(ctx)
+	app.Admin.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("content-type: %q", ct)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: log") {
+		t.Fatalf("expected log event, got: %q", body)
+	}
+	if !strings.Contains(body, `"model":"m"`) {
+		t.Fatalf("expected model=m payload, got: %q", body)
+	}
+}
+func TestAdmin_AlertsCRUD(t *testing.T) {
+	app := testhelper.New(t)
+	sess := login(t, app)
+
+	// Create
+	rec := do(t, app.Admin.Routes(), http.MethodPost, "/alerts", sess,
+		`{"name":"high-errors","type":"error_rate","threshold":0.5,"window_sec":300,"cooldown_sec":60,"webhook_url":"https://example.com/hook","enabled":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		ID int64 `json:"id"`
+	}
+	decodeJSON(t, rec, &got)
+	if got.ID == 0 {
+		t.Fatal("no id")
+	}
+
+	// List
+	rec = do(t, app.Admin.Routes(), http.MethodGet, "/alerts", sess, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: %d", rec.Code)
+	}
+	var lst struct {
+		Data []struct {
+			Name string `json:"name"`
+			Type string `json:"type"`
+		} `json:"data"`
+	}
+	decodeJSON(t, rec, &lst)
+	if len(lst.Data) != 1 || lst.Data[0].Name != "high-errors" {
+		t.Fatalf("list: %+v", lst.Data)
+	}
+
+	// Update
+	rec = do(t, app.Admin.Routes(), http.MethodPut, "/alerts/"+itoa(got.ID), sess,
+		`{"name":"high-errors-v2","threshold":0.8,"enabled":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update: %d %s", rec.Code, rec.Body.String())
+	}
+	var upd struct {
+		Name    string  `json:"name"`
+		Enabled bool    `json:"enabled"`
+		Threshold float64 `json:"threshold"`
+	}
+	decodeJSON(t, rec, &upd)
+	if upd.Name != "high-errors-v2" || upd.Enabled || upd.Threshold != 0.8 {
+		t.Fatalf("update result: %+v", upd)
+	}
+
+	// Bad type -> 400
+	rec = do(t, app.Admin.Routes(), http.MethodPost, "/alerts", sess,
+		`{"name":"bad","type":"nope","threshold":0.1}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad type: %d", rec.Code)
+	}
+
+	// Delete
+	rec = do(t, app.Admin.Routes(), http.MethodDelete, "/alerts/"+itoa(got.ID), sess, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete: %d", rec.Code)
+	}
+}
+
+func TestAdmin_AlertEventsAck(t *testing.T) {
+	app := testhelper.New(t)
+	sess := login(t, app)
+
+	// Manually insert an alert and an event for ack flow.
+	if err := app.Store.CreateAlert(&model.Alert{
+		Name: "manual", Type: model.AlertErrorRate, Threshold: 0.1, WindowSec: 60, CooldownSec: 0, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Store.CreateAlertEvent(&model.AlertEvent{
+		AlertID: 1, AlertName: "manual", AlertType: model.AlertErrorRate, Payload: "{}",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// List events
+	rec := do(t, app.Admin.Routes(), http.MethodGet, "/alerts/events", sess, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: %d", rec.Code)
+	}
+	var lst struct {
+		Data []struct {
+			ID           int64 `json:"id"`
+			Acknowledged bool  `json:"acknowledged"`
+		} `json:"data"`
+	}
+	decodeJSON(t, rec, &lst)
+	if len(lst.Data) != 1 || lst.Data[0].Acknowledged {
+		t.Fatalf("expected 1 unack event, got: %+v", lst.Data)
+	}
+
+	// Ack
+	rec = do(t, app.Admin.Routes(), http.MethodPost, "/alerts/events/"+itoa(lst.Data[0].ID)+"/ack", sess, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ack: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdmin_LoginUpgradesBcryptHash(t *testing.T) {
+	app := testhelper.New(t)
+	// Overwrite the seeded admin with a bcrypt hash (P6 format).
+	bc, _ := bcryptHashForTest("admin")
+	st := app.Store
+	if err := st.UpdateUser(&model.User{
+		ID: 1, Username: "admin", PasswordHash: bc,
+		Role: model.RoleRoot, Status: 1,
+	}); err != nil {
+		t.Fatalf("seed bcrypt: %v", err)
+	}
+	rec := do(t, app.Admin.Routes(), http.MethodPost, "/login", "", `{"username":"admin","password":"admin"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login with bcrypt: %d %s", rec.Code, rec.Body.String())
+	}
+	u, err := st.GetUserByUsername("admin")
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	if strings.HasPrefix(u.PasswordHash, "$2") {
+		t.Fatal("bcrypt hash was not upgraded to argon2id")
+	}
+	if !strings.HasPrefix(u.PasswordHash, "$argon2id$") {
+		t.Fatalf("expected argon2id hash, got %q", u.PasswordHash)
+	}
+}
+
+func bcryptHashForTest(pw string) (string, error) {
+	// Inlined; admin package shouldn't depend on auth internals beyond the public API.
+	// Use a tiny bcrypt wrapper via the x/crypto package the auth pkg already imports.
+	return authBcrypt(pw)
+}

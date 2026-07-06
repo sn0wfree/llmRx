@@ -43,14 +43,26 @@ jobs:
         run: |
           total=$(go tool cover -func=cov.out | awk '/^total:/ {gsub("%","",$3); print $3}')
           echo "total coverage: ${total}%"
-          awk -v t="$total" 'BEGIN{exit !(t+0 >= 50)}' \
-            || (echo "coverage ${total}% < 50%"; exit 1)
+          awk -v t="$total" 'BEGIN{exit !(t+0 >= 60)}' \
+            || (echo "coverage ${total}% < 60%"; exit 1)
 
       - name: Build
         env:
           GOPROXY: https://goproxy.cn,https://goproxy.io,direct
           GOSUMDB: off
         run: make build-go-only
+
+      - name: Build intent cdylib (optional)
+        env:
+          GOPROXY: https://goproxy.cn,https://goproxy.io,direct
+          GOSUMDB: off
+        run: |
+          if command -v cargo >/dev/null 2>&1; then
+            echo "Rust available, building L4 intent cdylib"
+            make intent-rust
+          else
+            echo "Rust not available, skipping L4 cdylib build (tests use the Nop classifier)"
+          fi
 
       - name: Upload binary
         uses: actions/upload-artifact@v4

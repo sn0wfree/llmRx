@@ -1,20 +1,24 @@
 package admin
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sn0wfree/llmRx/internal/auth"
+	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/router"
+	"github.com/sn0wfree/llmRx/internal/runtime"
+	"github.com/sn0wfree/llmRx/internal/sse"
 	"github.com/sn0wfree/llmRx/internal/store"
 	"github.com/sn0wfree/llmRx/internal/tokencache"
 )
@@ -24,11 +28,16 @@ type Handler struct {
 	pool       *pool.ChannelPool
 	router     *router.RouterEngine
 	tokens     *tokencache.Cache
+	logBroker  *broker.Broker[*model.Log]
+	rt         *runtime.Defaults
 	sessionTTL time.Duration
 }
 
-func New(st store.Store, cp *pool.ChannelPool, eng *router.RouterEngine, tc *tokencache.Cache) *Handler {
-	return &Handler{store: st, pool: cp, router: eng, tokens: tc, sessionTTL: 24 * time.Hour}
+func New(st store.Store, cp *pool.ChannelPool, eng *router.RouterEngine, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Handler {
+	if rt == nil {
+		rt = runtime.New()
+	}
+	return &Handler{store: st, pool: cp, router: eng, tokens: tc, logBroker: lb, rt: rt, sessionTTL: 24 * time.Hour}
 }
 
 // SetSessionTTL overrides the default 24h session lifetime.
@@ -62,7 +71,15 @@ func (h *Handler) Routes() http.Handler {
 		r.Get("/users", h.ListUsers)
 		r.Post("/users", h.CreateUser)
 		r.Delete("/users/{id}", h.DeleteUser)
+		r.Post("/users/{id}/password", h.ChangePassword)
 		r.Get("/logs", h.ListLogs)
+		r.Get("/logs/stream", h.StreamLogs)
+		r.Get("/alerts", h.ListAlerts)
+		r.Post("/alerts", h.CreateAlert)
+		r.Put("/alerts/{id}", h.UpdateAlert)
+		r.Delete("/alerts/{id}", h.DeleteAlert)
+		r.Get("/alerts/events", h.ListAlertEvents)
+		r.Post("/alerts/events/{id}/ack", h.AckAlertEvent)
 		r.Get("/analytics/timeseries", h.AnalyticsTimeSeries)
 		r.Get("/analytics/by-model", h.AnalyticsByModel)
 		r.Get("/analytics/by-channel", h.AnalyticsByChannel)
@@ -120,7 +137,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
-	if !verifyPassword(u.PasswordHash, body.Password) {
+	if !auth.Verify(u.PasswordHash, body.Password).OK {
 		writeErr(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
@@ -128,6 +145,13 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	u.SessionToken = tok
 	exp := time.Now().Add(h.sessionTTL).UTC()
 	u.SessionExp = &exp
+	// Transparent upgrade of legacy pre-P6 plaintext or P6 bcrypt
+	// hash to P7+ argon2id on successful login.
+	if auth.IsLegacy(u.PasswordHash) || auth.IsBcrypt(u.PasswordHash) {
+		if nh, err := auth.Hash(body.Password); err == nil {
+			u.PasswordHash = nh
+		}
+	}
 	if err := h.store.UpdateUser(u); err != nil {
 		writeErr(w, http.StatusInternalServerError, "persist session")
 		return
@@ -476,9 +500,14 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "username and password required")
 		return
 	}
+	hashed, err := auth.Hash(body.Password)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	u := &model.User{
 		Username:     body.Username,
-		PasswordHash: hashPassword(body.Password),
+		PasswordHash: hashed,
 		Role:         model.UserRole(body.Role),
 		Status:       1,
 	}
@@ -506,6 +535,63 @@ func (h *Handler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.store.UpdateUser(&model.User{ID: id, Status: 99, PasswordHash: "", SessionToken: ""}); err != nil {
 		// fall back to a soft-delete via status; full delete needs extra CRUD
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// ChangePassword updates the password for a user. Admins can change
+// anyone's password (no old-password check). Non-admins can only
+// change their own and must supply the current password.
+func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	caller, _ := r.Context().Value(middleware.UserKey).(*model.User)
+	if caller == nil {
+		writeErr(w, http.StatusUnauthorized, "no session")
+		return
+	}
+	id, err := pathInt(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	var body struct {
+		OldPassword string `json:"old_password"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if len(body.NewPassword) < 6 {
+		writeErr(w, http.StatusBadRequest, "new_password must be at least 6 characters")
+		return
+	}
+	target, err := h.store.GetUser(id)
+	if err != nil || target == nil {
+		writeErr(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if caller.ID != id && caller.Role < model.RoleAdmin {
+		writeErr(w, http.StatusForbidden, "cannot change other user's password")
+		return
+	}
+	if caller.ID == id {
+		if !auth.Verify(target.PasswordHash, body.OldPassword).OK {
+			writeErr(w, http.StatusUnauthorized, "old_password incorrect")
+			return
+		}
+	}
+	hashed, err := auth.Hash(body.NewPassword)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	target.PasswordHash = hashed
+	// Invalidate all sessions for the target to force re-login.
+	target.SessionToken = ""
+	target.SessionExp = nil
+	if err := h.store.UpdateUser(target); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -594,6 +680,188 @@ func logFilterFromQuery(r *http.Request) store.LogFilter {
 	return f
 }
 
+// StreamLogs serves a Server-Sent Events stream of new log entries.
+// The first event is a "hello" comment so clients can confirm the
+// connection is live; subsequent events are "log" frames with the
+// JSON-encoded *model.Log payload. The connection stays open until
+// the client disconnects.
+func (h *Handler) StreamLogs(w http.ResponseWriter, r *http.Request) {
+	if h.logBroker == nil {
+		writeErr(w, http.StatusServiceUnavailable, "log streaming not configured")
+		return
+	}
+	w2, err := sse.New(w)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := w2.Comment("hello llmRx logs"); err != nil {
+		return
+	}
+	ch, unsub := h.logBroker.Subscribe()
+	defer unsub()
+
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	go w2.Heartbeat(ctx, 15*time.Second)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case entry, ok := <-ch:
+			if !ok {
+				return
+			}
+			payload, err := json.Marshal(entry)
+			if err != nil {
+				continue
+			}
+			if err := w2.Event("log", string(payload)); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// ---------- alerts ----------
+
+func (h *Handler) ListAlerts(w http.ResponseWriter, r *http.Request) {
+	as, err := h.store.GetAlerts()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": nonNil(as)})
+}
+
+func (h *Handler) CreateAlert(w http.ResponseWriter, r *http.Request) {
+	var a model.Alert
+	if err := json.NewDecoder(r.Body).Decode(&a); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if a.Name == "" || a.Type == "" {
+		writeErr(w, http.StatusBadRequest, "name and type required")
+		return
+	}
+	if !validAlertType(a.Type) {
+		writeErr(w, http.StatusBadRequest, "type must be error_rate|p95_latency|cost_spike|key_exhausted")
+		return
+	}
+	if a.WindowSec <= 0 {
+		a.WindowSec = 300
+	}
+	if a.CooldownSec <= 0 {
+		a.CooldownSec = 300
+	}
+	if err := h.store.CreateAlert(&a); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, a)
+}
+
+func (h *Handler) UpdateAlert(w http.ResponseWriter, r *http.Request) {
+	id, err := pathInt(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	cur, err := h.store.GetAlert(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "alert not found")
+		return
+	}
+	var patch struct {
+		Name        *string         `json:"name,omitempty"`
+		Type        *model.AlertType `json:"type,omitempty"`
+		Threshold   *float64        `json:"threshold,omitempty"`
+		WindowSec   *int64          `json:"window_sec,omitempty"`
+		CooldownSec *int64          `json:"cooldown_sec,omitempty"`
+		WebhookURL  *string         `json:"webhook_url,omitempty"`
+		Enabled     *bool           `json:"enabled,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if patch.Name != nil {
+		cur.Name = *patch.Name
+	}
+	if patch.Type != nil {
+		if !validAlertType(*patch.Type) {
+			writeErr(w, http.StatusBadRequest, "type must be error_rate|p95_latency|cost_spike|key_exhausted")
+			return
+		}
+		cur.Type = *patch.Type
+	}
+	if patch.Threshold != nil {
+		cur.Threshold = *patch.Threshold
+	}
+	if patch.WindowSec != nil {
+		cur.WindowSec = *patch.WindowSec
+	}
+	if patch.CooldownSec != nil {
+		cur.CooldownSec = *patch.CooldownSec
+	}
+	if patch.WebhookURL != nil {
+		cur.WebhookURL = *patch.WebhookURL
+	}
+	if patch.Enabled != nil {
+		cur.Enabled = *patch.Enabled
+	}
+	if err := h.store.UpdateAlert(cur); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, cur)
+}
+
+func (h *Handler) DeleteAlert(w http.ResponseWriter, r *http.Request) {
+	id, err := pathInt(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	if err := h.store.DeleteAlert(id); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *Handler) ListAlertEvents(w http.ResponseWriter, r *http.Request) {
+	limit := atoiOr(r.URL.Query().Get("limit"), 100)
+	es, err := h.store.GetAlertEvents(limit)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": nonNil(es)})
+}
+
+func (h *Handler) AckAlertEvent(w http.ResponseWriter, r *http.Request) {
+	id, err := pathInt(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	if err := h.store.AckAlertEvent(id); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func validAlertType(t model.AlertType) bool {
+	switch t {
+	case model.AlertErrorRate, model.AlertP95Latency, model.AlertCostSpike, model.AlertKeyExhausted:
+		return true
+	}
+	return false
+}
+
 func (h *Handler) AnalyticsTimeSeries(w http.ResponseWriter, r *http.Request) {
 	bucket := int64(atoiOr(r.URL.Query().Get("bucket"), 3600))
 	points, err := h.store.TimeSeries(logFilterFromQuery(r), bucket)
@@ -633,31 +901,78 @@ func (h *Handler) writeNamed(w http.ResponseWriter, r *http.Request, fn func(sto
 
 func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"cost_strategy": string(h.router.CostStrategy()),
+		"cost_strategy":            string(h.router.CostStrategy()),
+		"breaker_max_failures":     h.rt.BreakerMaxFailures,
+		"breaker_reset_timeout_ms": h.rt.BreakerResetTimeoutMs,
+		"alert_cooldown_sec":       h.rt.AlertCooldownSec,
+		"log_retention_days":       h.rt.LogRetentionDays,
+		"markup_ratio":             h.rt.MarkupRatio(),
 	})
 }
 
 func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		CostStrategy string `json:"cost_strategy"`
+		CostStrategy         *string  `json:"cost_strategy,omitempty"`
+		BreakerMaxFailures   *int64   `json:"breaker_max_failures,omitempty"`
+		BreakerResetTimeoutMs *int64  `json:"breaker_reset_timeout_ms,omitempty"`
+		AlertCooldownSec     *int64   `json:"alert_cooldown_sec,omitempty"`
+		LogRetentionDays     *int64   `json:"log_retention_days,omitempty"`
+		MarkupRatio          *float64 `json:"markup_ratio,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	switch body.CostStrategy {
-	case "cheapest", "fastest", "balanced":
-		// ok
-	case "":
-		body.CostStrategy = string(model.StrategyCheapest)
-	default:
-		writeErr(w, http.StatusBadRequest, "cost_strategy must be cheapest|fastest|balanced")
-		return
+	if body.CostStrategy != nil {
+		switch *body.CostStrategy {
+		case "cheapest", "fastest", "balanced":
+			h.router.SetStrategy(model.CostStrategy(*body.CostStrategy))
+			h.rt.SetCostStrategy(*body.CostStrategy)
+		case "":
+			h.router.SetStrategy(model.StrategyCheapest)
+			h.rt.SetCostStrategy("cheapest")
+		default:
+			writeErr(w, http.StatusBadRequest, "cost_strategy must be cheapest|fastest|balanced")
+			return
+		}
 	}
-	h.router.SetStrategy(model.CostStrategy(body.CostStrategy))
-	writeJSON(w, http.StatusOK, map[string]any{
-		"cost_strategy": body.CostStrategy,
-	})
+	if body.BreakerMaxFailures != nil {
+		if *body.BreakerMaxFailures < 1 || *body.BreakerMaxFailures > 1000 {
+			writeErr(w, http.StatusBadRequest, "breaker_max_failures must be 1..1000")
+			return
+		}
+		h.rt.BreakerMaxFailures = *body.BreakerMaxFailures
+	}
+	if body.BreakerResetTimeoutMs != nil {
+		if *body.BreakerResetTimeoutMs < 100 || *body.BreakerResetTimeoutMs > 24*60*60*1000 {
+			writeErr(w, http.StatusBadRequest, "breaker_reset_timeout_ms must be 100..86400000")
+			return
+		}
+		h.rt.BreakerResetTimeoutMs = *body.BreakerResetTimeoutMs
+	}
+	if body.AlertCooldownSec != nil {
+		if *body.AlertCooldownSec < 0 || *body.AlertCooldownSec > 24*60*60 {
+			writeErr(w, http.StatusBadRequest, "alert_cooldown_sec must be 0..86400")
+			return
+		}
+		h.rt.AlertCooldownSec = *body.AlertCooldownSec
+	}
+	if body.LogRetentionDays != nil {
+		if *body.LogRetentionDays < 0 || *body.LogRetentionDays > 3650 {
+			writeErr(w, http.StatusBadRequest, "log_retention_days must be 0..3650")
+			return
+		}
+		h.rt.LogRetentionDays = *body.LogRetentionDays
+	}
+	if body.MarkupRatio != nil {
+		if *body.MarkupRatio < 0.01 || *body.MarkupRatio > 1000 {
+			writeErr(w, http.StatusBadRequest, "markup_ratio must be 0.01..1000")
+			return
+		}
+		h.rt.SetMarkupRatio(*body.MarkupRatio)
+	}
+	// Re-emit the effective values.
+	h.GetConfig(w, r)
 }
 
 // ---------- utils ----------
@@ -667,20 +982,6 @@ func maskKey(k string) string {
 		return k[:4] + "***" + k[len(k)-4:]
 	}
 	return k
-}
-
-func hashPassword(pw string) string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b) + ":" + pw
-}
-
-func verifyPassword(hash, pw string) bool {
-	idx := strings.IndexByte(hash, ':')
-	if idx < 0 {
-		return hash == pw
-	}
-	return hash[idx+1:] == pw
 }
 
 func newSessionToken() string {

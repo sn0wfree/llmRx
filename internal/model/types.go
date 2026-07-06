@@ -53,8 +53,10 @@ type Channel struct {
 	ID             int64              `json:"id" gorm:"primaryKey"`
 	Name           string             `json:"name" gorm:"uniqueIndex;size:128"`
 	Provider       string             `json:"provider" gorm:"size:64"`
+	Protocol       string             `json:"protocol" gorm:"size:32"`
 	BaseURL        string             `json:"base_url" gorm:"size:512"`
 	Models         []string           `json:"models" gorm:"serializer:json"`
+	Intents        []string           `json:"intents" gorm:"serializer:json"`
 	Priority       int                `json:"priority"`
 	InputPrice     float64            `json:"input_price_per_1m"`
 	OutputPrice    float64            `json:"output_price_per_1m"`
