@@ -57,7 +57,7 @@ func TestOpenAIProvider_StreamChat(t *testing.T) {
 			if ev.Err != nil {
 				t.Fatalf("unexpected err: %v", ev.Err)
 			}
-			got = append(got, ev.Chunk.Choices[0].Delta.Content)
+			got = append(got, ev.Chunk.Choices[0].Delta.ContentString())
 		case <-deadline:
 			t.Fatal("timeout")
 		}

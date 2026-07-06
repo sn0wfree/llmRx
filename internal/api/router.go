@@ -446,7 +446,7 @@ func (h *Handler) streamMaxBodyBytes() int {
 func lastUserText(msgs []provider.Message) string {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == "user" {
-			return msgs[i].Content
+			return msgs[i].ContentString()
 		}
 	}
 	return ""
