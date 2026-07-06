@@ -50,7 +50,7 @@ jobs:
         env:
           GOPROXY: https://goproxy.cn,https://goproxy.io,direct
           GOSUMDB: off
-        run: go build -o llmRx ./cmd/gateway
+        run: make build-go-only
 
       - name: Upload binary
         uses: actions/upload-artifact@v4

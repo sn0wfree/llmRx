@@ -143,6 +143,10 @@ export const api = {
 
   listChannelsForFilter: () => request<{ data: Channel[] }>('GET', '/channels'),
   listTokensForFilter: () => request<{ data: Token[] }>('GET', '/tokens'),
+
+  getConfig: () => request<{ cost_strategy: string }>('GET', '/config'),
+  updateConfig: (body: { cost_strategy: string }) =>
+    request<{ cost_strategy: string }>('PUT', '/config', body),
 };
 
 export interface Channel {

@@ -2,16 +2,37 @@ package router
 
 import (
 	"sort"
+	"sync"
 
 	"github.com/sn0wfree/llmRx/internal/model"
 )
 
 type CostRouter struct {
+	mu       sync.RWMutex
 	strategy model.CostStrategy
 }
 
 func NewCostRouter() *CostRouter {
 	return &CostRouter{strategy: model.StrategyCheapest}
+}
+
+func (r *CostRouter) Strategy() model.CostStrategy {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.strategy
+}
+
+// SetStrategy updates the active strategy at runtime. The empty
+// string or an unknown value falls back to "cheapest".
+func (r *CostRouter) SetStrategy(s model.CostStrategy) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch s {
+	case model.StrategyCheapest, model.StrategyFastest, model.StrategyBalanced:
+		r.strategy = s
+	default:
+		r.strategy = model.StrategyCheapest
+	}
 }
 
 func totalPrice(ch *model.Channel) float64 {
@@ -27,7 +48,9 @@ func (r *CostRouter) Sort(channels []*model.Channel) []*model.Channel {
 	sorted := make([]*model.Channel, len(channels))
 	copy(sorted, channels)
 
-	switch r.strategy {
+	strategy := r.Strategy()
+
+	switch strategy {
 	case model.StrategyCheapest:
 		sort.SliceStable(sorted, func(i, j int) bool {
 			return totalPrice(sorted[i]) < totalPrice(sorted[j])

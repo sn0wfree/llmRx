@@ -45,6 +45,17 @@ func (e *RouterEngine) ReloadChannel(channelID int64) {
 	e.breaker.reload(channelID)
 }
 
+// SetStrategy swaps the cost router's strategy at runtime. The
+// change is picked up by the next Route() call.
+func (e *RouterEngine) SetStrategy(s model.CostStrategy) {
+	e.cost.SetStrategy(s)
+}
+
+// CostStrategy returns the currently active strategy.
+func (e *RouterEngine) CostStrategy() model.CostStrategy {
+	return e.cost.Strategy()
+}
+
 func (e *RouterEngine) Route(ctx context.Context, modelName string) (*RouteResult, error) {
 	start := time.Now()
 	var logParts []string

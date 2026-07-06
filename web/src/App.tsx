@@ -7,6 +7,7 @@ import Channels from './pages/Channels';
 import Tokens from './pages/Tokens';
 import Logs from './pages/Logs';
 import Analytics from './pages/Analytics';
+import Settings from './pages/Settings';
 
 function readHash(): string {
   const h = window.location.hash.replace(/^#\/?/, '');
@@ -51,16 +52,5 @@ export default function App() {
       {page === 'analytics' && <Analytics />}
       {page === 'settings' && <Settings />}
     </Layout>
-  );
-}
-
-function Settings() {
-  return (
-    <div className="card p-6">
-      <h2 className="text-lg font-semibold mb-2">Settings</h2>
-      <p className="text-sm text-slate-500">
-        Coming in P6. Configure rate limits, alerts, and Docker packaging.
-      </p>
-    </div>
   );
 }

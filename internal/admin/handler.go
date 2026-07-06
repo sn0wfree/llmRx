@@ -67,6 +67,8 @@ func (h *Handler) Routes() http.Handler {
 		r.Get("/analytics/by-model", h.AnalyticsByModel)
 		r.Get("/analytics/by-channel", h.AnalyticsByChannel)
 		r.Get("/analytics/by-token", h.AnalyticsByToken)
+		r.Get("/config", h.GetConfig)
+		r.Put("/config", h.UpdateConfig)
 	})
 	return r
 }
@@ -625,6 +627,37 @@ func (h *Handler) writeNamed(w http.ResponseWriter, r *http.Request, fn func(sto
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": data})
+}
+
+// ---------- runtime config ----------
+
+func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"cost_strategy": string(h.router.CostStrategy()),
+	})
+}
+
+func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		CostStrategy string `json:"cost_strategy"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	switch body.CostStrategy {
+	case "cheapest", "fastest", "balanced":
+		// ok
+	case "":
+		body.CostStrategy = string(model.StrategyCheapest)
+	default:
+		writeErr(w, http.StatusBadRequest, "cost_strategy must be cheapest|fastest|balanced")
+		return
+	}
+	h.router.SetStrategy(model.CostStrategy(body.CostStrategy))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"cost_strategy": body.CostStrategy,
+	})
 }
 
 // ---------- utils ----------
