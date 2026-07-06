@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
@@ -34,6 +35,21 @@ func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st 
 		store:         st,
 		defaultMarkup: 1.0,
 	}
+}
+
+// SetProvider swaps the upstream client. Production wires the real
+// OpenAI-compatible HTTP client; tests inject a mock to script
+// responses and observe call args.
+func (h *Handler) SetProvider(p provider.Provider) { h.provider = p }
+
+// Routes returns a subrouter mounting the public chat API. The caller
+// is responsible for attaching auth middleware (server.go wires the
+// Token middleware on the parent engine).
+func (h *Handler) Routes() http.Handler {
+	r := chi.NewRouter()
+	r.Post("/chat/completions", h.ChatCompletions)
+	r.Get("/models", h.ListModels)
+	return r
 }
 
 type errorResp struct {
