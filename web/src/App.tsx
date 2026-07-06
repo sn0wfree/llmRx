@@ -6,6 +6,7 @@ import Dashboard from './pages/Dashboard';
 import Channels from './pages/Channels';
 import Tokens from './pages/Tokens';
 import Logs from './pages/Logs';
+import Analytics from './pages/Analytics';
 
 function readHash(): string {
   const h = window.location.hash.replace(/^#\/?/, '');
@@ -47,6 +48,7 @@ export default function App() {
       {page === 'channels' && <Channels />}
       {page === 'tokens' && <Tokens />}
       {page === 'logs' && <Logs />}
+      {page === 'analytics' && <Analytics />}
       {page === 'settings' && <Settings />}
     </Layout>
   );

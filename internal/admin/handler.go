@@ -20,15 +20,19 @@ import (
 )
 
 type Handler struct {
-	store     store.Store
-	pool      *pool.ChannelPool
-	router    *router.RouterEngine
-	tokens    *tokencache.Cache
+	store      store.Store
+	pool       *pool.ChannelPool
+	router     *router.RouterEngine
+	tokens     *tokencache.Cache
+	sessionTTL time.Duration
 }
 
 func New(st store.Store, cp *pool.ChannelPool, eng *router.RouterEngine, tc *tokencache.Cache) *Handler {
-	return &Handler{store: st, pool: cp, router: eng, tokens: tc}
+	return &Handler{store: st, pool: cp, router: eng, tokens: tc, sessionTTL: 24 * time.Hour}
 }
+
+// SetSessionTTL overrides the default 24h session lifetime.
+func (h *Handler) SetSessionTTL(d time.Duration) { h.sessionTTL = d }
 
 func (h *Handler) Routes() http.Handler {
 	r := chi.NewRouter()
@@ -59,6 +63,10 @@ func (h *Handler) Routes() http.Handler {
 		r.Post("/users", h.CreateUser)
 		r.Delete("/users/{id}", h.DeleteUser)
 		r.Get("/logs", h.ListLogs)
+		r.Get("/analytics/timeseries", h.AnalyticsTimeSeries)
+		r.Get("/analytics/by-model", h.AnalyticsByModel)
+		r.Get("/analytics/by-channel", h.AnalyticsByChannel)
+		r.Get("/analytics/by-token", h.AnalyticsByToken)
 	})
 	return r
 }
@@ -116,13 +124,19 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	tok := newSessionToken()
 	u.SessionToken = tok
+	exp := time.Now().Add(h.sessionTTL).UTC()
+	u.SessionExp = &exp
 	if err := h.store.UpdateUser(u); err != nil {
 		writeErr(w, http.StatusInternalServerError, "persist session")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "llmrx_session", Value: tok, Path: "/", HttpOnly: true, MaxAge: 86400})
+	http.SetCookie(w, &http.Cookie{
+		Name: "llmrx_session", Value: tok, Path: "/", HttpOnly: true,
+		Expires: exp, MaxAge: int(h.sessionTTL.Seconds()),
+	})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"session_token": tok,
+		"session_token":         tok,
+		"session_expires_at":    exp.Format(time.RFC3339),
 		"user": map[string]any{
 			"id":       u.ID,
 			"username": u.Username,
@@ -139,6 +153,7 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	if tok != "" {
 		if u, err := h.store.GetUserBySession(tok); err == nil && u != nil {
 			u.SessionToken = ""
+			u.SessionExp = nil
 			_ = h.store.UpdateUser(u)
 		}
 	}
@@ -498,14 +513,118 @@ func (h *Handler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 // ---------- logs ----------
 
 func (h *Handler) ListLogs(w http.ResponseWriter, r *http.Request) {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	logs, err := h.store.GetLogs(limit, offset)
+	q := r.URL.Query()
+	filter := store.LogFilter{
+		Limit:  atoiOr(q.Get("limit"), 50),
+		Offset: atoiOr(q.Get("offset"), 0),
+	}
+	if v := q.Get("token_id"); v != "" {
+		filter.TokenID, _ = strconv.ParseInt(v, 10, 64)
+	}
+	if v := q.Get("channel_id"); v != "" {
+		filter.ChannelID, _ = strconv.ParseInt(v, 10, 64)
+	}
+	filter.Model = q.Get("model")
+	if v := q.Get("status_code"); v != "" {
+		filter.StatusCode, _ = strconv.Atoi(v)
+	}
+	if v := q.Get("from"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			filter.CreatedFrom = t.Unix()
+		}
+	}
+	if v := q.Get("to"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			filter.CreatedTo = t.Unix()
+		}
+	}
+	logs, total, err := h.store.QueryLogs(filter)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": nonNil(logs)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data":   logs,
+		"total":  total,
+		"limit":  filter.Limit,
+		"offset": filter.Offset,
+	})
+}
+
+func atoiOr(s string, def int) int {
+	if s == "" {
+		return def
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+// ---------- analytics ----------
+
+// logFilterFromQuery parses the standard filter query string used
+// by /logs and the analytics endpoints.
+func logFilterFromQuery(r *http.Request) store.LogFilter {
+	q := r.URL.Query()
+	f := store.LogFilter{Limit: atoiOr(q.Get("limit"), 50), Offset: atoiOr(q.Get("offset"), 0)}
+	if v := q.Get("token_id"); v != "" {
+		f.TokenID, _ = strconv.ParseInt(v, 10, 64)
+	}
+	if v := q.Get("channel_id"); v != "" {
+		f.ChannelID, _ = strconv.ParseInt(v, 10, 64)
+	}
+	f.Model = q.Get("model")
+	if v := q.Get("status_code"); v != "" {
+		f.StatusCode, _ = strconv.Atoi(v)
+	}
+	if v := q.Get("from"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			f.CreatedFrom = t.Unix()
+		}
+	}
+	if v := q.Get("to"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			f.CreatedTo = t.Unix()
+		}
+	}
+	return f
+}
+
+func (h *Handler) AnalyticsTimeSeries(w http.ResponseWriter, r *http.Request) {
+	bucket := int64(atoiOr(r.URL.Query().Get("bucket"), 3600))
+	points, err := h.store.TimeSeries(logFilterFromQuery(r), bucket)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data":   points,
+		"bucket": bucket,
+	})
+}
+
+func (h *Handler) AnalyticsByModel(w http.ResponseWriter, r *http.Request) {
+	h.writeNamed(w, r, h.store.TopByModel)
+}
+
+func (h *Handler) AnalyticsByChannel(w http.ResponseWriter, r *http.Request) {
+	h.writeNamed(w, r, h.store.TopByChannel)
+}
+
+func (h *Handler) AnalyticsByToken(w http.ResponseWriter, r *http.Request) {
+	h.writeNamed(w, r, h.store.TopByToken)
+}
+
+func (h *Handler) writeNamed(w http.ResponseWriter, r *http.Request, fn func(store.LogFilter, int) ([]store.NamedMetric, error)) {
+	limit := atoiOr(r.URL.Query().Get("limit"), 10)
+	data, err := fn(logFilterFromQuery(r), limit)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": data})
 }
 
 // ---------- utils ----------

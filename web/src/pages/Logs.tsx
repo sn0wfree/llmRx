@@ -1,36 +1,63 @@
 import { useEffect, useState } from 'react';
-import { api, LogEntry } from '../api';
+import { api, LogEntry, Channel, Token } from '../api';
 
 export default function Logs() {
   const [items, setItems] = useState<LogEntry[]>([]);
+  const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(true);
+
+  const [channels, setChannels] = useState<Channel[]>([]);
+  const [tokens, setTokens] = useState<Token[]>([]);
+
+  const [f, setF] = useState<{
+    token_id: string;
+    channel_id: string;
+    model: string;
+    status_code: string;
+    from: string;
+    to: string;
+  }>({
+    token_id: '',
+    channel_id: '',
+    model: '',
+    status_code: '',
+    from: '',
+    to: '',
+  });
 
   const reload = async () => {
     try {
-      const d = await api.listLogs(100, 0);
-      setItems(d.data);
+      const r = await api.listLogs(200, 0, {
+        token_id: f.token_id ? Number(f.token_id) : undefined,
+        channel_id: f.channel_id ? Number(f.channel_id) : undefined,
+        model: f.model || undefined,
+        status_code: f.status_code ? Number(f.status_code) : undefined,
+        from: f.from || undefined,
+        to: f.to || undefined,
+      });
+      setItems(r.data);
+      setTotal(r.total);
     } catch (e: any) {
       setError(e?.message || 'failed');
     }
   };
 
   useEffect(() => {
+    api.listChannelsForFilter().then((r) => setChannels(r.data)).catch(() => {});
+    api.listTokensForFilter().then((r) => setTokens(r.data)).catch(() => {});
+  }, []);
+
+  useEffect(() => {
     reload();
     if (!autoRefresh) return;
     const id = setInterval(reload, 5000);
     return () => clearInterval(id);
-  }, [autoRefresh]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRefresh, f]);
 
-  const filtered = filter
-    ? items.filter((l) =>
-        [l.model, l.router_path, String(l.status_code), String(l.channel_id), String(l.token_id)]
-          .join(' ')
-          .toLowerCase()
-          .includes(filter.toLowerCase())
-      )
-    : items;
+  const reset = () =>
+    setF({ token_id: '', channel_id: '', model: '', status_code: '', from: '', to: '' });
 
   return (
     <div>
@@ -38,7 +65,7 @@ export default function Logs() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Request Logs</h1>
           <p className="text-sm text-slate-500 mt-1">
-            Last 100 requests, newest first.
+            {total.toLocaleString()} matching request{total === 1 ? '' : 's'}.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -50,12 +77,86 @@ export default function Logs() {
             />
             Auto-refresh
           </label>
-          <input
-            className="input w-64"
-            placeholder="Filter…"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-          />
+        </div>
+      </div>
+
+      <div className="card p-4 mb-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
+          <Field label="Token">
+            <select
+              className="input"
+              value={f.token_id}
+              onChange={(e) => setF({ ...f, token_id: e.target.value })}
+            >
+              <option value="">All</option>
+              {tokens.map((t) => (
+                <option key={t.id} value={t.id}>
+                  #{t.id} {t.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Channel">
+            <select
+              className="input"
+              value={f.channel_id}
+              onChange={(e) => setF({ ...f, channel_id: e.target.value })}
+            >
+              <option value="">All</option>
+              {channels.map((c) => (
+                <option key={c.id} value={c.id}>
+                  #{c.id} {c.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Model">
+            <input
+              className="input"
+              value={f.model}
+              onChange={(e) => setF({ ...f, model: e.target.value })}
+              placeholder="e.g. gpt-4"
+            />
+          </Field>
+          <Field label="Status">
+            <select
+              className="input"
+              value={f.status_code}
+              onChange={(e) => setF({ ...f, status_code: e.target.value })}
+            >
+              <option value="">Any</option>
+              <option value="200">200 OK</option>
+              <option value="400">400</option>
+              <option value="401">401</option>
+              <option value="403">403</option>
+              <option value="429">429</option>
+              <option value="500">5xx</option>
+            </select>
+          </Field>
+          <Field label="From">
+            <input
+              type="datetime-local"
+              className="input"
+              value={f.from ? toLocal(f.from) : ''}
+              onChange={(e) => setF({ ...f, from: e.target.value ? fromLocal(e.target.value) : '' })}
+            />
+          </Field>
+          <Field label="To">
+            <input
+              type="datetime-local"
+              className="input"
+              value={f.to ? toLocal(f.to) : ''}
+              onChange={(e) => setF({ ...f, to: e.target.value ? fromLocal(e.target.value) : '' })}
+            />
+          </Field>
+        </div>
+        <div className="flex items-center justify-between mt-3">
+          <div className="text-xs text-slate-500">
+            Showing {items.length} of {total.toLocaleString()} (max 200 per page)
+          </div>
+          <button onClick={reset} className="btn-ghost text-xs">
+            Clear filters
+          </button>
         </div>
       </div>
 
@@ -80,7 +181,7 @@ export default function Logs() {
             </tr>
           </thead>
           <tbody>
-            {filtered.map((l) => (
+            {items.map((l) => (
               <tr key={l.id} className="border-t border-slate-100">
                 <td className="px-3 py-2 text-slate-500 whitespace-nowrap">
                   {l.created_at.replace('T', ' ').slice(0, 19)}
@@ -110,10 +211,10 @@ export default function Logs() {
                 </td>
               </tr>
             ))}
-            {filtered.length === 0 && (
+            {items.length === 0 && (
               <tr>
                 <td className="px-3 py-6 text-center text-slate-400" colSpan={10}>
-                  {items.length === 0 ? 'No logs yet.' : 'No matches.'}
+                  No logs match the current filter.
                 </td>
               </tr>
             )}
@@ -122,4 +223,24 @@ export default function Logs() {
       </div>
     </div>
   );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block text-xs">
+      <span className="text-slate-500 uppercase tracking-wide">{label}</span>
+      <div className="mt-1">{children}</div>
+    </label>
+  );
+}
+
+// Convert between RFC3339 and <input type=datetime-local> (which uses
+// local time, no Z suffix).
+function toLocal(rfc: string): string {
+  const d = new Date(rfc);
+  const off = d.getTimezoneOffset() * 60_000;
+  return new Date(d.getTime() - off).toISOString().slice(0, 16);
+}
+function fromLocal(s: string): string {
+  return new Date(s).toISOString();
 }

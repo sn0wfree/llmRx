@@ -44,10 +44,27 @@ func main() {
 	eng := router.New(st, cp)
 	srv := server.New(cfg, eng, cp, st, tokCache)
 
+	go cleanupLoop(st)
+
 	log.Printf("starting llmRx gateway on :%d (channels=%d tokens=%d db=%s)",
 		cfg.Server.Port, len(cp.GetAllChannels()), tokCache.Size(), cfg.Database.DSN)
 	if err := srv.Start(); err != nil {
 		log.Fatalf("server: %v", err)
+	}
+}
+
+// cleanupLoop periodically clears admin session tokens whose
+// session_exp is in the past. Runs every 5 minutes; exits when the
+// process exits.
+func cleanupLoop(st store.Store) {
+	t := time.NewTicker(5 * time.Minute)
+	defer t.Stop()
+	for range t.C {
+		if n, err := st.CleanupExpiredSessions(); err != nil {
+			log.Printf("cleanup sessions: %v", err)
+		} else if n > 0 {
+			log.Printf("cleanup: cleared %d expired admin sessions", n)
+		}
 	}
 }
 
