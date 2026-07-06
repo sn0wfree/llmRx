@@ -4,8 +4,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/store"
 )
 
 const (
@@ -20,44 +20,33 @@ type breakerEntry struct {
 	mu          sync.Mutex
 }
 
-type channelCfg struct {
-	maxFail  int
-	resetDur time.Duration
-}
-
 type CircuitBreaker struct {
-	mu      sync.RWMutex
+	store   store.Store
 	entries map[int64]*breakerEntry
-	cfg     map[int64]channelCfg
+	mu      sync.RWMutex
 }
 
-func NewCircuitBreaker(cfg *config.Config) *CircuitBreaker {
-	b := &CircuitBreaker{
+func NewCircuitBreaker(st store.Store) *CircuitBreaker {
+	return &CircuitBreaker{
+		store:   st,
 		entries: make(map[int64]*breakerEntry),
-		cfg:     make(map[int64]channelCfg, len(cfg.Channels)),
 	}
-	for i, cc := range cfg.Channels {
-		id := int64(i + 1)
-		maxFail := cc.MaxFailures
-		if maxFail <= 0 {
-			maxFail = defaultMaxFailures
-		}
-		resetDur := time.Duration(cc.ResetTimeoutMs) * time.Millisecond
-		if resetDur <= 0 {
-			resetDur = defaultResetDur
-		}
-		b.cfg[id] = channelCfg{maxFail: maxFail, resetDur: resetDur}
-	}
-	return b
 }
 
-func (b *CircuitBreaker) cfgFor(channelID int64) channelCfg {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	if c, ok := b.cfg[channelID]; ok {
-		return c
+func (b *CircuitBreaker) cfgFor(channelID int64) (int, time.Duration) {
+	ch, err := b.store.GetChannel(channelID)
+	if err != nil {
+		return defaultMaxFailures, defaultResetDur
 	}
-	return channelCfg{maxFail: defaultMaxFailures, resetDur: defaultResetDur}
+	maxFail := ch.CircuitBreaker.MaxFailures
+	if maxFail <= 0 {
+		maxFail = defaultMaxFailures
+	}
+	resetDur := ch.CircuitBreaker.ResetTimeout
+	if resetDur <= 0 {
+		resetDur = defaultResetDur
+	}
+	return maxFail, resetDur
 }
 
 func (b *CircuitBreaker) getEntry(channelID int64) *breakerEntry {
@@ -77,17 +66,18 @@ func (b *CircuitBreaker) getEntry(channelID int64) *breakerEntry {
 	return entry
 }
 
-// Filter removes channels that are currently open and not yet past
-// the reset timeout. Half-open channels (past timeout) are admitted
-// and their failure counter is reset so the next call decides.
+func (b *CircuitBreaker) reload(channelID int64) {
+	b.getEntry(channelID)
+}
+
 func (b *CircuitBreaker) Filter(channels []*model.Channel) []*model.Channel {
 	var healthy []*model.Channel
 	for _, ch := range channels {
 		entry := b.getEntry(ch.ID)
 		entry.mu.Lock()
 		if entry.isOpen {
-			cc := b.cfgFor(ch.ID)
-			if time.Since(entry.lastFailure) > cc.resetDur {
+			_, resetDur := b.cfgFor(ch.ID)
+			if time.Since(entry.lastFailure) > resetDur {
 				entry.isOpen = false
 				entry.failures = 0
 				healthy = append(healthy, ch)
@@ -111,11 +101,11 @@ func (b *CircuitBreaker) RecordSuccess(channelID int64) {
 
 func (b *CircuitBreaker) RecordFailure(channelID int64) {
 	entry := b.getEntry(channelID)
-	cc := b.cfgFor(channelID)
+	maxFail, _ := b.cfgFor(channelID)
 	entry.mu.Lock()
 	entry.failures++
 	entry.lastFailure = time.Now()
-	if entry.failures >= cc.maxFail {
+	if entry.failures >= maxFail {
 		entry.isOpen = true
 	}
 	entry.mu.Unlock()

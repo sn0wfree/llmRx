@@ -5,8 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/store"
 )
 
 var ErrNoKey = errors.New("no available key")
@@ -27,37 +27,62 @@ type keyEntry struct {
 	Status model.KeyStatus
 }
 
-func NewChannelPool(cfg *config.Config) *ChannelPool {
-	p := &ChannelPool{
-		channels: make(map[int64]*channelEntry),
+func NewChannelPool() *ChannelPool {
+	return &ChannelPool{channels: make(map[int64]*channelEntry)}
+}
+
+// LoadFromStore rebuilds the in-memory channel/keys tables from the
+// provided store. Channels that are not Enabled are skipped. Keys
+// with status other than KeyActive are still loaded but skipped by
+// NextKey.
+func (p *ChannelPool) LoadFromStore(st store.Store) error {
+	chs, err := st.GetChannels()
+	if err != nil {
+		return err
+	}
+	next := make(map[int64]*channelEntry, len(chs))
+	for i := range chs {
+		ch := &chs[i]
+		if ch.Status != model.ChannelEnabled {
+			continue
+		}
+		keys, err := st.GetKeys(ch.ID)
+		if err != nil {
+			return err
+		}
+		entries := make([]*keyEntry, 0, len(keys))
+		for j := range keys {
+			k := &keys[j]
+			entries = append(entries, &keyEntry{Key: k.Key, Status: k.Status})
+		}
+		next[ch.ID] = &channelEntry{Channel: ch, Keys: entries}
 	}
 
-	for i, cc := range cfg.Channels {
-		id := int64(i + 1)
-		keys := make([]*keyEntry, len(cc.Keys))
-		for j, k := range cc.Keys {
-			masked := k
-			if len(masked) > 8 {
-				masked = masked[:4] + "***" + masked[len(masked)-4:]
-			}
-			keys[j] = &keyEntry{Key: k, Status: model.KeyActive}
-		}
-		p.channels[id] = &channelEntry{
-			Channel: &model.Channel{
-				ID:         id,
-				Name:       cc.Name,
-				Provider:   cc.Provider,
-				BaseURL:    cc.BaseURL,
-				Models:     cc.Models,
-				Priority:   cc.Priority,
-				InputPrice: cc.InputPrice,
-				OutputPrice: cc.OutputPrice,
-				Status:     model.ChannelEnabled,
-			},
-			Keys: keys,
-		}
+	p.mu.Lock()
+	p.channels = next
+	p.mu.Unlock()
+	return nil
+}
+
+// UpsertChannel inserts or refreshes one channel in the in-memory
+// pool from a freshly-loaded Channel + Keys slice. Callers should
+// update the store first, then call this to avoid races.
+func (p *ChannelPool) UpsertChannel(ch *model.Channel, keys []model.Key) {
+	entries := make([]*keyEntry, 0, len(keys))
+	for i := range keys {
+		k := &keys[i]
+		entries = append(entries, &keyEntry{Key: k.Key, Status: k.Status})
 	}
-	return p
+	p.mu.Lock()
+	p.channels[ch.ID] = &channelEntry{Channel: ch, Keys: entries}
+	p.mu.Unlock()
+}
+
+// RemoveChannel drops one channel from the in-memory pool.
+func (p *ChannelPool) RemoveChannel(id int64) {
+	p.mu.Lock()
+	delete(p.channels, id)
+	p.mu.Unlock()
 }
 
 func (p *ChannelPool) NextKey(channelID int64) (*model.Key, error) {
@@ -68,11 +93,11 @@ func (p *ChannelPool) NextKey(channelID int64) (*model.Key, error) {
 		return nil, ErrNoKey
 	}
 
-	if len(entry.Keys) == 0 {
+	n := len(entry.Keys)
+	if n == 0 {
 		return nil, ErrNoKey
 	}
 
-	n := len(entry.Keys)
 	start := atomic.AddUint64(&entry.counter, 1) - 1
 	for i := uint64(0); i < uint64(n); i++ {
 		idx := int((start + i) % uint64(n))
@@ -98,9 +123,9 @@ func (p *ChannelPool) NextKey(channelID int64) (*model.Key, error) {
 func (p *ChannelPool) GetAllChannels() []*model.Channel {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	var result []*model.Channel
+	out := make([]*model.Channel, 0, len(p.channels))
 	for _, entry := range p.channels {
-		result = append(result, entry.Channel)
+		out = append(out, entry.Channel)
 	}
-	return result
+	return out
 }

@@ -14,9 +14,10 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Port      int    `yaml:"port"`
-	RateLimit int    `yaml:"rate_limit"`
-	LogLevel  string `yaml:"log_level"`
+	Port          int    `yaml:"port"`
+	RateLimit     int    `yaml:"rate_limit"`
+	LogLevel      string `yaml:"log_level"`
+	AdminPassword string `yaml:"admin_password"`
 }
 
 type ChannelConfig struct {

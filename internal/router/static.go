@@ -2,42 +2,34 @@ package router
 
 import (
 	"errors"
+	"sort"
 
-	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/store"
 )
 
 var (
-	ErrNoChannel  = errors.New("no channel matched")
-	ErrAllBroken  = errors.New("all channels are broken")
-	ErrNoKey      = errors.New("no available key")
+	ErrNoChannel = errors.New("no channel matched")
+	ErrAllBroken = errors.New("all channels are broken")
+	ErrNoKey     = errors.New("no available key")
 )
 
 type StaticRouter struct {
-	channels []*model.Channel
+	store store.Store
 }
 
-func NewStaticRouter(cfg *config.Config) *StaticRouter {
-	channels := make([]*model.Channel, len(cfg.Channels))
-	for i, cc := range cfg.Channels {
-		channels[i] = &model.Channel{
-			ID:        int64(i + 1),
-			Name:      cc.Name,
-			Provider:  cc.Provider,
-			BaseURL:   cc.BaseURL,
-			Models:    cc.Models,
-			Priority:  cc.Priority,
-			InputPrice:  cc.InputPrice,
-			OutputPrice: cc.OutputPrice,
-			Status:    model.ChannelEnabled,
-		}
-	}
-	return &StaticRouter{channels: channels}
+func NewStaticRouter(st store.Store) *StaticRouter {
+	return &StaticRouter{store: st}
 }
 
 func (r *StaticRouter) Match(modelName string) []*model.Channel {
+	chs, err := r.store.GetChannels()
+	if err != nil {
+		return nil
+	}
 	var candidates []*model.Channel
-	for _, ch := range r.channels {
+	for i := range chs {
+		ch := &chs[i]
 		if ch.Status != model.ChannelEnabled {
 			continue
 		}
@@ -48,13 +40,8 @@ func (r *StaticRouter) Match(modelName string) []*model.Channel {
 			}
 		}
 	}
-	// Sort by priority descending
-	for i := 0; i < len(candidates); i++ {
-		for j := i + 1; j < len(candidates); j++ {
-			if candidates[j].Priority > candidates[i].Priority {
-				candidates[i], candidates[j] = candidates[j], candidates[i]
-			}
-		}
-	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].Priority > candidates[j].Priority
+	})
 	return candidates
 }

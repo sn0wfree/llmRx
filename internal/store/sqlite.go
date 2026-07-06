@@ -1,0 +1,569 @@
+package store
+
+import (
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	_ "github.com/mattn/go-sqlite3"
+
+	"github.com/sn0wfree/llmRx/internal/model"
+)
+
+var (
+	ErrNotFound      = errors.New("not found")
+	ErrAlreadyExists = errors.New("already exists")
+)
+
+type SQLite struct {
+	db *sql.DB
+}
+
+func OpenSQLite(dsn string) (*SQLite, error) {
+	if dsn == "" {
+		return nil, errors.New("empty dsn")
+	}
+	if dir := filepath.Dir(dsn); dir != "" && dir != "." {
+		_ = os.MkdirAll(dir, 0o755)
+	}
+	db, err := sql.Open("sqlite3", dsn+"?_journal=WAL&_busy_timeout=5000&_foreign_keys=on")
+	if err != nil {
+		return nil, fmt.Errorf("open: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	s := &SQLite{db: db}
+	if err := s.migrate(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	return s, nil
+}
+
+func (s *SQLite) Close() error { return s.db.Close() }
+
+func (s *SQLite) migrate() error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS channels (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT UNIQUE NOT NULL,
+			provider TEXT NOT NULL,
+			base_url TEXT NOT NULL,
+			models TEXT NOT NULL,
+			priority INTEGER NOT NULL DEFAULT 0,
+			input_price REAL NOT NULL DEFAULT 0,
+			output_price REAL NOT NULL DEFAULT 0,
+			circuit_breaker TEXT NOT NULL DEFAULT '{}',
+			status INTEGER NOT NULL DEFAULT 1,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS keys (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel_id INTEGER NOT NULL,
+			key TEXT NOT NULL,
+			key_masked TEXT NOT NULL,
+			status INTEGER NOT NULL DEFAULT 0,
+			last_used_at INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS plans (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			budget_usd REAL NOT NULL DEFAULT 0,
+			used_usd REAL NOT NULL DEFAULT 0,
+			markup_ratio REAL NOT NULL DEFAULT 1.0,
+			status INTEGER NOT NULL DEFAULT 1,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS tokens (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			plan_id INTEGER NOT NULL DEFAULT 0,
+			key TEXT UNIQUE NOT NULL,
+			name TEXT NOT NULL DEFAULT '',
+			status INTEGER NOT NULL DEFAULT 0,
+			rpm INTEGER NOT NULL DEFAULT 0,
+			tpm INTEGER NOT NULL DEFAULT 0,
+			models_whitelist TEXT NOT NULL DEFAULT '[]',
+			ip_whitelist TEXT NOT NULL DEFAULT '[]',
+			expires_at INTEGER NOT NULL DEFAULT 0,
+			last_used_at INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			username TEXT UNIQUE NOT NULL,
+			password_hash TEXT NOT NULL,
+			role INTEGER NOT NULL DEFAULT 0,
+			status INTEGER NOT NULL DEFAULT 1,
+			session_token TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS logs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			token_id INTEGER NOT NULL DEFAULT 0,
+			channel_id INTEGER NOT NULL DEFAULT 0,
+			key_id INTEGER NOT NULL DEFAULT 0,
+			model TEXT NOT NULL DEFAULT '',
+			prompt_tokens INTEGER NOT NULL DEFAULT 0,
+			completion_tokens INTEGER NOT NULL DEFAULT 0,
+			real_cost_usd REAL NOT NULL DEFAULT 0,
+			billed_cost_usd REAL NOT NULL DEFAULT 0,
+			duration_ms INTEGER NOT NULL DEFAULT 0,
+			status_code INTEGER NOT NULL DEFAULT 0,
+			router_path TEXT NOT NULL DEFAULT '',
+			request_ip TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_logs_created ON logs(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_keys_channel ON keys(channel_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_tokens_plan ON tokens(plan_id)`,
+	}
+	for _, q := range stmts {
+		if _, err := s.db.Exec(q); err != nil {
+			return fmt.Errorf("exec %q: %w", q, err)
+		}
+	}
+	return nil
+}
+
+func toUnix(t time.Time) int64  { return t.Unix() }
+func fromUnix(s int64) time.Time { return time.Unix(s, 0).UTC() }
+
+func encodeStrings(xs []string) string {
+	if xs == nil {
+		xs = []string{}
+	}
+	b, _ := json.Marshal(xs)
+	return string(b)
+}
+
+func decodeStrings(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var xs []string
+	_ = json.Unmarshal([]byte(s), &xs)
+	return xs
+}
+
+func encodeCB(cb model.CircuitBreakerConfig) string {
+	b, _ := json.Marshal(cb)
+	return string(b)
+}
+
+func decodeCB(s string) model.CircuitBreakerConfig {
+	if s == "" {
+		return model.CircuitBreakerConfig{}
+	}
+	var cb model.CircuitBreakerConfig
+	_ = json.Unmarshal([]byte(s), &cb)
+	return cb
+}
+
+// ---------------- Channels ----------------
+
+func (s *SQLite) GetChannels() ([]model.Channel, error) {
+	rows, err := s.db.Query(`SELECT id, name, provider, base_url, models, priority, input_price, output_price, circuit_breaker, status, created_at, updated_at FROM channels ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.Channel
+	for rows.Next() {
+		ch, err := scanChannel(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *ch)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) GetChannel(id int64) (*model.Channel, error) {
+	row := s.db.QueryRow(`SELECT id, name, provider, base_url, models, priority, input_price, output_price, circuit_breaker, status, created_at, updated_at FROM channels WHERE id = ?`, id)
+	return scanChannel(row)
+}
+
+func (s *SQLite) CreateChannel(ch *model.Channel) error {
+	now := time.Now().UTC()
+	ch.CreatedAt = now
+	ch.UpdatedAt = now
+	res, err := s.db.Exec(
+		`INSERT INTO channels(name, provider, base_url, models, priority, input_price, output_price, circuit_breaker, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ch.Name, ch.Provider, ch.BaseURL, encodeStrings(ch.Models),
+		ch.Priority, ch.InputPrice, ch.OutputPrice, encodeCB(ch.CircuitBreaker),
+		int(ch.Status), toUnix(ch.CreatedAt), toUnix(ch.UpdatedAt),
+	)
+	if err != nil {
+		return err
+	}
+	id, _ := res.LastInsertId()
+	ch.ID = id
+	return nil
+}
+
+func (s *SQLite) UpdateChannel(ch *model.Channel) error {
+	ch.UpdatedAt = time.Now().UTC()
+	_, err := s.db.Exec(
+		`UPDATE channels SET name=?, provider=?, base_url=?, models=?, priority=?, input_price=?, output_price=?, circuit_breaker=?, status=?, updated_at=? WHERE id=?`,
+		ch.Name, ch.Provider, ch.BaseURL, encodeStrings(ch.Models),
+		ch.Priority, ch.InputPrice, ch.OutputPrice, encodeCB(ch.CircuitBreaker),
+		int(ch.Status), toUnix(ch.UpdatedAt), ch.ID,
+	)
+	return err
+}
+
+func (s *SQLite) DeleteChannel(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM channels WHERE id = ?`, id)
+	return err
+}
+
+func scanChannel(r interface {
+	Scan(dest ...any) error
+}) (*model.Channel, error) {
+	var ch model.Channel
+	var modelsJSON, cbJSON string
+	var status int
+	var created, updated int64
+	if err := r.Scan(&ch.ID, &ch.Name, &ch.Provider, &ch.BaseURL, &modelsJSON, &ch.Priority,
+		&ch.InputPrice, &ch.OutputPrice, &cbJSON, &status, &created, &updated); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	ch.Models = decodeStrings(modelsJSON)
+	ch.CircuitBreaker = decodeCB(cbJSON)
+	ch.Status = model.ChannelStatus(status)
+	ch.CreatedAt = fromUnix(created)
+	ch.UpdatedAt = fromUnix(updated)
+	return &ch, nil
+}
+
+// ---------------- Keys ----------------
+
+func (s *SQLite) GetKeys(channelID int64) ([]model.Key, error) {
+	rows, err := s.db.Query(`SELECT id, channel_id, key, key_masked, status, last_used_at, created_at FROM keys WHERE channel_id = ? ORDER BY id`, channelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.Key
+	for rows.Next() {
+		var k model.Key
+		var status, lastUsed, created int64
+		if err := rows.Scan(&k.ID, &k.ChannelID, &k.Key, &k.KeyMasked, &status, &lastUsed, &created); err != nil {
+			return nil, err
+		}
+		k.Status = model.KeyStatus(status)
+		k.LastUsedAt = fromUnix(lastUsed)
+		k.CreatedAt = fromUnix(created)
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) CreateKey(k *model.Key) error {
+	k.CreatedAt = time.Now().UTC()
+	res, err := s.db.Exec(
+		`INSERT INTO keys(channel_id, key, key_masked, status, last_used_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		k.ChannelID, k.Key, k.KeyMasked, int(k.Status), toUnix(k.LastUsedAt), toUnix(k.CreatedAt),
+	)
+	if err != nil {
+		return err
+	}
+	id, _ := res.LastInsertId()
+	k.ID = id
+	return nil
+}
+
+func (s *SQLite) DeleteKey(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM keys WHERE id = ?`, id)
+	return err
+}
+
+// ---------------- Tokens ----------------
+
+func (s *SQLite) GetToken(key string) (*model.Token, error) {
+	row := s.db.QueryRow(`SELECT id, plan_id, key, name, status, rpm, tpm, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens WHERE key = ?`, key)
+	return scanToken(row)
+}
+
+func (s *SQLite) GetTokens() ([]model.Token, error) {
+	rows, err := s.db.Query(`SELECT id, plan_id, key, name, status, rpm, tpm, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.Token
+	for rows.Next() {
+		t, err := scanToken(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *t)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) CreateToken(t *model.Token) error {
+	t.CreatedAt = time.Now().UTC()
+	res, err := s.db.Exec(
+		`INSERT INTO tokens(plan_id, key, name, status, rpm, tpm, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.PlanID, t.Key, t.Name, int(t.Status), t.RPM, t.TPM,
+		encodeStrings(t.ModelsWhitelist), encodeStrings(t.IPWhitelist),
+		toUnix(t.ExpiresAt), toUnix(t.LastUsedAt), toUnix(t.CreatedAt),
+	)
+	if err != nil {
+		return err
+	}
+	id, _ := res.LastInsertId()
+	t.ID = id
+	return nil
+}
+
+func (s *SQLite) DeleteToken(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM tokens WHERE id = ?`, id)
+	return err
+}
+
+func scanToken(r interface {
+	Scan(dest ...any) error
+}) (*model.Token, error) {
+	var t model.Token
+	var status int
+	var mwJSON, ipwJSON string
+	var expires, lastUsed, created int64
+	if err := r.Scan(&t.ID, &t.PlanID, &t.Key, &t.Name, &status, &t.RPM, &t.TPM,
+		&mwJSON, &ipwJSON, &expires, &lastUsed, &created); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	t.Status = model.TokenStatus(status)
+	t.ModelsWhitelist = decodeStrings(mwJSON)
+	t.IPWhitelist = decodeStrings(ipwJSON)
+	t.ExpiresAt = fromUnix(expires)
+	t.LastUsedAt = fromUnix(lastUsed)
+	t.CreatedAt = fromUnix(created)
+	return &t, nil
+}
+
+// ---------------- Plans ----------------
+
+func (s *SQLite) GetPlans() ([]model.Plan, error) {
+	rows, err := s.db.Query(`SELECT id, name, budget_usd, used_usd, markup_ratio, status, created_at, updated_at FROM plans ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.Plan
+	for rows.Next() {
+		var p model.Plan
+		var status, created, updated int64
+		if err := rows.Scan(&p.ID, &p.Name, &p.BudgetUSD, &p.UsedUSD, &p.MarkupRatio, &status, &created, &updated); err != nil {
+			return nil, err
+		}
+		p.Status = int(status)
+		p.CreatedAt = fromUnix(created)
+		p.UpdatedAt = fromUnix(updated)
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) GetPlan(id int64) (*model.Plan, error) {
+	row := s.db.QueryRow(`SELECT id, name, budget_usd, used_usd, markup_ratio, status, created_at, updated_at FROM plans WHERE id = ?`, id)
+	var p model.Plan
+	var status, created, updated int64
+	if err := row.Scan(&p.ID, &p.Name, &p.BudgetUSD, &p.UsedUSD, &p.MarkupRatio, &status, &created, &updated); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	p.Status = int(status)
+	p.CreatedAt = fromUnix(created)
+	p.UpdatedAt = fromUnix(updated)
+	return &p, nil
+}
+
+func (s *SQLite) CreatePlan(p *model.Plan) error {
+	now := time.Now().UTC()
+	p.CreatedAt = now
+	p.UpdatedAt = now
+	res, err := s.db.Exec(
+		`INSERT INTO plans(name, budget_usd, used_usd, markup_ratio, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		p.Name, p.BudgetUSD, p.UsedUSD, p.MarkupRatio, p.Status, toUnix(p.CreatedAt), toUnix(p.UpdatedAt),
+	)
+	if err != nil {
+		return err
+	}
+	id, _ := res.LastInsertId()
+	p.ID = id
+	return nil
+}
+
+func (s *SQLite) UpdatePlan(p *model.Plan) error {
+	p.UpdatedAt = time.Now().UTC()
+	_, err := s.db.Exec(
+		`UPDATE plans SET name=?, budget_usd=?, used_usd=?, markup_ratio=?, status=?, updated_at=? WHERE id=?`,
+		p.Name, p.BudgetUSD, p.UsedUSD, p.MarkupRatio, p.Status, toUnix(p.UpdatedAt), p.ID,
+	)
+	return err
+}
+
+// ---------------- Users ----------------
+
+func (s *SQLite) GetUsers() ([]model.User, error) {
+	rows, err := s.db.Query(`SELECT id, username, password_hash, role, status, session_token, created_at FROM users ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *u)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) GetUser(id int64) (*model.User, error) {
+	row := s.db.QueryRow(`SELECT id, username, password_hash, role, status, session_token, created_at FROM users WHERE id = ?`, id)
+	return scanUser(row)
+}
+
+func (s *SQLite) GetUserByUsername(username string) (*model.User, error) {
+	row := s.db.QueryRow(`SELECT id, username, password_hash, role, status, session_token, created_at FROM users WHERE username = ?`, username)
+	return scanUser(row)
+}
+
+func (s *SQLite) GetUserBySession(token string) (*model.User, error) {
+	if token == "" {
+		return nil, ErrNotFound
+	}
+	row := s.db.QueryRow(`SELECT id, username, password_hash, role, status, session_token, created_at FROM users WHERE session_token = ? AND status = 1`, token)
+	return scanUser(row)
+}
+
+func (s *SQLite) CreateUser(u *model.User) error {
+	u.CreatedAt = time.Now().UTC()
+	res, err := s.db.Exec(
+		`INSERT INTO users(username, password_hash, role, status, session_token, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		u.Username, u.PasswordHash, int(u.Role), u.Status, u.SessionToken, toUnix(u.CreatedAt),
+	)
+	if err != nil {
+		return err
+	}
+	id, _ := res.LastInsertId()
+	u.ID = id
+	return nil
+}
+
+func (s *SQLite) UpdateUser(u *model.User) error {
+	_, err := s.db.Exec(
+		`UPDATE users SET password_hash=?, role=?, status=?, session_token=? WHERE id=?`,
+		u.PasswordHash, int(u.Role), u.Status, u.SessionToken, u.ID,
+	)
+	return err
+}
+
+func scanUser(r interface {
+	Scan(dest ...any) error
+}) (*model.User, error) {
+	var u model.User
+	var role int
+	var created int64
+	if err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &role, &u.Status, &u.SessionToken, &created); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	u.Role = model.UserRole(role)
+	u.CreatedAt = fromUnix(created)
+	return &u, nil
+}
+
+// ---------------- Logs ----------------
+
+func (s *SQLite) CreateLog(l *model.Log) error {
+	l.CreatedAt = time.Now().UTC()
+	res, err := s.db.Exec(
+		`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		l.TokenID, l.ChannelID, l.KeyID, l.Model, l.PromptTokens, l.CompletionTokens,
+		l.RealCostUSD, l.BilledCostUSD, l.DurationMs, l.StatusCode, l.RouterPath, l.RequestIP, toUnix(l.CreatedAt),
+	)
+	if err != nil {
+		return err
+	}
+	id, _ := res.LastInsertId()
+	l.ID = id
+	return nil
+}
+
+func (s *SQLite) GetLogs(limit, offset int) ([]model.Log, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := s.db.Query(`SELECT id, token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, created_at FROM logs ORDER BY id DESC LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.Log
+	for rows.Next() {
+		var l model.Log
+		var created int64
+		if err := rows.Scan(&l.ID, &l.TokenID, &l.ChannelID, &l.KeyID, &l.Model,
+			&l.PromptTokens, &l.CompletionTokens, &l.RealCostUSD, &l.BilledCostUSD,
+			&l.DurationMs, &l.StatusCode, &l.RouterPath, &l.RequestIP, &created); err != nil {
+			return nil, err
+		}
+		l.CreatedAt = fromUnix(created)
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) CountLogs() (int64, error) {
+	var n int64
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM logs`).Scan(&n)
+	return n, err
+}
+
+func (s *SQLite) LogStats() (LogStats, error) {
+	var st LogStats
+	row := s.db.QueryRow(`SELECT
+		COALESCE(SUM(prompt_tokens),0),
+		COALESCE(SUM(completion_tokens),0),
+		COALESCE(SUM(real_cost_usd),0),
+		COALESCE(SUM(billed_cost_usd),0),
+		COUNT(*),
+		COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END),0)
+	FROM logs`)
+	if err := row.Scan(&st.PromptTokens, &st.CompletionTokens, &st.RealCostUSD, &st.BilledCostUSD, &st.Total, &st.Errors); err != nil {
+		return st, err
+	}
+	return st, nil
+}

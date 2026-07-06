@@ -33,10 +33,22 @@ type Store interface {
 	GetUsers() ([]model.User, error)
 	GetUser(id int64) (*model.User, error)
 	GetUserByUsername(username string) (*model.User, error)
+	GetUserBySession(token string) (*model.User, error)
 	CreateUser(u *model.User) error
 	UpdateUser(u *model.User) error
 
 	// Logs
 	CreateLog(l *model.Log) error
 	GetLogs(limit, offset int) ([]model.Log, error)
+	CountLogs() (int64, error)
+	LogStats() (LogStats, error)
+}
+
+type LogStats struct {
+	PromptTokens     int64
+	CompletionTokens int64
+	RealCostUSD      float64
+	BilledCostUSD    float64
+	Total            int64
+	Errors           int64
 }
