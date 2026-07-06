@@ -17,6 +17,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/store"
 	"github.com/sn0wfree/llmRx/internal/tokencache"
+	"github.com/sn0wfree/llmRx/internal/webui"
 )
 
 type Server struct {
@@ -70,6 +71,8 @@ func (s *Server) registerRoutes() {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+
+	s.engine.Mount("/admin", webui.Handler())
 
 	s.engine.Mount("/api/v1", adminHandler.Routes())
 }

@@ -692,12 +692,88 @@ logs(id, token_id, channel_id, key_id, model, prompt_tokens,
 - **Channel reload 性能**：每次 Filter 都 `GetChannel`，可改为 per-request snapshot + TTL
 - **无并发写保护**：DB 单连接 + WAL，但 admin 多个并发修改未加锁
 
-### 12.10 P1 之后剩余路线
+---
+
+## 13. P2 实施笔记（2026-07-06）
+
+P2 范围（嵌入式 React 管理控制台）已落地，单二进制即可服务整套 UI。
+
+### 13.1 新增模块
+
+| 路径 | 作用 |
+|---|---|
+| `web/` | Vite + React 18 + TypeScript + Tailwind 3 前端项目 |
+| `web/src/pages/{Login,Dashboard,Channels,Tokens,Logs}.tsx` | 5 个核心页面 |
+| `web/src/components/{Layout,StatusBadge}.tsx` | UI 组件 |
+| `web/src/api.ts` | fetch 封装 + session token 管理 + 类型 |
+| `internal/webui/embed.go` | `//go:embed all:dist` 打包前端产物 |
+| `internal/webui/dist/` | 构建产物（随仓库提交，避免每次 release 跑 npm） |
+
+### 13.2 前端栈选择
+
+| 维度 | 选择 | 理由 |
+|---|---|---|
+| 构建 | Vite 5 | 快、零配置、`base: '/admin/'` |
+| UI | React 18 + TypeScript | 路线图原定 |
+| 样式 | Tailwind 3 + 自定义 `btn/card/badge` 组件类 | 无运行时开销 |
+| 路由 | URL hash（`#/dashboard`）+ 简单 state | 避免引入 react-router，单二进制不需 SSR |
+| 图表 | 无（先用表格 + badge） | P3 加 Recharts 或 ECharts |
+| 数据请求 | `fetch` 封装 + `localStorage` 存 session | 无 axios 依赖 |
+
+### 13.3 embed 策略
+
+```go
+//go:embed all:dist
+var distFS embed.FS
+
+// Handler():
+//   /admin/         → dist/index.html
+//   /admin/foo/bar  → dist/foo/bar (SPA fallback if missing)
+//   /admin/assets/x → dist/assets/x (MIME by ext)
+```
+
+不走 `http.FileServer` 而手写 `io.Copy` —— 避免 fileServer 对目录路径的 301 重定向循环（`/index.html` → `/` → `/index.html`）。
+
+### 13.4 路由表（最终）
+
+| 路径 | 来源 | 鉴权 |
+|---|---|---|
+| `GET /health` | server.go | 公开 |
+| `POST /v1/chat/completions` | server.go | Bearer (tokencache) |
+| `GET /v1/models` | server.go | 公开（本地调试） |
+| `GET /admin/` 及其下所有 | webui.Handler | 公开 |
+| `POST /api/v1/login` | admin.Handler | 公开 |
+| `POST /api/v1/logout` | admin.Handler | session |
+| `GET/POST/PUT/DELETE /api/v1/{channels,tokens,users,...}` | admin.Handler | session |
+
+### 13.5 P2 Smoke Test 结果
+
+| Case | 结果 |
+|---|---|
+| `GET /admin/` | 200 `text/html` 442B |
+| `GET /admin` (无 /) | 200 `text/html` 442B |
+| `GET /admin/index.html` | 200 `text/html` |
+| `GET /admin/assets/index-*.css` | 200 `text/css` 15055B |
+| `GET /admin/assets/index-*.js` | 200 `application/javascript` 164KB |
+| `GET /admin/channels` (SPA fallback) | 200 `text/html` |
+| `POST /api/v1/login` | 200 + session_token |
+
+构建产物大小：CSS 15KB / JS 164KB（gzip 51KB），二进制仍 14MB（embed 不增加体积）。
+
+### 13.6 P2 已知限制
+
+- **路由简陋**：URL hash，无深链（如 `/admin/channels/123`），刷新无副作用
+- **无 Charts**：dashboard 用 grid 数字卡，P3 加时序图
+- **无 Realtime**：Dashboard 10s 轮询；Logs 5s；P3 接 SSE 流
+- **无筛选/分页**：Logs 用 limit=100 + 客户端 filter；正式上线要加日期/channel/token 维度
+- **前端无测试**：纯 UI，依赖后端管理 API smoke test 覆盖
+- **dist 提交策略**：把 `internal/webui/dist/` 入 git；改前端后需手动 `cp -r web/dist/* internal/webui/dist/` 并 `go build`（已写进 README）—— P6 可加 Makefile 自动同步
+
+### 13.7 P2 之后剩余路线
 
 | Phase | 内容 | 预计 |
 |---|---|---|
-| P2 | WebUI（React + Tailwind，go:embed dist/） | 1 周 |
-| P3 | L3 多策略完善 + Analytics + 日志查询 UI + Session TTL | 1 周 |
+| P3 | L3 多策略完善 + Analytics UI + 日志查询 UI + Session TTL + SSE 日志流 | 1-1.5 周 |
 | P4 | L4 Intent Classifier + Rust cdylib | 1 周 |
 | P5 | L5 Thompson Sampling | 1 周 |
-| P6 | Settings + 告警 + Dockerfile + 密码 hash 升级 | 1 周 |
+| P6 | Settings + 告警 + Dockerfile + 密码 hash 升级 + Makefile | 1 周 |
