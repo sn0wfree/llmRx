@@ -68,7 +68,7 @@ func New(t *testing.T) *App {
 
 	cache := tokencache.New(st)
 	eng := router.New(st, cp)
-	logBroker := broker.New[*model.Log]()
+	logBroker := broker.New[*model.Log](128)
 	rt := runtime.New()
 	adminH := admin.New(st, cp, eng, cache, logBroker, rt)
 

@@ -49,7 +49,7 @@ func main() {
 	if s := cfg.Strategy.CostStrategy; s != "" {
 		eng.SetStrategy(model.CostStrategy(s))
 	}
-	logBroker := broker.New[*model.Log]()
+	logBroker := broker.New[*model.Log](cfg.Server.MaxLogSubscribers)
 	defer logBroker.Close()
 
 	rt := runtime.New()

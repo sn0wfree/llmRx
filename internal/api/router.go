@@ -70,6 +70,17 @@ func (h *Handler) SetMarkup(m float64) { h.rt.SetMarkupRatio(m) }
 // per-protocol clients.
 func (h *Handler) SetProvider(p provider.Provider) { h.provider = p }
 
+// SetStreamCaps overrides the server stream timeout (seconds) and
+// per-stream body cap (bytes) without touching the on-disk config.
+// Zero values are treated as "use the configured default".
+func (h *Handler) SetStreamCaps(timeoutSec, maxBodyBytes int) {
+	if h.cfg == nil {
+		h.cfg = &config.Config{}
+	}
+	h.cfg.Server.StreamTimeoutSec = timeoutSec
+	h.cfg.Server.StreamMaxBodyBytes = maxBodyBytes
+}
+
 // SetProviders replaces the per-protocol provider map. Used by
 // tests to inject mocks for every protocol. Pass a nil-valued
 // entry to skip a protocol (fall through to the default).
@@ -280,6 +291,17 @@ func calcCost(ch *model.Channel, usage provider.Usage) float64 {
 // stream, and writes each chunk back as an SSE event. The
 // Content-Type is text/event-stream and the response is flushed
 // after every chunk so the client sees tokens as they're produced.
+//
+// Two server-side caps protect against resource exhaustion:
+//
+//   - stream_timeout_sec   total wall-clock for the stream;
+//                          context is cancelled when it elapses.
+//   - stream_max_body_bytes soft cap on bytes written to the client;
+//                          when exceeded the stream terminates with a
+//                          "limit_exceeded" error frame and the
+//                          channel is recorded as a failure.
+//
+// A value of 0 disables the corresponding cap.
 func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest) {
 	route, err := h.router.RouteWith(r.Context(), req.Model, router.RouteOptions{Text: lastUserText(req.Messages)})
 	if err != nil {
@@ -309,6 +331,12 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 	start := time.Now()
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+	if timeout := h.streamTimeout(); timeout > 0 {
+		ctx, cancel = context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+	}
+	maxBody := int64(h.streamMaxBodyBytes())
+
 	ch, err := sp.StreamChat(ctx, req, route.KeyValue, route.Channel.BaseURL)
 	if err != nil {
 		// Emit a single error frame and bail.
@@ -322,38 +350,94 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 
 	var usage *provider.Usage
 	flushed := 0
-	for ev := range ch {
-		if ev.Err != nil {
+	bytesSent := int64(0)
+	for {
+		select {
+		case <-ctx.Done():
+			reason := "client disconnected"
+			if ctx.Err() == context.DeadlineExceeded {
+				reason = "stream timeout exceeded"
+			}
 			h.router.RecordFailure(route.Channel.ID)
-			fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", ev.Err.Error())
+			fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", reason)
 			flusher.Flush()
 			h.emitLog(lookupTokenID(r.Context(), h.store), req.Model, route, usage,
-				time.Since(start).Milliseconds(), http.StatusBadGateway, true, clientIP(r))
+				time.Since(start).Milliseconds(), http.StatusGatewayTimeout, true, clientIP(r))
 			return
-		}
-		if ev.Chunk.Usage != nil {
-			usage = ev.Chunk.Usage
-		}
-		payload, err := json.Marshal(ev.Chunk)
-		if err != nil {
-			continue
-		}
-		if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
-			cancel()
-			return
-		}
-		// Flush every 4 chunks or on the final one to keep latency
-		// low without burning CPU.
-		flushed++
-		if flushed%4 == 0 {
-			flusher.Flush()
+		case ev, ok := <-ch:
+			if !ok {
+				// upstream closed cleanly.
+				goto done
+			}
+			if ev.Err != nil {
+				h.router.RecordFailure(route.Channel.ID)
+				fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", ev.Err.Error())
+				flusher.Flush()
+				h.emitLog(lookupTokenID(r.Context(), h.store), req.Model, route, usage,
+					time.Since(start).Milliseconds(), http.StatusBadGateway, true, clientIP(r))
+				return
+			}
+			if ev.Chunk.Usage != nil {
+				usage = ev.Chunk.Usage
+			}
+			payload, err := json.Marshal(ev.Chunk)
+			if err != nil {
+				continue
+			}
+			line := fmt.Sprintf("data: %s\n\n", payload)
+			n, werr := fmt.Fprint(w, line)
+			bytesSent += int64(n)
+			if werr != nil {
+				cancel()
+				return
+			}
+			if maxBody > 0 && bytesSent >= maxBody {
+				fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", "stream max body bytes exceeded")
+				flusher.Flush()
+				h.router.RecordFailure(route.Channel.ID)
+				h.emitLog(lookupTokenID(r.Context(), h.store), req.Model, route, usage,
+					time.Since(start).Milliseconds(), http.StatusRequestEntityTooLarge, true, clientIP(r))
+				return
+			}
+			// Flush every 4 chunks or on the final one to keep latency
+			// low without burning CPU.
+			flushed++
+			if flushed%4 == 0 {
+				flusher.Flush()
+			}
 		}
 	}
+done:
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
 	h.router.RecordSuccess(route.Channel.ID)
 	h.emitLog(lookupTokenID(r.Context(), h.store), req.Model, route, usage,
 		time.Since(start).Milliseconds(), http.StatusOK, false, clientIP(r))
+}
+
+// streamTimeout returns the per-stream wall-clock cap. Defaults to
+// 5 minutes when the server config is unset or zero.
+func (h *Handler) streamTimeout() time.Duration {
+	if h.cfg == nil {
+		return 5 * time.Minute
+	}
+	if h.cfg.Server.StreamTimeoutSec <= 0 {
+		return 5 * time.Minute
+	}
+	return time.Duration(h.cfg.Server.StreamTimeoutSec) * time.Second
+}
+
+// streamMaxBodyBytes returns the soft cap on bytes the gateway will
+// emit to the streaming client. 0 = unlimited. The default of 32 MiB
+// guards against malformed upstreams that emit an unbounded stream.
+func (h *Handler) streamMaxBodyBytes() int {
+	if h.cfg == nil {
+		return 32 << 20
+	}
+	if h.cfg.Server.StreamMaxBodyBytes <= 0 {
+		return 32 << 20
+	}
+	return h.cfg.Server.StreamMaxBodyBytes
 }
 
 // lastUserText returns the last user-role message in the conversation
