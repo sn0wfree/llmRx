@@ -56,11 +56,25 @@ func NewAnthropicProvider() *AnthropicProvider {
 func (p *AnthropicProvider) Name() string { return "anthropic" }
 
 type anthropicRequest struct {
-	Model     string             `json:"model"`
-	Messages  []anthropicMessage `json:"messages"`
-	System    string             `json:"system,omitempty"`
-	MaxTokens int                `json:"max_tokens,omitempty"`
-	Stream    bool               `json:"stream,omitempty"`
+	Model       string             `json:"model"`
+	Messages    []anthropicMessage `json:"messages"`
+	System      string             `json:"system,omitempty"`
+	MaxTokens   int                `json:"max_tokens,omitempty"`
+	Temperature *float64           `json:"temperature,omitempty"`
+	TopP        *float64           `json:"top_p,omitempty"`
+	TopK        *int               `json:"top_k,omitempty"`
+	StopSeq     any                `json:"stop_sequences,omitempty"`
+	Stream      bool               `json:"stream,omitempty"`
+	Metadata    map[string]any     `json:"metadata,omitempty"`
+	Tools       []anthropicTool    `json:"tools,omitempty"`
+	ToolChoice  any                `json:"tool_choice,omitempty"`
+}
+
+// anthropicTool mirrors Anthropic's tool block.
+type anthropicTool struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	InputSchema map[string]any `json:"input_schema"`
 }
 
 type anthropicMessage struct {
@@ -135,26 +149,49 @@ func (p *AnthropicProvider) Chat(req *ChatRequest, apiKey, baseURL string) (*Cha
 }
 
 func (p *AnthropicProvider) translateReq(req *ChatRequest) anthropicRequest {
-	var system string
+	var systemParts []string
 	var msgs []anthropicMessage
 	for _, m := range req.Messages {
 		if m.Role == "system" {
-			system += m.Content + "\n"
+			systemParts = append(systemParts, m.ContentString())
 			continue
 		}
-		msgs = append(msgs, anthropicMessage{Role: m.Role, Content: m.Content})
+		msgs = append(msgs, anthropicMessage{Role: m.Role, Content: m.ContentString()})
 	}
 	maxTokens := req.MaxTokens
+	if req.MaxCompletionTokens > 0 {
+		maxTokens = req.MaxCompletionTokens
+	}
 	if maxTokens == 0 {
 		maxTokens = 1024 // Anthropic requires max_tokens
 	}
-	return anthropicRequest{
-		Model:     req.Model,
-		Messages:  msgs,
-		System:    strings.TrimRight(system, "\n"),
-		MaxTokens: maxTokens,
-		Stream:    req.Stream,
+	out := anthropicRequest{
+		Model:       req.Model,
+		Messages:    msgs,
+		System:      strings.Join(systemParts, "\n"),
+		MaxTokens:   maxTokens,
+		Temperature: req.Temperature,
+		TopP:        req.TopP,
+		StopSeq:     req.Stop,
+		Stream:      req.Stream,
+		Metadata:    req.Metadata,
 	}
+	if len(req.Tools) > 0 {
+		out.Tools = make([]anthropicTool, len(req.Tools))
+		for i, t := range req.Tools {
+			out.Tools[i] = anthropicTool{
+				Name:        t.Function.Name,
+				Description: t.Function.Description,
+				InputSchema: t.Function.Parameters,
+			}
+		}
+		if req.ToolChoice != nil {
+			out.ToolChoice = req.ToolChoice
+		} else {
+			out.ToolChoice = map[string]any{"type": "auto"}
+		}
+	}
+	return out
 }
 
 // StreamChat implements StreamingProvider.
@@ -301,12 +338,42 @@ func NewGeminiProvider() *GeminiProvider {
 func (p *GeminiProvider) Name() string { return "gemini" }
 
 type geminiRequest struct {
-	Contents []geminiContent `json:"contents"`
-	SystemInstruction *geminiPart `json:"systemInstruction,omitempty"`
-	GenerationConfig *struct {
-		MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
-		Temperature     float64 `json:"temperature,omitempty"`
-	} `json:"generationConfig,omitempty"`
+	Contents          []geminiContent       `json:"contents"`
+	SystemInstruction *geminiPart           `json:"systemInstruction,omitempty"`
+	GenerationConfig  *geminiGenerationCfg  `json:"generationConfig,omitempty"`
+	Tools             []geminiTool          `json:"tools,omitempty"`
+	ToolConfig        *geminiToolConfig     `json:"toolConfig,omitempty"`
+}
+
+// geminiGenerationCfg mirrors the Gemini generationConfig block.
+// Only fields with non-zero values survive JSON marshalling.
+type geminiGenerationCfg struct {
+	MaxOutputTokens int      `json:"maxOutputTokens,omitempty"`
+	Temperature     *float64 `json:"temperature,omitempty"`
+	TopP            *float64 `json:"topP,omitempty"`
+	TopK            *int     `json:"topK,omitempty"`
+	StopSequences   []string `json:"stopSequences,omitempty"`
+	CandidateCount  *int     `json:"candidateCount,omitempty"`
+	ResponseSchema  map[string]any `json:"responseSchema,omitempty"`
+	ResponseMimeType string  `json:"responseMimeType,omitempty"`
+}
+
+// geminiTool is Gemini's tool declaration. FunctionDeclarations
+// arrays match the OpenAI tools shape.
+type geminiTool struct {
+	FunctionDeclarations []geminiFunctionDecl `json:"functionDeclarations,omitempty"`
+}
+
+type geminiFunctionDecl struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
+}
+
+type geminiToolConfig struct {
+	FunctionCallingConfig *struct {
+		Mode string `json:"mode,omitempty"` // AUTO | ANY | NONE
+	} `json:"functionCallingConfig,omitempty"`
 }
 
 type geminiContent struct {
@@ -381,9 +448,10 @@ func (p *GeminiProvider) Chat(req *ChatRequest, apiKey, baseURL string) (*ChatRe
 
 func (p *GeminiProvider) translateReq(req *ChatRequest) geminiRequest {
 	out := geminiRequest{}
+	var systemParts []string
 	for _, m := range req.Messages {
 		if m.Role == "system" {
-			out.SystemInstruction = &geminiPart{Text: m.Content}
+			systemParts = append(systemParts, m.ContentString())
 			continue
 		}
 		// Gemini uses "user" / "model" roles.
@@ -393,14 +461,75 @@ func (p *GeminiProvider) translateReq(req *ChatRequest) geminiRequest {
 		}
 		out.Contents = append(out.Contents, geminiContent{
 			Role:  role,
-			Parts: []geminiPart{{Text: m.Content}},
+			Parts: []geminiPart{{Text: m.ContentString()}},
 		})
 	}
-	if req.MaxTokens > 0 || req.Temperature > 0 {
-		out.GenerationConfig = &struct {
-			MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
-			Temperature     float64 `json:"temperature,omitempty"`
-		}{MaxOutputTokens: req.MaxTokens, Temperature: req.Temperature}
+	if len(systemParts) > 0 {
+		out.SystemInstruction = &geminiPart{Text: strings.Join(systemParts, "\n")}
+	}
+	// GenerationConfig — set whenever the client specified any knob
+	// that maps onto Gemini's knobs.
+	maxTokens := req.MaxTokens
+	if req.MaxCompletionTokens > 0 {
+		maxTokens = req.MaxCompletionTokens
+	}
+	if maxTokens > 0 || req.Temperature != nil || req.TopP != nil || req.N != nil || req.Stop != nil || req.ResponseFormat != nil {
+		gc := &geminiGenerationCfg{
+			MaxOutputTokens: maxTokens,
+			Temperature:     req.Temperature,
+			TopP:            req.TopP,
+			CandidateCount:  req.N,
+		}
+		if s, ok := req.Stop.(string); ok {
+			gc.StopSequences = []string{s}
+		} else if ss, ok := req.Stop.([]string); ok {
+			gc.StopSequences = ss
+		}
+		if req.ResponseFormat != nil {
+			switch req.ResponseFormat.Type {
+			case "json_object":
+				gc.ResponseMimeType = "application/json"
+			case "json_schema":
+				if req.ResponseFormat.JSONSchema != nil {
+					gc.ResponseMimeType = "application/json"
+					gc.ResponseSchema = req.ResponseFormat.JSONSchema.Schema
+				}
+			}
+		}
+		out.GenerationConfig = gc
+	}
+	// Tool declarations → Gemini's functionDeclarations wrapper.
+	if len(req.Tools) > 0 {
+		decls := make([]geminiFunctionDecl, len(req.Tools))
+		for i, t := range req.Tools {
+			decls[i] = geminiFunctionDecl{
+				Name:        t.Function.Name,
+				Description: t.Function.Description,
+				Parameters:  t.Function.Parameters,
+			}
+		}
+		out.Tools = []geminiTool{{FunctionDeclarations: decls}}
+		// Translate OpenAI tool_choice enum to Gemini's mode.
+		out.ToolConfig = &geminiToolConfig{}
+		mode := "AUTO"
+		switch v := req.ToolChoice.(type) {
+		case string:
+			switch v {
+			case "auto", "":
+				mode = "AUTO"
+			case "none":
+				mode = "NONE"
+			case "required":
+				mode = "ANY"
+			}
+		case map[string]any:
+			if t, _ := v["type"].(string); t == "function" {
+				mode = "ANY"
+			}
+		}
+		out.ToolConfig.FunctionCallingConfig = &struct {
+			Mode string `json:"mode,omitempty"`
+		}{Mode: mode}
 	}
 	return out
 }
