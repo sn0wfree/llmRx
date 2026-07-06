@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -47,6 +48,16 @@ func (s *SQLite) Close() error { return s.db.Close() }
 
 func (s *SQLite) migrate() error {
 	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			username TEXT UNIQUE NOT NULL,
+			password_hash TEXT NOT NULL,
+			role INTEGER NOT NULL DEFAULT 0,
+			status INTEGER NOT NULL DEFAULT 1,
+			session_token TEXT NOT NULL DEFAULT '',
+			session_exp INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS channels (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT UNIQUE NOT NULL,
@@ -95,15 +106,6 @@ func (s *SQLite) migrate() error {
 			last_used_at INTEGER NOT NULL DEFAULT 0,
 			created_at INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS users (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			username TEXT UNIQUE NOT NULL,
-			password_hash TEXT NOT NULL,
-			role INTEGER NOT NULL DEFAULT 0,
-			status INTEGER NOT NULL DEFAULT 1,
-			session_token TEXT NOT NULL DEFAULT '',
-			created_at INTEGER NOT NULL
-		)`,
 		`CREATE TABLE IF NOT EXISTS logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			token_id INTEGER NOT NULL DEFAULT 0,
@@ -123,13 +125,37 @@ func (s *SQLite) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_logs_created ON logs(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_keys_channel ON keys(channel_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_tokens_plan ON tokens(plan_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_users_session_exp ON users(session_exp) WHERE session_exp > 0`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
 			return fmt.Errorf("exec %q: %w", q, err)
 		}
 	}
-	return nil
+	return s.addColumnIfMissing("users", "session_exp", "INTEGER NOT NULL DEFAULT 0")
+}
+
+func (s *SQLite) addColumnIfMissing(table, column, decl string) error {
+	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	_, err = s.db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + decl)
+	return err
 }
 
 func toUnix(t time.Time) int64  { return t.Unix() }
@@ -425,7 +451,7 @@ func (s *SQLite) UpdatePlan(p *model.Plan) error {
 // ---------------- Users ----------------
 
 func (s *SQLite) GetUsers() ([]model.User, error) {
-	rows, err := s.db.Query(`SELECT id, username, password_hash, role, status, session_token, created_at FROM users ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, username, password_hash, role, status, session_token, session_exp, created_at FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -442,12 +468,12 @@ func (s *SQLite) GetUsers() ([]model.User, error) {
 }
 
 func (s *SQLite) GetUser(id int64) (*model.User, error) {
-	row := s.db.QueryRow(`SELECT id, username, password_hash, role, status, session_token, created_at FROM users WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT id, username, password_hash, role, status, session_token, session_exp, created_at FROM users WHERE id = ?`, id)
 	return scanUser(row)
 }
 
 func (s *SQLite) GetUserByUsername(username string) (*model.User, error) {
-	row := s.db.QueryRow(`SELECT id, username, password_hash, role, status, session_token, created_at FROM users WHERE username = ?`, username)
+	row := s.db.QueryRow(`SELECT id, username, password_hash, role, status, session_token, session_exp, created_at FROM users WHERE username = ?`, username)
 	return scanUser(row)
 }
 
@@ -455,15 +481,20 @@ func (s *SQLite) GetUserBySession(token string) (*model.User, error) {
 	if token == "" {
 		return nil, ErrNotFound
 	}
-	row := s.db.QueryRow(`SELECT id, username, password_hash, role, status, session_token, created_at FROM users WHERE session_token = ? AND status = 1`, token)
+	now := time.Now().UTC().UnixMilli()
+	row := s.db.QueryRow(
+		`SELECT id, username, password_hash, role, status, session_token, session_exp, created_at FROM users
+		 WHERE session_token = ? AND status = 1 AND (session_exp = 0 OR session_exp > ?)`,
+		token, now,
+	)
 	return scanUser(row)
 }
 
 func (s *SQLite) CreateUser(u *model.User) error {
 	u.CreatedAt = time.Now().UTC()
 	res, err := s.db.Exec(
-		`INSERT INTO users(username, password_hash, role, status, session_token, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		u.Username, u.PasswordHash, int(u.Role), u.Status, u.SessionToken, toUnix(u.CreatedAt),
+		`INSERT INTO users(username, password_hash, role, status, session_token, session_exp, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		u.Username, u.PasswordHash, int(u.Role), u.Status, u.SessionToken, sessionExpUnix(u.SessionExp), toUnix(u.CreatedAt),
 	)
 	if err != nil {
 		return err
@@ -475,10 +506,31 @@ func (s *SQLite) CreateUser(u *model.User) error {
 
 func (s *SQLite) UpdateUser(u *model.User) error {
 	_, err := s.db.Exec(
-		`UPDATE users SET password_hash=?, role=?, status=?, session_token=? WHERE id=?`,
-		u.PasswordHash, int(u.Role), u.Status, u.SessionToken, u.ID,
+		`UPDATE users SET password_hash=?, role=?, status=?, session_token=?, session_exp=? WHERE id=?`,
+		u.PasswordHash, int(u.Role), u.Status, u.SessionToken, sessionExpUnix(u.SessionExp), u.ID,
 	)
 	return err
+}
+
+// CleanupExpiredSessions clears session_token for users whose
+// session_exp is set and in the past. Returns rows affected.
+func (s *SQLite) CleanupExpiredSessions() (int64, error) {
+	now := time.Now().UTC().UnixMilli()
+	res, err := s.db.Exec(
+		`UPDATE users SET session_token = '' WHERE session_exp > 0 AND session_exp <= ?`,
+		now,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func sessionExpUnix(t *time.Time) int64 {
+	if t == nil {
+		return 0
+	}
+	return t.UnixMilli()
 }
 
 func scanUser(r interface {
@@ -486,8 +538,8 @@ func scanUser(r interface {
 }) (*model.User, error) {
 	var u model.User
 	var role int
-	var created int64
-	if err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &role, &u.Status, &u.SessionToken, &created); err != nil {
+	var sessionExp, created int64
+	if err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &role, &u.Status, &u.SessionToken, &sessionExp, &created); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
 		}
@@ -495,13 +547,19 @@ func scanUser(r interface {
 	}
 	u.Role = model.UserRole(role)
 	u.CreatedAt = fromUnix(created)
+	if sessionExp > 0 {
+		exp := time.UnixMilli(sessionExp).UTC()
+		u.SessionExp = &exp
+	}
 	return &u, nil
 }
 
 // ---------------- Logs ----------------
 
 func (s *SQLite) CreateLog(l *model.Log) error {
-	l.CreatedAt = time.Now().UTC()
+	if l.CreatedAt.IsZero() {
+		l.CreatedAt = time.Now().UTC()
+	}
 	res, err := s.db.Exec(
 		`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -566,4 +624,172 @@ func (s *SQLite) LogStats() (LogStats, error) {
 		return st, err
 	}
 	return st, nil
+}
+
+func (s *SQLite) QueryLogs(f LogFilter) ([]model.Log, int64, error) {
+	if f.Limit <= 0 {
+		f.Limit = 50
+	}
+	if f.Limit > 500 {
+		f.Limit = 500
+	}
+	if f.Offset < 0 {
+		f.Offset = 0
+	}
+
+	where, args := buildLogWhere(f)
+
+	var total int64
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM logs "+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	q := "SELECT id, token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, created_at FROM logs " +
+		where + " ORDER BY id DESC LIMIT ? OFFSET ?"
+	qargs := append(append([]any{}, args...), f.Limit, f.Offset)
+	rows, err := s.db.Query(q, qargs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var out []model.Log
+	for rows.Next() {
+		var l model.Log
+		var created int64
+		if err := rows.Scan(&l.ID, &l.TokenID, &l.ChannelID, &l.KeyID, &l.Model,
+			&l.PromptTokens, &l.CompletionTokens, &l.RealCostUSD, &l.BilledCostUSD,
+			&l.DurationMs, &l.StatusCode, &l.RouterPath, &l.RequestIP, &created); err != nil {
+			return nil, 0, err
+		}
+		l.CreatedAt = fromUnix(created)
+		out = append(out, l)
+	}
+	return nonNilLogs(out), total, rows.Err()
+}
+
+func nonNilLogs(xs []model.Log) []model.Log {
+	if xs == nil {
+		return []model.Log{}
+	}
+	return xs
+}
+
+// ---------------- Analytics ----------------
+
+// buildLogWhere returns the WHERE clause + args for log analytics.
+// CreatedFrom/To are unix seconds; the resulting filter is applied
+// to logs.created_at (also unix seconds). Empty result means no filter.
+func buildLogWhere(f LogFilter) (string, []any) {
+	var (
+		conds []string
+		args  []any
+	)
+	if f.TokenID > 0 {
+		conds = append(conds, "token_id = ?")
+		args = append(args, f.TokenID)
+	}
+	if f.ChannelID > 0 {
+		conds = append(conds, "channel_id = ?")
+		args = append(args, f.ChannelID)
+	}
+	if f.Model != "" {
+		conds = append(conds, "model = ?")
+		args = append(args, f.Model)
+	}
+	if f.StatusCode > 0 {
+		conds = append(conds, "status_code = ?")
+		args = append(args, f.StatusCode)
+	}
+	if f.CreatedFrom > 0 {
+		conds = append(conds, "created_at >= ?")
+		args = append(args, f.CreatedFrom)
+	}
+	if f.CreatedTo > 0 {
+		conds = append(conds, "created_at <= ?")
+		args = append(args, f.CreatedTo)
+	}
+	if len(conds) == 0 {
+		return "", nil
+	}
+	return "WHERE " + strings.Join(conds, " AND "), args
+}
+
+func (s *SQLite) TimeSeries(f LogFilter, bucketSec int64) ([]SeriesPoint, error) {
+	if bucketSec <= 0 {
+		bucketSec = 3600
+	}
+	where, args := buildLogWhere(f)
+	q := `SELECT
+		(created_at / ?) * ? AS bucket,
+		COUNT(*),
+		COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(prompt_tokens), 0),
+		COALESCE(SUM(completion_tokens), 0),
+		COALESCE(SUM(real_cost_usd), 0),
+		COALESCE(SUM(billed_cost_usd), 0)
+		FROM logs ` + where + ` GROUP BY bucket ORDER BY bucket`
+	qargs := append([]any{bucketSec, bucketSec}, args...)
+	rows, err := s.db.Query(q, qargs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SeriesPoint
+	for rows.Next() {
+		var p SeriesPoint
+		if err := rows.Scan(&p.Bucket, &p.Requests, &p.Errors,
+			&p.PromptTokens, &p.CompletionTokens,
+			&p.RealCostUSD, &p.BilledCostUSD); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	if out == nil {
+		out = []SeriesPoint{}
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) topByField(field string, f LogFilter, limit int) ([]NamedMetric, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	where, args := buildLogWhere(f)
+	q := `SELECT ` + field + `, COUNT(*), COALESCE(SUM(prompt_tokens+completion_tokens),0), COALESCE(SUM(billed_cost_usd),0)
+		FROM logs ` + where + ` GROUP BY ` + field + ` ORDER BY 2 DESC LIMIT ?`
+	qargs := append(append([]any{}, args...), limit)
+	rows, err := s.db.Query(q, qargs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []NamedMetric
+	for rows.Next() {
+		var m NamedMetric
+		var label sql.NullString
+		if err := rows.Scan(&label, &m.Count, &m.Tokens, &m.Cost); err != nil {
+			return nil, err
+		}
+		m.Label = label.String
+		if m.Label == "" {
+			m.Label = "(none)"
+		}
+		out = append(out, m)
+	}
+	if out == nil {
+		out = []NamedMetric{}
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) TopByModel(f LogFilter, limit int) ([]NamedMetric, error) {
+	return s.topByField("model", f, limit)
+}
+
+func (s *SQLite) TopByChannel(f LogFilter, limit int) ([]NamedMetric, error) {
+	return s.topByField("channel_id", f, limit)
+}
+
+func (s *SQLite) TopByToken(f LogFilter, limit int) ([]NamedMetric, error) {
+	return s.topByField("token_id", f, limit)
 }

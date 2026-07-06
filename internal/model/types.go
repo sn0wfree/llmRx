@@ -101,13 +101,14 @@ type Token struct {
 }
 
 type User struct {
-	ID           int64     `json:"id" gorm:"primaryKey"`
-	Username     string    `json:"username" gorm:"uniqueIndex;size:64"`
-	PasswordHash string    `json:"-" gorm:"size:256"`
-	Role         UserRole  `json:"role"`
-	Status       int       `json:"status"`
-	SessionToken string    `json:"-" gorm:"size:128"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID           int64      `json:"id" gorm:"primaryKey"`
+	Username     string     `json:"username" gorm:"uniqueIndex;size:64"`
+	PasswordHash string     `json:"-" gorm:"size:256"`
+	Role         UserRole   `json:"role"`
+	Status       int        `json:"status"`
+	SessionToken string     `json:"-" gorm:"size:128"`
+	SessionExp   *time.Time `json:"session_expires_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
 }
 
 type Log struct {

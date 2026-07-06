@@ -89,8 +89,60 @@ export const api = {
     request<{ id: number; key: string; name: string }>('POST', '/tokens', body),
   deleteToken: (id: number) => request<{ ok: boolean }>('DELETE', `/tokens/${id}`),
 
-  listLogs: (limit = 50, offset = 0) =>
-    request<{ data: LogEntry[] }>('GET', `/logs?limit=${limit}&offset=${offset}`),
+  listLogs: (
+    limit = 50,
+    offset = 0,
+    f: {
+      token_id?: number;
+      channel_id?: number;
+      model?: string;
+      status_code?: number;
+      from?: string;
+      to?: string;
+    } = {}
+  ) => {
+    const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (f.token_id) qs.set('token_id', String(f.token_id));
+    if (f.channel_id) qs.set('channel_id', String(f.channel_id));
+    if (f.model) qs.set('model', f.model);
+    if (f.status_code) qs.set('status_code', String(f.status_code));
+    if (f.from) qs.set('from', f.from);
+    if (f.to) qs.set('to', f.to);
+    return request<{ data: LogEntry[]; total: number; limit: number; offset: number }>(
+      'GET',
+      `/logs?${qs.toString()}`
+    );
+  },
+
+  analyticsTimeSeries: (bucketSec = 3600, f: { from?: string; to?: string; token_id?: number; channel_id?: number } = {}) => {
+    const qs = new URLSearchParams({ bucket: String(bucketSec) });
+    if (f.from) qs.set('from', f.from);
+    if (f.to) qs.set('to', f.to);
+    if (f.token_id) qs.set('token_id', String(f.token_id));
+    if (f.channel_id) qs.set('channel_id', String(f.channel_id));
+    return request<{ data: SeriesPoint[]; bucket: number }>('GET', `/analytics/timeseries?${qs.toString()}`);
+  },
+  analyticsByModel: (limit = 10, f: { from?: string; to?: string } = {}) => {
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (f.from) qs.set('from', f.from);
+    if (f.to) qs.set('to', f.to);
+    return request<{ data: NamedMetric[] }>('GET', `/analytics/by-model?${qs.toString()}`);
+  },
+  analyticsByChannel: (limit = 10, f: { from?: string; to?: string } = {}) => {
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (f.from) qs.set('from', f.from);
+    if (f.to) qs.set('to', f.to);
+    return request<{ data: NamedMetric[] }>('GET', `/analytics/by-channel?${qs.toString()}`);
+  },
+  analyticsByToken: (limit = 10, f: { from?: string; to?: string } = {}) => {
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (f.from) qs.set('from', f.from);
+    if (f.to) qs.set('to', f.to);
+    return request<{ data: NamedMetric[] }>('GET', `/analytics/by-token?${qs.toString()}`);
+  },
+
+  listChannelsForFilter: () => request<{ data: Channel[] }>('GET', '/channels'),
+  listTokensForFilter: () => request<{ data: Token[] }>('GET', '/tokens'),
 };
 
 export interface Channel {
@@ -142,4 +194,21 @@ export interface LogEntry {
   router_path: string;
   request_ip: string;
   created_at: string;
+}
+
+export interface SeriesPoint {
+  bucket: number;
+  requests: number;
+  errors: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  real_cost_usd: number;
+  billed_cost_usd: number;
+}
+
+export interface NamedMetric {
+  label: string;
+  count: number;
+  tokens: number;
+  cost: number;
 }
