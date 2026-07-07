@@ -11,6 +11,7 @@ interface ChannelForm {
   output_price_per_1m: number;
   max_failures: number;
   reset_timeout_ms: number;
+  cached_input_discount: number;
 }
 
 const EMPTY: ChannelForm = {
@@ -23,6 +24,7 @@ const EMPTY: ChannelForm = {
   output_price_per_1m: 0,
   max_failures: 5,
   reset_timeout_ms: 60000,
+  cached_input_discount: 0.1,
 };
 
 export default function Channels() {
@@ -56,6 +58,7 @@ export default function Channels() {
         priority: form.priority,
         input_price_per_1m: form.input_price_per_1m,
         output_price_per_1m: form.output_price_per_1m,
+        cached_input_discount: form.cached_input_discount,
         status: 1,
         circuit_breaker: {
           max_failures: form.max_failures,
@@ -146,6 +149,11 @@ export default function Channels() {
             <div>
               <label className="label">Reset timeout (ms)</label>
               <input className="input" type="number" value={form.reset_timeout_ms} onChange={(e) => setForm({ ...form, reset_timeout_ms: parseInt(e.target.value, 10) || 0 })} />
+            </div>
+            <div>
+              <label className="label">Cached input discount</label>
+              <input className="input" type="number" step="0.01" min="0" max="1" value={form.cached_input_discount} onChange={(e) => setForm({ ...form, cached_input_discount: parseFloat(e.target.value) || 0 })} />
+              <p className="text-xs text-slate-500 mt-1">Fraction of input price charged for cached prompt tokens (0 = no discount, 0.1 = Anthropic default, 1 = free).</p>
             </div>
           </div>
           <div className="mt-6 flex gap-2">

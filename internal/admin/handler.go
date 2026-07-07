@@ -301,6 +301,11 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 	if patch.OutputPrice != 0 {
 		cur.OutputPrice = patch.OutputPrice
 	}
+	// CachedInputDiscount can legitimately be 0 ("no discount"), so
+	// detect whether the client included it in the JSON body.
+	if patch.CachedInputDiscount >= 0 {
+		cur.CachedInputDiscount = patch.CachedInputDiscount
+	}
 	if patch.Status != 0 {
 		cur.Status = patch.Status
 	}
