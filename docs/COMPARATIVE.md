@@ -20,107 +20,119 @@
 | **Portkey** | — | TS | Production observability + governance |
 | **Helicone** | — | TS | Observability-led gateway |
 
-## 2. Feature matrix
+## 2. Feature matrix (snapshot: 2026-07, post multi-tenant + hot reload)
 
-| Feature | LiteLLM | One-API | Bifrost | Kong AI | llmRx (now) |
+| Feature | LiteLLM | One-API | Bifrost | Kong AI | **llmRx (now)** |
 |---|:---:|:---:|:---:|:---:|:---:|
 | **Protocol coverage** | 100+ | 25+ | 23+ | 10+ | **3** |
 | OpenAI-compatible API | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Streaming SSE | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Multi-protocol (Anthropic, Gemini) | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Embeddings / Rerank / Audio / Images | ✅ | ❌ | partial | ✅ | ❌ |
-| MCP gateway | ✅ (≥ v1.50) | ❌ | ✅ | ✅ | ❌ |
+| Full OpenAI spec passthrough (tools / response_format / multimodal / etc.) | ✅ | partial | ✅ | ✅ | ✅ |
+| Embeddings / Rerank / Audio / Images | ✅ | ❌ | partial | ✅ | ❌ (P9) |
+| MCP gateway | ✅ (≥ v1.50) | ❌ | ✅ | ✅ | ❌ (P11) |
 | A2A agent | ✅ (new) | ❌ | ❌ | ❌ | ❌ |
 | Responses API | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Auto router (dynamic model pick) | ✅ | ❌ | ✅ | ✅ | partial (L4 keyword) |
 | Tool/function call pass-through | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Semantic cache** | ✅ (Qdrant / Redis / Disk / S3 / GCS) | ❌ | ✅ (Redis) | ✅ | ❌ |
-| **Exact-match response cache** | ✅ (Redis/s3/disk) | ❌ | ✅ | ✅ | ❌ |
-| Anthropic prompt caching | ✅ | ❌ | ✅ | ❌ | ❌ |
-| Virtual keys + limits | ✅ | ✅ | ✅ | ✅ | ✅ basic |
-| Multi-tenant / groups | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Per-user billing | ✅ | ✅ (USD) | ✅ | ✅ | ❌ |
+| **Exact-match response cache** | ✅ (Redis/s3/disk) | ❌ | ✅ | ✅ | ❌ (P8) |
+| **Semantic cache** | ✅ (Qdrant / Redis / Disk / S3 / GCS) | ❌ | ✅ (Redis) | ✅ | ❌ (P9+) |
+| Anthropic prompt caching passthrough | ✅ | ❌ | ✅ | ❌ | ✅ (cache_control blocks + cached_tokens discount) |
+| **Per-token rate limit (RPM/TPM)** | ✅ (rpm/tpm) | ✅ (global) | ✅ | ✅ | ✅ (per-token sliding window) |
+| **Token whitelist (model / IP)** | ✅ | ✅ (group) | ✅ | ✅ | ✅ |
+| **Per-token spend tracking** | ✅ | ✅ (USD) | ✅ | ✅ | ✅ (atomic UPDATE) |
+| **Per-plan markup** | ✅ | ✅ (group) | ✅ | ✅ | ✅ (plan.MarkupRatio on top of channel) |
+| Multi-tenant / groups | ✅ | ✅ | ✅ | ✅ | ✅ (Plan + Token.plan_id) |
 | Redemption code system | ❌ | ✅ | ❌ | ❌ | ❌ |
-| Failover / auto-retry | ✅ | ✅ | ✅ | ✅ | ✅ (L2 breaker) |
-| Load balancing | ✅ | ✅ (group) | ✅ (adaptive) | ✅ | ✅ (priority + strategy) |
+| Failover / auto-retry | ✅ | ✅ | ✅ | ✅ | ✅ (L2 breaker + downstream retry) |
+| Load balancing | ✅ (latency/rpm/tpm) | ✅ (group) | ✅ (adaptive) | ✅ | ✅ (priority + strategy) |
 | **Thompson / RL routing** | ❌ | ❌ | ✅ | ❌ | ✅ **L5** |
-| **Intent classification L4** | ❌ | ❌ | ❌ | ❌ | ✅ **Rust ONNX** |
+| **Intent classification L4** | ❌ | ❌ | ❌ | ❌ | ✅ **Rust cdylib + ONNX feature** |
 | Circuit breaker | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Rate limiting | ✅ (rpm/tpm) | ✅ (global) | ✅ | ✅ | ⚠️ config |
-| Batch API | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Image generation | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Image generation | ✅ | ✅ | ✅ | ❌ | ❌ (P9) |
 | **Guardrails (input/output)** | ✅ (Lakera / Presidio / PII) | ❌ | ✅ (plugin) | ✅ | ❌ |
 | PII redaction | ✅ | ❌ | ✅ | ✅ | ❌ |
 | Audit log + long retention | ✅ Postgres | ✅ | ✅ | ✅ | ✅ (SQLite + auto-cleanup) |
 | **Live SSE log tail** | ✅ callback | ❌ | ✅ | ❌ | ✅ (toggle) |
 | Analytics dashboard | ✅ | ✅ | ✅ | ✅ | ✅ Recharts |
-| Prometheus / OTLP / OpenTelemetry | ✅ (callback) | ❌ | ✅ (native) | ✅ | ❌ |
+| **Prometheus /metrics** | ✅ (callback) | ❌ | ✅ (native) | ✅ | ❌ (P10) |
+| **OpenTelemetry traces** | ✅ | ❌ | ✅ | ✅ | ❌ (P10) |
 | Alerts (webhook / Slack / PagerDuty) | ✅ | ✅ (3rd party) | ✅ | ✅ | ✅ webhook + builtin |
 | Model mapping | ✅ | ✅ | ✅ | ✅ | ❌ |
-| **Hot reload config** | ✅ yaml | ✅ env | ✅ API + UI | ✅ | ❌ (requires restart) |
+| **Hot reload (no restart)** | ✅ yaml | ✅ env | ✅ API + UI | ✅ | ✅ **UpdateToken + /reload** |
 | Web UI admin | ✅ React | ✅ Vue | ✅ React | ✅ Kong Manager | ✅ React + Recharts |
 | SSO / SAML / OIDC | ✅ Enterprise | ❌ | ✅ Enterprise | ✅ | ❌ |
-| RBAC | ✅ | ✅ (admin/user) | ✅ | ✅ | ✅ |
+| RBAC | ✅ | ✅ (admin/user) | ✅ | ✅ | ✅ (admin/normal) |
 | Multi-node master/slave | ✅ | ✅ (master/slave + Redis sync) | ✅ (cluster) | ✅ (CP/DP) | ❌ |
+| **Streaming caps (timeout / body cap)** | ✅ | ❌ | ✅ | ✅ | ✅ (configurable) |
+| **Broker subscriber cap (DoS protection)** | ✅ | ❌ | ✅ | ✅ | ✅ |
 | Single binary deploy | ❌ | ✅ | ✅ | ❌ | ✅ |
 | Docker / distroless | ✅ | ✅ | ✅ | ✅ | ✅ distroless |
 | Multi-arch (amd64 / arm64) | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Tracing (OTel) | ✅ | ❌ | ✅ | ✅ | ❌ |
-| Realtime cost tracking | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Response schema validation | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Cache-control headers (TTL / no-store / s-maxage) | ✅ | ❌ | ✅ | ✅ | ❌ |
-| Backup / restore | ✅ pg_dump | ✅ | ✅ | ✅ | ⚠️ SQLite `cp` |
 | Plugin system | ❌ | ❌ | ✅ | ✅ (strongest) | ❌ |
 | Python SDK + Proxy server | ✅ | ❌ | ❌ | ❌ | ❌ |
 
 ## 3. Where llmRx is ahead ✨
 
-1. **L4 Intent Classifier (Rust + cgo)** — None of the surveyed gateways expose an ONNX-backed intent classifier for free. LiteLLM offers content moderation but not a routing-signal classifier.
+1. **L4 Intent Classifier (Rust cdylib + cgo)** — None of the surveyed gateways expose an ONNX-backed intent classifier for free. LiteLLM offers content moderation but not a routing-signal classifier.
 2. **L5 Thompson Sampling** — Only Bifrost advertises an RL router; implementation differs (Bifrost uses adaptive LB, llmRx uses Beta posterior with static-priority blending).
 3. **Single binary + distroless + Rust ONNX feature flag** — One binary carries the web UI, the routing engine, and an optional classifier.
 4. **Argon2id with transparent bcrypt + plaintext upgrade** — peer gateways store whatever the admin entered.
-5. **Runtime-config atomic switch** — markup / breaker / retention / cost strategy change without restart.
+5. **Runtime-config atomic switch** — markup / breaker / retention / cost strategy / streaming caps / broker cap / alert cooldown change without restart.
 6. **Live SSE log toggle** — explicit Live button + auto-pause of polling.
+7. **Per-token / per-Plan spend tracking** with **atomic increment** (`UPDATE used_usd = used_usd + ?`) — no read-modify-write race.
+8. **Streaming caps** — `stream_timeout_sec` (5 min default) + `stream_max_body_bytes` (32 MiB default); malformed upstream can't starve the gateway.
+9. **Anthropic cache_control passthrough** — system blocks + message content blocks with `5m|1h|ephemeral`.
+10. **Hot reload** — `UpdateToken` + global `POST /api/v1/reload` covers every cache layer.
 
-## 4. Capability gaps (ranked)
+## 4. Capability gaps (ranked, refreshed)
 
 ### Tier 1 — critical for enterprise
 
-| Feature | Description | Priority |
-|---|---|:---:|
-| Semantic cache | Similar prompt → cached response, save latency + cost | ⭐⭐⭐ |
-| Exact-match response cache | `(model, prompt hash, temperature)` hit | ⭐⭐⭐ |
-| Multi-tenant (Users / Plans / Groups) | Group markups, per-tenant spend caps | ⭐⭐⭐ |
-| Guardrails (input) | PII / prompt-injection / jailbreak detection | ⭐⭐⭐ |
+| Feature | Description | Priority | Doc |
+|---|---|:---:|---|
+| **Exact-match response cache** | Similar prompt → cached response, save latency + cost | ⭐⭐⭐ | `docs/P8-CACHING.md` |
+| **Semantic cache** | Embedding-based similarity hit | ⭐⭐⭐ | parked P9+ |
+| Guardrails (input) | PII / prompt-injection / jailbreak detection | ⭐⭐⭐ | parked |
+| **Image / Rerank / Audio endpoints** | `/v1/images/generations` + `/v1/rerank` + `/v1/audio/*` | ⭐⭐⭐ | `docs/P9-MULTIMODAL.md` |
+| **Prometheus `/metrics` + OTel** | Enterprise gating; commercial deployments | ⭐⭐⭐ | `docs/P10-OBSERVABILITY.md` |
 
 ### Tier 2 — operational
 
-| Feature | Description | Priority |
-|---|---|:---:|
-| Hot-reload (channels/tokens) | No restart to pick up a new key | ⭐⭐ |
-| OpenTelemetry + Prometheus | OTLP traces, /metrics endpoint | ⭐⭐ |
-| MCP gateway | Tool-call routing | ⭐⭐ |
-| Image generation | `/v1/images/generations` | ⭐⭐ |
-| Plugin / middleware hook | let users extend | ⭐⭐ |
+| Feature | Description | Priority | Doc |
+|---|---|:---:|---|
+| MCP gateway | Tool-call routing | ⭐⭐ | `docs/P11-MCP.md` |
+| A2A agent gateway | Anthropic's A2A protocol | ⭐ | parked |
+| Auto router | "cheap & fast" abstraction | ⭐ | parked |
+| Image input passthrough | GPT-4V / Gemini Vision already works (Phase A); pure passthrough | ✅ | `docs/PASSTHROUGH.md` |
 
 ### Tier 3 — nice-to-have
 
 | Feature | Description | Priority |
 |---|---|:---:|
-| Batch API | Async bulk requests | ⭐ |
-| Auto router | "cheap & fast" abstraction | ⭐ |
-| Embeddings endpoint | `/v1/embeddings` forward + cache | ⭐ |
-| Audio (STT / TTS) | Transcription + speech | ⭐ |
-| Rerank endpoint | `/v1/rerank` | ⭐ |
-| SSO / OIDC | Enterprise login | ⭐ |
 | Cluster mode | Multi-instance coordination | ⭐ |
+| SSO / OIDC | Enterprise login | ⭐ |
+| SDK integration test suite | Cross-SDK smoke tests | ⭐ |
+| Token redemption code system | One-API parity | ⭐ |
 
-## 5. Take-aways
+## 5. Roadmap (post-survey)
 
-* llmRx is currently a **lightweight + adaptive + single-binary** play.
+| Phase | Doc | Status |
+|---|---|---|
+| P8 caching | `docs/P8-CACHING.md` | ⏳ next |
+| P9 multimodal | `docs/P9-MULTIMODAL.md` | ⏳ |
+| P10 observability | `docs/P10-OBSERVABILITY.md` | ⏳ |
+| P11 MCP gateway | `docs/P11-MCP.md` | ⏳ |
+
+## 6. Take-aways
+
+* llmRx is currently a **lightweight + adaptive + single-binary + multi-tenant** play.
   It overlaps One-API / Bifrost in core "OpenAI-compatible relay" but
-  pulls ahead on L4 + L5 ML routing, neither of which have direct peers.
-* The biggest gaps for an enterprise push are **caching + multi-tenant
-  + guardrails** — these are table stakes in LiteLLM / Kong / Portkey.
-* Operational maturity (OTel, hot-reload, plugins) is the second-tier
-  gap; closing it lets llmRx escape "single-process" deployments.
+  pulls ahead on L4 + L5 ML routing, multi-tenant enforcement (per-token
+  RPM/TPM + whitelists + spend), hot reload, and streaming caps.
+* The biggest remaining gaps for an enterprise push are **caching**,
+  **multimodal endpoints**, and **observability** — these are the next
+  three milestones (P8-P10).
+* Operational maturity (OTel, hot-reload, plugins) is closing fast;
+  llmRx is now closer to "production-ready self-hosted gateway" than
+  "single-process toy".

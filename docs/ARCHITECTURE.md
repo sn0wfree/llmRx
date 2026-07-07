@@ -1,6 +1,6 @@
 # llmRx — LLM API 智能路由网关
 
-> 2026-07-06 · 架构设计文档 v0.2 (P6 闭环)
+> 2026-07-07 · 架构设计文档 v0.3 (P7+ 闭环 + Passthrough A/B + 多租户 + 热重载)
 
 ---
 
@@ -1271,3 +1271,178 @@ CI 上 `cargo` 可选——没有 Rust 时 skip 步骤，`go test` 仍跑通（N
 
 `protocol` 缺省 = `openai`，向后兼容 P6 之前的 channel 定义。
 
+
+---
+
+## 19. 多租户强制（Multi-tenant Enforcement）
+
+P6/P7+ 之后加入了 per-token / per-plan 的强制层，让 llmRx 真正可以作为多租户网关对外服务。
+
+### 19.1 Token 模型扩展
+
+```go
+// model.Token 新字段
+type Token struct {
+    // 已有
+    PlanID          int64
+    RPM             int       // 每分钟请求数上限；0 = 无限
+    TPM             int       // 每分钟 token 数上限；0 = 无限
+    ModelsWhitelist []string  // 模型白名单；空 = 不限
+    IPWhitelist     []string  // IP 白名单；空 = 不限
+    
+    // 新增
+    UsedUSD         float64   // 累计账单（costed at billed price）
+}
+
+// model.Plan
+type Plan struct {
+    MarkupRatio float64  // 在 channel markup 之上再加一层（默认 1.0）
+    BudgetUSD   float64  // 总预算；0 = 不限
+    UsedUSD     float64
+}
+```
+
+### 19.2 速率限制：滑动窗口
+
+```
+internal/ratelimit/ratelimit.go
+- Limiter: map[tokenID]*bucket{ requests[]time.Time, tokens[]int }
+- Allow(key, rpm, tpm, promptTokens) -> (allowed, reason)
+- Account(key, extraTokens)        // emitLog 完成时回填 completion
+- 窗口 60s，超过自动 evict
+- 并发安全（sync.Mutex）
+```
+
+每个 token 一次请求调用一次 `Allow`；emitLog 完成时调用 `Account` 把 prompt+completion 加到 TPM 计数里。
+
+### 19.3 中间件链
+
+```
+请求 →
+  Token(lookup) 取出 TokenInfo（含 RPM/TPM/whitelists/PlanID）→
+  WithLimits(enforcer) 检查 RPM/TPM →
+  HasModelAccess / HasIPAccess 检查白名单 →
+  路由 + 上游 →
+  emitLog 写日志 + 累加 spend + Account 累加 TPM
+```
+
+`middleware/WithLimits` 在 Token 之上包装一层 `LimitEnforcer`：
+
+```go
+type LimitEnforcer interface {
+    Allow(tokenID int64, rpm, tpm int, promptEstimate int) (bool, string)
+}
+```
+
+`ratelimit.Limiter` 是默认实现，可以替换成 Redis-backed 版本。
+
+### 19.4 计费叠加
+
+```
+real    = calcCost(channel, usage)       // channel pricing + cached discount
+base    = real * MarkupRatio             // server-wide markup
+billed  = base * Plan.MarkupRatio        // per-plan markup (if any)
+```
+
+`emitLog`：
+
+1. 写一行 `logs`（含 `billed_cost_usd = billed`）
+2. `IncrementTokenSpend(tokenID, billed)` 原子累加
+3. `IncrementPlanSpend(planID, billed)` 原子累加
+4. `Limits.Account(tokenID, prompt+completion)` TPM 回填
+
+所有累计用 `UPDATE x.used_usd = x.used_usd + ?`，**无 read-modify-write 竞争**。
+
+### 19.5 缓存命中折扣（与 18 节共用）
+
+`usage.PromptTokensDetails.CachedTokens` 上游回包；`calcCost` 按 `channel.CachedInputDiscount` 计算 cached leg 折扣（见第 18 节）。
+
+---
+
+## 20. 热重载（Hot Reload）
+
+所有 in-memory 状态都可以不重启进程地刷新。
+
+### 20.1 自动重载（CRUD handler 内）
+
+| 操作 | 自动刷新的缓存 |
+|---|---|
+| `POST /channels` / `PUT /channels/{id}` / `DELETE /channels/{id}` | `pool.LoadFromStore()` + `router.ReloadChannel()` |
+| `POST /tokens` / `PUT /tokens/{id}` / `DELETE /tokens/{id}` | `tokens.Reload()` |
+| `POST /users/{id}/password` | 失效该 user 所有 session |
+| `PUT /config` | `runtime.Defaults` 原子切换 |
+
+`UpdateToken` 是 P7+ 闭环时新加的（之前只有 Create/Delete）。改 `status=2`（disabled）→ 下一个请求该 token 直接 403。
+
+### 20.2 手动全量重载
+
+```
+POST /api/v1/reload
+Authorization: Bearer <admin_session>
+
+→ 200 OK
+{
+  "ok": true,
+  "channels": true,
+  "tokens": 5,
+  "alerts_reloaded": true
+}
+```
+
+触发链：
+
+```
+ReloadAll() →
+  1. tokens.Reload()                   // 重新读 tokens 表
+  2. pool.LoadFromStore(store)         // 重新读 channels + keys
+  3. router.ReloadAllChannels()        // 清空 breaker + Thompson
+  4. alertMgr.Reload()                 // 重新读 alert 规则
+```
+
+用于：
+- 手工 DB 改动后（psql / sqlite3 直接改）
+- `kubectl exec` 进容器改 config 后
+- 异常恢复（怀疑 cache 不一致时）
+
+### 20.3 RouterEngine 的状态重置
+
+```go
+func (e *RouterEngine) ReloadChannel(id int64) {
+    e.breaker.reload(id)   // closes the breaker entry
+    e.thompson.Reset(id)   // back to uniform prior
+}
+
+func (e *RouterEngine) ReloadAllChannels() {
+    e.breaker.reloadAll()  // clear every entry
+    e.thompson.ResetAll()
+}
+```
+
+`breaker.reload` 在 P7+ 之前只是「warm」；现在**真正把失败计数清零 + 关闭**——让 admin 改完配置后下一次请求立刻走新策略。
+
+### 20.4 不重载的部分
+
+| 状态 | 重启行为 |
+|---|---|
+| `runtime.Defaults` | 重新读 `config.yml` |
+| `broker.Broker` subscriber set | 全部清空（已关闭的 SSE 客户端重新订阅） |
+| `ratelimit.Limiter` | 全部清空（合理 — 重启后 60s 窗口已过期） |
+| `tokencache.Cache` | `Reload()` 重新读 DB |
+
+---
+
+## 21. 路线图（Roadmap）
+
+| Phase | 状态 | 文档 |
+|---|---|---|
+| P0-P3 | ✅ | git log |
+| P4 Intent Classifier | ✅ | §13 |
+| P5 Thompson Sampling | ✅ | §12 |
+| P6 Hardening | ✅ | §15-17 |
+| P7+ Multi-protocol + SSE | ✅ | §18 |
+| Passthrough A/B | ✅ | `docs/PASSTHROUGH.md` |
+| Multi-tenant + Hot reload | ✅ | §19, §20 |
+| **P8 Caching** | ⏳ next | `docs/P8-CACHING.md` |
+| **P9 Multimodal** | ⏳ | `docs/P9-MULTIMODAL.md` |
+| **P10 Observability** | ⏳ | `docs/P10-OBSERVABILITY.md` |
+| **P11 MCP** | ⏳ | `docs/P11-MCP.md` |
