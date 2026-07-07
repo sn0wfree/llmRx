@@ -2,39 +2,70 @@
 
 LLM API 智能路由网关。聚合多 provider API Key，对外提供 OpenAI 兼容的统一入口，支持 Token 分发、智能路由（L1-L5）、用量计费和管理面板。
 
-## 当前阶段：P7+ 闭环 ✅
+## 当前阶段：P7+ 闭环 + 多租户 + 热重载 ✅
 
-P0 → P7+ 全部完成。所有 L1-L5 路由层齐全，多协议 provider，运行时配置，SSE 实时日志，告警，Docker。
+P0 → P7+ 全部完成，所有 L1-L5 路由层齐全，多协议 provider，运行时配置，SSE 实时日志，告警，Docker，多租户强制，热重载。
 
-- ✅ Go 单二进制 + 嵌入式 React SPA（`go:embed`，零外部依赖）
-- ✅ SQLite 单文件持久化（默认 `data/llmrx.db`，WAL + FK）
-- ✅ YAML 配置驱动 → 启动时 seed 进 DB（首次启动）
-- ✅ 管理控制台：`/admin/`（Dashboard / Channels / Tokens / Logs / Analytics / **Settings**）
-- ✅ 管理面 CRUD（Channels / Keys / Tokens / Users / Alerts）
-- ✅ 管理员登录 + 会话 TTL（24h 默认）+ 后台 5min 清理
-- ✅ Bearer Token 鉴权：内存 cache + DB 持久化
-- ✅ **Argon2id** 密码 hash（m=64MiB, t=3, p=2）+ 旧明文 / bcrypt hash 登录时透明升级
-- ✅ **改密**端点 `POST /api/v1/users/{id}/password`
-- ✅ 用量日志：每次请求写入 `logs` 表（含 token_id / cost / duration）
-- ✅ 日志过滤 UI + **SSE 实时尾随**
-- ✅ Analytics 时序图 + Top-N
-- ✅ L3 cost 策略运行时切换
-- ✅ **告警子系统**：error_rate / p95_latency / cost_spike / key_exhausted + webhook + 站内事件 + ack
-- ✅ **运行时计费 markup 倍率**（Settings 改立即生效）
-- ✅ **日志保留**后台清理
-- ✅ **Settings 4 Tab**：Routing / Security / Alerts / Maintenance
-- ✅ **SSE 流式响应**：`/v1/chat/completions` 的 `stream=true` 现在真正转发 token-by-token
-- ✅ **L5 Thompson Sampling** 自适应权重（Beta 后验 + 冷启动门控 + 静态优先级 blend）
-- ✅ **L4 Intent Classifier**（Rust cdylib + cgo，keyword 后端默认，ONNX 后端 feature flag）
-- ✅ **多协议 provider**：OpenAI / Anthropic / Gemini（per-channel `protocol` 字段）
-- ✅ **Dockerfile** 多阶段 + distroless
-- ✅ **docker-compose** 示例
-- ✅ **CI**：3 workflow
-  - `test.yml`：vet + race test + 60% 覆盖门槛 + build + 可选 L4 cdylib
-  - `docker.yml`（v\* tag 触发）：buildx 多架构 + push ghcr.io
-- ✅ L1-L5 全路由层（Static / Breaker / Cost / Intent / Thompson）
-- ✅ 100+ 测试用例 race-clean
-- ⏳ 集群模式 / 多节点同步：P8+
+### 核心能力
+
+#### 部署 / 持久化
+- Go 单二进制 + 嵌入式 React SPA（`go:embed`，零外部依赖）
+- SQLite 单文件持久化（默认 `data/llmrx.db`，WAL + FK）
+- YAML 配置驱动 → 启动时 seed 进 DB（首次启动）
+- Dockerfile 多阶段 + distroless/static:nonroot
+- docker-compose 示例
+- CI：test.yml（vet + race + 60% 覆盖门槛 + build）+ docker.yml（buildx 多架构 amd64+arm64 → ghcr.io）
+
+#### 管理控制台 + API
+- `/admin/`（Dashboard / Channels / Tokens / Logs / Analytics / **Settings**）
+- 管理面 CRUD：Channels / Keys / Tokens / Users / Alerts / Plans
+- 管理员登录 + 会话 TTL（24h 默认）+ 后台 5min 清理
+- Bearer Token 鉴权：内存 cache + DB 持久化
+
+#### 鉴权 / 安全
+- **Argon2id** 密码 hash（m=64MiB, t=3, p=2）+ 旧明文 / bcrypt 自动透明升级
+- 改密端点 `POST /api/v1/users/{id}/password`
+- **多租户强制**：
+  - Per-Token RPM/TPM 限速（in-process sliding window + middleware 429）
+  - Per-Token 模型白名单 / IP 白名单（403）
+  - Per-Token / Per-Plan spend 累计（`UPDATE used_usd = used_usd + ?` 原子操作）
+  - Per-Plan markup 叠加（plan.MarkupRatio × channel markup）
+
+#### 路由（L1-L5）
+- **L1** static match
+- **L2** circuit breaker（失败计数 + 半开恢复窗口；admin 改阈值即时生效）
+- **L3** cost 策略（cheapest / fastest / balanced，运行时可切）
+- **L4** Intent Classifier（Rust cdylib + cgo，keyword 后端默认，ONNX feature flag）
+- **L5** Thompson Sampling 自适应权重（Beta 后验 + 冷启动门控 + 静态优先级 blend）
+
+#### Provider 协议
+- **多协议**：OpenAI / Anthropic / Gemini（per-channel `protocol` 字段）
+- **完整 OpenAI 规范透传**（Phase A）：
+  - `temperature` / `top_p` / `max_tokens` / `max_completion_tokens`
+  - `tools` / `tool_choice` / `parallel_tool_calls`
+  - `response_format`（text / json_object / json_schema）
+  - `stream_options` / `seed` / `user` / `metadata` / `logit_bias` 等
+  - 多模态 `content` 数组（text + image_url）
+  - Anthropic 工具定义 + `cache_control` 块（Phase B）
+- **缓存命中折扣**（Phase B）：`PromptTokensDetails.CachedTokens` 按 `channel.CachedInputDiscount` 计费
+
+#### 流式 + 实时
+- **SSE 流式聊天** OpenAI + Anthropic 原生 token-by-token
+- **流式 caps**：`stream_timeout_sec`（默认 5 min ctx 取消）+ `stream_max_body_bytes`（默认 32 MiB 终止）
+- **broker subscriber cap** 防止 SSE 订阅 DoS
+
+#### 观测 / 运维
+- 用量日志：每次请求写入 `logs` 表（含 token_id / cost / duration / cached_tokens）
+- 日志过滤 UI + **SSE 实时尾随**（Live toggle）
+- Analytics 时序图 + Top-N
+- **告警子系统**：error_rate / p95_latency / cost_spike / key_exhausted + webhook + 站内事件 + ack
+- **运行时配置**（markup / breaker / alert cooldown / retention / cost strategy / stream caps / broker cap）
+- **日志保留**后台清理（24h ticker）
+- **Settings 4 Tab**：Routing / Security / Alerts / Maintenance
+- **热重载**：
+  - Channel / Token / User CRUD 全部即时生效
+  - `PUT /api/v1/tokens/{id}` 改限速 + 白名单
+  - `POST /api/v1/reload` 强制全量重载（token cache / pool / router state / alert rules）
 
 ## 升级说明
 
@@ -71,9 +102,51 @@ LLMRX_INTENT_LIB=internal/intent/rust/target/release/libllmrx_intent.so ./llmRx
 
 后端默认 `keyword`（零依赖），feature flag `onnx` 切换 ONNX Runtime（需系统装 `libonnxruntime`）。Channels 通过 `intents` 字段声明支持的 intent 标签（`code` / `chat` / `summary` / `translate` / `math` / `general`），路由时 L4 把匹配的 channel 提到 L3 排序之前。
 
+### 多租户 / 计费
+
+每个 Token 可以绑定一个 Plan：
+- Token 行有独立 RPM / TPM 限速
+- `models_whitelist` / `ip_whitelist` 做精细授权
+- 每次请求原子累加 `tokens.used_usd` 和 `plans.used_usd`
+- Plan 的 `markup_ratio` 在 channel markup 之上再加一层
+
+请求路径：
+```
+client → Bearer Auth → Whitelist check → RPM/TPM 限速
+       → L1-L5 路由 → 上游 → 累加 spend → 推送日志
+```
+
+超限：HTTP 429 + `rate_limited`；不在白名单：HTTP 403。
+
+### 缓存命中折扣
+
+Anthropic 提示缓存命中时，上游会回 `usage.prompt_tokens_details.cached_tokens`。llmRx 自动按 channel 的 `cached_input_discount` 折扣计费：
+
+| `cached_input_discount` | 含义 | 实际收费 |
+|---|---|---|
+| `0.1` (默认 / Anthropic 实际) | 付 10% | cached 段 `0.1 × input_price` |
+| `0.0` | 免费 | 0 |
+| `1.0` | 不打折 | `1.0 × input_price` |
+
+### 热重载
+
+```bash
+# 改密 / 改限速 / 改白名单 / 启用 Token → 立即生效
+curl -X PUT http://localhost:8787/api/v1/tokens/42 \
+     -H 'X-Session-Token: ...' \
+     -d '{"rpm":120,"tpm":100000,"models_whitelist":["gpt-4","claude-3"]}'
+
+# 强制全量重载（手工改 DB 后 / k8s exec / 异常恢复）
+curl -X POST http://localhost:8787/api/v1/reload \
+     -H 'X-Session-Token: ...'
+# → {"ok":true,"channels":true,"tokens":N,"alerts_reloaded":true}
+```
+
+`POST /reload` 同时刷新：token cache、channel pool、router 状态（breaker + Thompson 后验）、alert rules。
+
 ### SSE 实时日志
 
-Logs 页头部新增 **Live** 切换。开启后通过 `EventSource` 接收 `/api/v1/logs/stream` 的推送（默认 polling 自动暂停）。EventSource 不能设置自定义 header，鉴权走 `?session_token=` 查询串。
+Logs 页头部 **Live** 切换。开启后通过 `EventSource` 接收 `/api/v1/logs/stream` 的推送（默认 polling 自动暂停）。EventSource 不能设置自定义 header，鉴权走 `?session_token=` 查询串。
 
 ### 告警
 
@@ -120,9 +193,28 @@ go build -o llmRx ./cmd/gateway
 ### 调用 OpenAI 兼容入口
 
 ```bash
+# 限速 Token (RPM=60, TPM=100K)
 curl -H 'Authorization: Bearer sk-test-token-123' \
      -H 'Content-Type: application/json' \
      -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}' \
+     http://localhost:8787/v1/chat/completions
+
+# Anthropic（自动按 channel.protocol 路由）
+curl -H 'Authorization: Bearer sk-test-token-123' \
+     -H 'Content-Type: application/json' \
+     -d '{"model":"claude-3-opus","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}' \
+     http://localhost:8787/v1/chat/completions
+
+# 流式
+curl -N -H 'Authorization: Bearer sk-test-token-123' \
+     -H 'Content-Type: application/json' \
+     -d '{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"hi"}]}' \
+     http://localhost:8787/v1/chat/completions
+
+# Tool call 透传
+curl -H 'Authorization: Bearer sk-test-token-123' \
+     -H 'Content-Type: application/json' \
+     -d '{"model":"gpt-4","tools":[{"type":"function","function":{"name":"get_weather","parameters":{}}}],"messages":[]}' \
      http://localhost:8787/v1/chat/completions
 ```
 
@@ -143,10 +235,19 @@ curl -X POST http://localhost:8787/api/v1/login \
      -d '{"username":"admin","password":"admin"}'
 # → {"session_token":"...","user":{...}}
 
-# 拿 dashboard
+# Dashboard / Channels / Logs
 curl http://localhost:8787/api/v1/dashboard -H 'X-Session-Token: <token>'
-curl http://localhost:8787/api/v1/channels  -H 'X-Session-Token: <token>'
-curl http://localhost:8787/api/v1/logs?limit=20 -H 'X-Session-Token: <token>'
+curl http://localhost:8787/api/v1/channels   -H 'X-Session-Token: <token>'
+curl 'http://localhost:8787/api/v1/logs?limit=20' -H 'X-Session-Token: <token>'
+
+# Token CRUD
+curl -X POST http://localhost:8787/api/v1/tokens -H 'X-Session-Token: <token>' \
+     -H 'Content-Type: application/json' \
+     -d '{"name":"prod","plan_id":1,"rpm":120,"tpm":100000,"models_whitelist":["gpt-4","claude-3"]}'
+curl -X PUT http://localhost:8787/api/v1/tokens/2 -H 'X-Session-Token: <token>' \
+     -H 'Content-Type: application/json' \
+     -d '{"rpm":240,"status":1}'
+curl -X DELETE http://localhost:8787/api/v1/tokens/2 -H 'X-Session-Token: <token>'
 
 # 改密
 curl -X POST http://localhost:8787/api/v1/users/1/password \
@@ -166,7 +267,10 @@ curl http://localhost:8787/api/v1/alerts/events -H 'X-Session-Token: <token>'
 curl http://localhost:8787/api/v1/config -H 'X-Session-Token: <token>'
 curl -X PUT http://localhost:8787/api/v1/config -H 'X-Session-Token: <token>' \
      -H 'Content-Type: application/json' \
-     -d '{"cost_strategy":"balanced","markup_ratio":1.2,"log_retention_days":30}'
+     -d '{"cost_strategy":"balanced","markup_ratio":1.2,"log_retention_days":30,"stream_timeout_sec":300}'
+
+# 强制全量重载
+curl -X POST http://localhost:8787/api/v1/reload -H 'X-Session-Token: <token>'
 ```
 
 ### 重新构建前端
@@ -195,13 +299,24 @@ go tool cover -func=/tmp/cov.out | grep -E 'internal/(admin|api)/'
 
 # 单跑 handler 测试
 go test -v ./internal/admin ./internal/api
+
+# Coverage gate 60%；当前 ~65%
 ```
 
 测试走 `httptest` + chi 子路由装配，数据库用 `t.TempDir()` 起的临时 SQLite；provider 在 `testhelper` 中以 mock 注入，避免打外网。详见 [docs/ARCHITECTURE.md §14](docs/ARCHITECTURE.md)。
 
-## 架构文档
+## 文档导航
 
-详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+| 文档 | 内容 |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 18 节架构设计（路由管线、broker、SSE、告警、L4/L5、缓存折扣、多租户、热重载） |
+| [docs/COMPARATIVE.md](docs/COMPARATIVE.md) | vs LiteLLM / One-API / Bifrost / Kong 的能力矩阵 + 路线图 |
+| [docs/PASSTHROUGH.md](docs/PASSTHROUGH.md) | OpenAI 规范字段透传审计（Phase A + B 已完成） |
+| [docs/P8-CACHING.md](docs/P8-CACHING.md) | P8 响应缓存设计（精确 + 语义） |
+| [docs/P9-MULTIMODAL.md](docs/P9-MULTIMODAL.md) | P9 Image / Rerank / Audio 端点设计 |
+| [docs/P10-OBSERVABILITY.md](docs/P10-OBSERVABILITY.md) | P10 OpenTelemetry + Prometheus 设计 |
+| [docs/P11-MCP.md](docs/P11-MCP.md) | P11 MCP gateway 设计 |
+| [CHANGELOG.md](CHANGELOG.md) | 各 Phase 变更记录 |
 
 ## 路线图
 
@@ -210,8 +325,16 @@ go test -v ./internal/admin ./internal/api
 | P0 | ✅ | Go 骨架 + Provider 适配 + L1-L3 + `/v1/chat/completions` |
 | P1 | ✅ | SQLite 持久化 + Token/Plan/User + Management API |
 | P2 | ✅ | WebUI（React + Tailwind，go:embed） |
-| P3 | ✅ | Session TTL + 日志过滤 UI + Analytics 时序/Top-N（Recharts） + L3 策略运行时切换 + 自动 web-sync |
-| P6 | ✅ | bcrypt 密码 hash 升级 + 改密 UI + 告警子系统（webhook + 站内） + SSE 实时日志 + Settings 4 Tab + 运行时 markup + 日志保留 + Dockerfile（distroless） + docker-compose + Docker CI（amd64+arm64） |
-| P4 | ⏳ | L4 Intent Classifier（Rust ONNX 模块，cdylib） |
-| P5 | ⏳ | L5 Thompson Sampling 自适应权重 |
-| P7+ | ⏳ | 多协议 provider / SSE 流式响应 / argon2id 升级 / 集群模式 |
+| P3 | ✅ | Session TTL + 日志过滤 UI + Analytics 时序/Top-N + L3 策略运行时切换 + 自动 web-sync |
+| P4 | ✅ | L4 Intent Classifier（Rust ONNX 模块，cdylib） |
+| P5 | ✅ | L5 Thompson Sampling 自适应权重 |
+| P6 | ✅ | bcrypt 密码 hash 升级 + 改密 UI + 告警子系统 + SSE 实时日志 + Settings 4 Tab + 运行时 markup + 日志保留 + distroless Dockerfile + Docker CI |
+| P7+ | ✅ | 多协议 provider / SSE 流式响应 / argon2id 升级 + broker cap + streaming caps |
+| Passthrough A | ✅ | OpenAI 完整规范透传（tools / tool_choice / response_format / 多模态 / 全套 knobs） |
+| Passthrough B | ✅ | cache_control 翻译 + cached_tokens 计费折扣 |
+| Hardening | ✅ | 多租户强制（RPM/TPM + 白名单 + per-token/plan spend）+ 热重载（UpdateToken + /reload） |
+| **P8** | ⏳ | 响应缓存（精确 + 语义；Memory / SQLite / Redis backends） |
+| **P9** | ⏳ | 多模态端点（`/v1/images/generations` + `/v1/rerank` + `/v1/audio/*`） |
+| **P10** | ⏳ | OpenTelemetry + Prometheus `/metrics` |
+| **P11** | ⏳ | MCP gateway（server + client 模式） |
+| P12+ | ⏳ | 集群模式 / 多节点同步 |
