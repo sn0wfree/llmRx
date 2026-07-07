@@ -219,6 +219,8 @@ export LLMRX_KEY_MASTER=$(openssl rand -hex 32)
 > 仅本地开发可在 `config.yml` 中设 `secrets.dev_allow_plaintext_keys: true` 跳过该要求，
 > 此时 channel key 以明文存储，**不要**在任何非本机部署中使用。
 
+拉起来后的运维、备份、监控、HA、故障排查见 **[docs/OPERATIONS.md](docs/OPERATIONS.md)**。
+
 ### 调用 OpenAI 兼容入口
 
 ```bash
@@ -338,6 +340,7 @@ go test -v ./internal/admin ./internal/api
 
 | 文档 | 内容 |
 |---|---|
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | **运维手册**：部署路径、Docker / 裸金属 / docker-compose、首启配置、备份恢复、监控、HA、故障排查、生产 checklist |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 18 节架构设计（路由管线、broker、SSE、告警、L4/L5、缓存折扣、多租户、热重载） |
 | [docs/COMPARATIVE.md](docs/COMPARATIVE.md) | vs LiteLLM / One-API / Bifrost / Kong 的能力矩阵 + 路线图 |
 | [docs/PASSTHROUGH.md](docs/PASSTHROUGH.md) | OpenAI 规范字段透传审计（Phase A + B 已完成） |
