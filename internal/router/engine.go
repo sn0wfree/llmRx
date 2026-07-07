@@ -62,6 +62,15 @@ func (e *RouterEngine) ReloadChannel(channelID int64) {
 	e.thompson.Reset(channelID)
 }
 
+// ReloadAllChannels walks every known channel ID and clears the
+// breaker + Thompson posterior state. Called by admin /reload so
+// the routing layer drops state from channels that may have been
+// disabled / re-enabled outside the admin path.
+func (e *RouterEngine) ReloadAllChannels() {
+	e.breaker.reloadAll()
+	e.thompson.ResetAll()
+}
+
 // SetStrategy swaps the cost router's strategy at runtime. The
 // change is picked up by the next Route() call.
 func (e *RouterEngine) SetStrategy(s model.CostStrategy) {

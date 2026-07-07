@@ -74,7 +74,19 @@ func (b *CircuitBreaker) getEntry(channelID int64) *breakerEntry {
 }
 
 func (b *CircuitBreaker) reload(channelID int64) {
-	b.getEntry(channelID)
+	entry := b.getEntry(channelID)
+	entry.mu.Lock()
+	entry.failures = 0
+	entry.isOpen = false
+	entry.mu.Unlock()
+}
+
+// reloadAll clears every breaker's state, returning every channel
+// to the closed position. Called by admin /reload.
+func (b *CircuitBreaker) reloadAll() {
+	b.mu.Lock()
+	b.entries = make(map[int64]*breakerEntry)
+	b.mu.Unlock()
 }
 
 func (b *CircuitBreaker) Filter(channels []*model.Channel) []*model.Channel {

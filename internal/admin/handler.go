@@ -31,6 +31,14 @@ type Handler struct {
 	logBroker  *broker.Broker[*model.Log]
 	rt         *runtime.Defaults
 	sessionTTL time.Duration
+	alertMgr   AlertReloader
+}
+
+// AlertReloader is the narrow contract the admin /reload handler
+// needs from an alert subsystem. Defined here (rather than importing
+// *alert.Manager) to avoid an import cycle through testhelper.
+type AlertReloader interface {
+	Reload() error
 }
 
 func New(st store.Store, cp *pool.ChannelPool, eng *router.RouterEngine, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Handler {
@@ -39,6 +47,11 @@ func New(st store.Store, cp *pool.ChannelPool, eng *router.RouterEngine, tc *tok
 	}
 	return &Handler{store: st, pool: cp, router: eng, tokens: tc, logBroker: lb, rt: rt, sessionTTL: 24 * time.Hour}
 }
+
+// SetAlertManager lets main.go inject the alert manager for /reload.
+// Accepts the AlertReloader interface to keep the import graph
+// acyclic.
+func (h *Handler) SetAlertManager(m AlertReloader) { h.alertMgr = m }
 
 // SetSessionTTL overrides the default 24h session lifetime.
 func (h *Handler) SetSessionTTL(d time.Duration) { h.sessionTTL = d }
@@ -67,6 +80,7 @@ func (h *Handler) Routes() http.Handler {
 		r.Delete("/channels/{id}/keys/{keyId}", h.DeleteKey)
 		r.Get("/tokens", h.ListTokens)
 		r.Post("/tokens", h.CreateToken)
+		r.Put("/tokens/{id}", h.UpdateToken)
 		r.Delete("/tokens/{id}", h.DeleteToken)
 		r.Get("/users", h.ListUsers)
 		r.Post("/users", h.CreateUser)
@@ -86,6 +100,7 @@ func (h *Handler) Routes() http.Handler {
 		r.Get("/analytics/by-token", h.AnalyticsByToken)
 		r.Get("/config", h.GetConfig)
 		r.Put("/config", h.UpdateConfig)
+		r.Post("/reload", h.ReloadAll)
 	})
 	return r
 }
@@ -474,6 +489,105 @@ func (h *Handler) DeleteToken(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = h.tokens.Reload()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// UpdateToken updates an existing token's plan, RPM/TPM, whitelist,
+// expiry, and enabled status. Hot-reloads the in-memory token cache
+// so changes apply to the next incoming request without a restart.
+func (h *Handler) UpdateToken(w http.ResponseWriter, r *http.Request) {
+	id, err := pathInt(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	cur, err := h.store.GetTokenByID(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "token not found")
+		return
+	}
+	var patch struct {
+		PlanID          *int64   `json:"plan_id"`
+		Status          *int     `json:"status"`
+		RPM             *int     `json:"rpm"`
+		TPM             *int     `json:"tpm"`
+		ModelsWhitelist []string `json:"models_whitelist"`
+		IPWhitelist     []string `json:"ip_whitelist"`
+		ExpiresInDays   *int     `json:"expires_in_days"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if patch.PlanID != nil {
+		cur.PlanID = *patch.PlanID
+	}
+	if patch.Status != nil {
+		cur.Status = model.TokenStatus(*patch.Status)
+	}
+	if patch.RPM != nil {
+		cur.RPM = *patch.RPM
+	}
+	if patch.TPM != nil {
+		cur.TPM = *patch.TPM
+	}
+	if patch.ModelsWhitelist != nil {
+		cur.ModelsWhitelist = patch.ModelsWhitelist
+	}
+	if patch.IPWhitelist != nil {
+		cur.IPWhitelist = patch.IPWhitelist
+	}
+	if patch.ExpiresInDays != nil {
+		if *patch.ExpiresInDays > 0 {
+			cur.ExpiresAt = time.Now().Add(time.Duration(*patch.ExpiresInDays) * 24 * time.Hour)
+		} else {
+			cur.ExpiresAt = time.Time{}
+		}
+	}
+	if err := h.store.UpdateToken(cur); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = h.tokens.Reload()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": cur.ID})
+}
+
+// ReloadAll forces every in-memory cache to re-read from the store.
+// Useful after manual DB edits or when external tooling (config
+// files, kubectl exec, etc.) mutates state outside the admin API.
+//
+// Idempotent; safe to call repeatedly. Touches:
+//   - token cache (TokenInfo re-resolved)
+//   - channel pool (channel + key list)
+//   - router engine (channel routing rules)
+//   - alert rules
+func (h *Handler) ReloadAll(w http.ResponseWriter, r *http.Request) {
+	reloads := map[string]error{}
+
+	if err := h.tokens.Reload(); err != nil {
+		reloads["tokens"] = err
+	}
+	if err := h.pool.LoadFromStore(h.store); err != nil {
+		reloads["channels"] = err
+	}
+	h.router.ReloadAllChannels()
+	if h.alertMgr != nil {
+		if err := h.alertMgr.Reload(); err != nil {
+			reloads["alerts"] = err
+		}
+	}
+	if len(reloads) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":           true,
+			"channels":     h.pool.GetAllChannels() != nil,
+			"tokens":       h.tokens.Size(),
+			"alerts_reloaded": h.alertMgr != nil,
+		})
+		return
+	}
+	writeJSON(w, http.StatusInternalServerError, map[string]any{
+		"ok":      false,
+		"reloads": reloads,
+	})
 }
 
 // ---------- users ----------
