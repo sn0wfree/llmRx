@@ -85,6 +85,7 @@ func main() {
 	go alertMgr.Start(ctx)
 
 	srv := server.New(cfg, eng, cp, st, tokCache, logBroker, rt)
+	srv.SetAlertManager(alertMgr)
 
 	log.Printf("starting llmRx gateway on :%d (channels=%d tokens=%d db=%s)",
 		cfg.Server.Port, len(cp.GetAllChannels()), tokCache.Size(), cfg.Database.DSN)

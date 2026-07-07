@@ -103,6 +103,7 @@ func (s *SQLite) migrate() error {
 			status INTEGER NOT NULL DEFAULT 0,
 			rpm INTEGER NOT NULL DEFAULT 0,
 			tpm INTEGER NOT NULL DEFAULT 0,
+			used_usd REAL NOT NULL DEFAULT 0,
 			models_whitelist TEXT NOT NULL DEFAULT '[]',
 			ip_whitelist TEXT NOT NULL DEFAULT '[]',
 			expires_at INTEGER NOT NULL DEFAULT 0,
@@ -175,7 +176,7 @@ func (s *SQLite) migrate() error {
 	if err := s.addColumnIfMissing("logs", "cached_tokens", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	return nil
+	return s.addColumnIfMissing("tokens", "used_usd", "REAL NOT NULL DEFAULT 0")
 }
 
 func (s *SQLite) addColumnIfMissing(table, column, decl string) error {
@@ -380,12 +381,17 @@ func (s *SQLite) DeleteKey(id int64) error {
 // ---------------- Tokens ----------------
 
 func (s *SQLite) GetToken(key string) (*model.Token, error) {
-	row := s.db.QueryRow(`SELECT id, plan_id, key, name, status, rpm, tpm, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens WHERE key = ?`, key)
+	row := s.db.QueryRow(`SELECT id, plan_id, key, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens WHERE key = ?`, key)
+	return scanToken(row)
+}
+
+func (s *SQLite) GetTokenByID(id int64) (*model.Token, error) {
+	row := s.db.QueryRow(`SELECT id, plan_id, key, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens WHERE id = ?`, id)
 	return scanToken(row)
 }
 
 func (s *SQLite) GetTokens() ([]model.Token, error) {
-	rows, err := s.db.Query(`SELECT id, plan_id, key, name, status, rpm, tpm, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, plan_id, key, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -404,9 +410,9 @@ func (s *SQLite) GetTokens() ([]model.Token, error) {
 func (s *SQLite) CreateToken(t *model.Token) error {
 	t.CreatedAt = time.Now().UTC()
 	res, err := s.db.Exec(
-		`INSERT INTO tokens(plan_id, key, name, status, rpm, tpm, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.PlanID, t.Key, t.Name, int(t.Status), t.RPM, t.TPM,
+		`INSERT INTO tokens(plan_id, key, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.PlanID, t.Key, t.Name, int(t.Status), t.RPM, t.TPM, t.UsedUSD,
 		encodeStrings(t.ModelsWhitelist), encodeStrings(t.IPWhitelist),
 		toUnix(t.ExpiresAt), toUnix(t.LastUsedAt), toUnix(t.CreatedAt),
 	)
@@ -415,6 +421,58 @@ func (s *SQLite) CreateToken(t *model.Token) error {
 	}
 	id, _ := res.LastInsertId()
 	t.ID = id
+	return nil
+}
+
+func (s *SQLite) UpdateToken(t *model.Token) error {
+	t.LastUsedAt = time.Now().UTC()
+	res, err := s.db.Exec(
+		`UPDATE tokens SET plan_id=?, name=?, status=?, rpm=?, tpm=?, used_usd=?, models_whitelist=?, ip_whitelist=?, expires_at=? WHERE id=?`,
+		t.PlanID, t.Name, int(t.Status), t.RPM, t.TPM, t.UsedUSD,
+		encodeStrings(t.ModelsWhitelist), encodeStrings(t.IPWhitelist),
+		toUnix(t.ExpiresAt), t.ID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *SQLite) IncrementTokenSpend(tokenID int64, amount float64) error {
+	if amount == 0 {
+		return nil
+	}
+	res, err := s.db.Exec(
+		`UPDATE tokens SET used_usd = used_usd + ? WHERE id = ?`, amount, tokenID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *SQLite) IncrementPlanSpend(planID int64, amount float64) error {
+	if amount == 0 || planID == 0 {
+		return nil
+	}
+	res, err := s.db.Exec(
+		`UPDATE plans SET used_usd = used_usd + ? WHERE id = ?`, amount, planID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
 	return nil
 }
 
@@ -431,7 +489,7 @@ func scanToken(r interface {
 	var mwJSON, ipwJSON string
 	var expires, lastUsed, created int64
 	if err := r.Scan(&t.ID, &t.PlanID, &t.Key, &t.Name, &status, &t.RPM, &t.TPM,
-		&mwJSON, &ipwJSON, &expires, &lastUsed, &created); err != nil {
+		&t.UsedUSD, &mwJSON, &ipwJSON, &expires, &lastUsed, &created); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
 		}

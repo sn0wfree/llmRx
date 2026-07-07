@@ -21,9 +21,13 @@ type Store interface {
 
 	// Tokens
 	GetToken(key string) (*model.Token, error)
+	GetTokenByID(id int64) (*model.Token, error)
 	GetTokens() ([]model.Token, error)
 	CreateToken(t *model.Token) error
+	UpdateToken(t *model.Token) error
 	DeleteToken(id int64) error
+	IncrementTokenSpend(tokenID int64, amount float64) error
+	IncrementPlanSpend(planID int64, amount float64) error
 
 	// Plans
 	GetPlans() ([]model.Plan, error)

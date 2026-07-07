@@ -136,6 +136,52 @@ func TestTokens_Lookup(t *testing.T) {
 	}
 }
 
+func TestTokens_UpdateAndSpend(t *testing.T) {
+	s := openTemp(t)
+	tok := &model.Token{Key: "sk-x", Name: "n", Status: model.TokenActive}
+	if err := s.CreateToken(tok); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.IncrementTokenSpend(tok.ID, 0.05); err != nil {
+		t.Fatalf("first increment: %v", err)
+	}
+	if err := s.IncrementTokenSpend(tok.ID, 0.10); err != nil {
+		t.Fatalf("second increment: %v", err)
+	}
+	got, err := s.GetTokenByID(tok.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UsedUSD < 0.149999 || got.UsedUSD > 0.150001 {
+		t.Fatalf("used_usd accumulated: %f", got.UsedUSD)
+	}
+
+	// UpdateToken round-trips RPM and whitelist.
+	got.RPM = 99
+	got.ModelsWhitelist = []string{"foo"}
+	if err := s.UpdateToken(got); err != nil {
+		t.Fatalf("UpdateToken: %v", err)
+	}
+	got2, _ := s.GetTokenByID(tok.ID)
+	if got2.RPM != 99 {
+		t.Errorf("rpm not persisted: %d", got2.RPM)
+	}
+	if len(got2.ModelsWhitelist) != 1 || got2.ModelsWhitelist[0] != "foo" {
+		t.Errorf("whitelist not persisted: %v", got2.ModelsWhitelist)
+	}
+
+	// IncrementPlanSpend with plan_id=0 must be a no-op (no row created).
+	if err := s.IncrementPlanSpend(0, 1.0); err != nil {
+		t.Errorf("plan_id=0 should not error: %v", err)
+	}
+
+	// IncrementPlanSpend on a non-existent plan returns ErrNotFound
+	// (after we removed the zero-row shortcut).
+	if err := s.IncrementPlanSpend(999, 1.0); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
 func TestUsers_UniqueUsernameAndSessionLookup(t *testing.T) {
 	s := openTemp(t)
 	u := &model.User{Username: "admin", PasswordHash: "x", Role: model.RoleRoot, Status: 1, SessionToken: "abc"}

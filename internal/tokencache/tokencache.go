@@ -37,7 +37,16 @@ func (c *Cache) Reload() error {
 		if t.Status != 0 { // TokenActive == 0
 			continue
 		}
-		next[t.Key] = middleware.TokenInfo{ID: t.ID, Key: t.Key, Name: t.Name}
+		next[t.Key] = middleware.TokenInfo{
+			ID:              t.ID,
+			Key:             t.Key,
+			Name:            t.Name,
+			PlanID:          t.PlanID,
+			RPM:             t.RPM,
+			TPM:             t.TPM,
+			ModelsWhitelist: t.ModelsWhitelist,
+			IPWhitelist:     t.IPWhitelist,
+		}
 	}
 	c.mu.Lock()
 	c.items = next
