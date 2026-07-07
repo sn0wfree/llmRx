@@ -18,6 +18,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/runtime"
+	"github.com/sn0wfree/llmRx/internal/secrets"
 	"github.com/sn0wfree/llmRx/internal/sse"
 	"github.com/sn0wfree/llmRx/internal/store"
 	"github.com/sn0wfree/llmRx/internal/tokencache"
@@ -391,7 +392,7 @@ func (h *Handler) CreateKey(w http.ResponseWriter, r *http.Request) {
 	k := &model.Key{
 		ChannelID: id,
 		Key:       body.Key,
-		KeyMasked: maskKey(body.Key),
+		KeyMasked: secrets.Mask(body.Key),
 		Status:    model.KeyActive,
 	}
 	if err := h.store.CreateKey(k); err != nil {

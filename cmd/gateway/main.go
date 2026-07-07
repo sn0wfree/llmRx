@@ -15,6 +15,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/runtime"
+	"github.com/sn0wfree/llmRx/internal/secrets"
 	"github.com/sn0wfree/llmRx/internal/server"
 	"github.com/sn0wfree/llmRx/internal/store"
 	"github.com/sn0wfree/llmRx/internal/tokencache"
@@ -34,6 +35,20 @@ func main() {
 		log.Fatalf("open store: %v", err)
 	}
 	defer st.Close()
+
+	// Attach a secrets manager for at-rest encryption of channel
+	// API keys. Required in production; dev-only plaintext mode
+	// is gated by DEV_ALLOW_PLAINTEXT_KEYS.
+	if !cfg.Secrets.DevAllowPlaintext {
+		sec, err := secrets.FromEnv(cfg.Secrets.KeyMasterEnv)
+		if err != nil {
+			log.Fatalf("secrets: %v", err)
+		}
+		st.SetSecrets(sec)
+		log.Printf("secrets: master key loaded from %s (AES-256-GCM)", sec.EnvName())
+	} else {
+		log.Printf("secrets: DEV_ALLOW_PLAINTEXT_KEYS=true — channel API keys will be stored in plaintext. Do NOT use this in production.")
+	}
 
 	if err := seed(st, cfg); err != nil {
 		log.Fatalf("seed: %v", err)

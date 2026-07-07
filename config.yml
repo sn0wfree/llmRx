@@ -7,6 +7,16 @@ database:
   driver: sqlite
   dsn: data/llmrx.db
 
+# Secrets: at-rest encryption of channel API keys (AES-256-GCM).
+# In production, set LLMRX_KEY_MASTER in the environment (32-byte
+# hex, generate with `openssl rand -hex 32`). For local dev only,
+# dev_allow_plaintext_keys: true lets the gateway start without a
+# master key — channel keys are stored in plaintext. NEVER enable
+# this on any non-localhost deployment.
+secrets:
+  key_master_env: LLMRX_KEY_MASTER
+  dev_allow_plaintext_keys: false
+
 tokens:
   - key: sk-test-token-123
     name: test-token

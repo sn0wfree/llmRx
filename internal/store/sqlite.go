@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/secrets"
 )
 
 var (
@@ -21,8 +23,21 @@ var (
 )
 
 type SQLite struct {
-	db *sql.DB
+	db      *sql.DB
+	Secrets *secrets.Manager // nil ⇒ plaintext only (legacy mode); set by SetSecrets
 }
+
+// SetSecrets attaches a secrets manager used to encrypt new key rows
+// and decrypt existing ones. When set, the store will:
+//   - encrypt any plaintext Key field on Create
+//   - decrypt KeyCiphertext on every read, falling back to the
+//     legacy plaintext Key column for rows written before the
+//     migration landed.
+func (s *SQLite) SetSecrets(m *secrets.Manager) { s.Secrets = m }
+
+// Ping verifies the underlying database connection is responsive.
+// Returns nil when the connection is healthy.
+func (s *SQLite) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
 func OpenSQLite(dsn string) (*SQLite, error) {
 	if dsn == "" {
@@ -176,7 +191,10 @@ func (s *SQLite) migrate() error {
 	if err := s.addColumnIfMissing("logs", "cached_tokens", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	return s.addColumnIfMissing("tokens", "used_usd", "REAL NOT NULL DEFAULT 0")
+	if err := s.addColumnIfMissing("tokens", "used_usd", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return s.addColumnIfMissing("keys", "key_ciphertext", "TEXT NOT NULL DEFAULT ''")
 }
 
 func (s *SQLite) addColumnIfMissing(table, column, decl string) error {
@@ -339,37 +357,99 @@ func scanChannel(r interface {
 // ---------------- Keys ----------------
 
 func (s *SQLite) GetKeys(channelID int64) ([]model.Key, error) {
-	rows, err := s.db.Query(`SELECT id, channel_id, key, key_masked, status, last_used_at, created_at FROM keys WHERE channel_id = ? ORDER BY id`, channelID)
+	rows, err := s.db.Query(`SELECT id, channel_id, key, key_ciphertext, key_masked, status, last_used_at, created_at FROM keys WHERE channel_id = ? ORDER BY id`, channelID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []model.Key
+	type rawRow struct {
+		k      model.Key
+		plain  string
+		cipher string
+	}
+	var raws []rawRow
 	for rows.Next() {
-		var k model.Key
+		var rr rawRow
 		var status, lastUsed, created int64
-		if err := rows.Scan(&k.ID, &k.ChannelID, &k.Key, &k.KeyMasked, &status, &lastUsed, &created); err != nil {
+		if err := rows.Scan(&rr.k.ID, &rr.k.ChannelID, &rr.plain, &rr.cipher, &rr.k.KeyMasked, &status, &lastUsed, &created); err != nil {
+			rows.Close()
 			return nil, err
 		}
-		k.Status = model.KeyStatus(status)
-		k.LastUsedAt = fromUnix(lastUsed)
-		k.CreatedAt = fromUnix(created)
-		out = append(out, k)
+		rr.k.Status = model.KeyStatus(status)
+		rr.k.LastUsedAt = fromUnix(lastUsed)
+		rr.k.CreatedAt = fromUnix(created)
+		raws = append(raws, rr)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	// Decrypt / migrate outside the row cursor: SetMaxOpenConns(1)
+	// means a nested Exec would deadlock while the read connection
+	// is still pinned. We do all writes in a second pass.
+	out := make([]model.Key, 0, len(raws))
+	for _, rr := range raws {
+		if s.Secrets != nil {
+			if rr.cipher != "" {
+				pt, derr := s.Secrets.Decrypt(rr.cipher)
+				if derr != nil {
+					// Corrupt ciphertext: refuse rather than return
+					// empty plaintext — sending "Authorization:
+					// Bearer " upstream is worse than failing.
+					return nil, fmt.Errorf("decrypt key id=%d: %w", rr.k.ID, derr)
+				}
+				rr.k.Key = string(pt)
+			} else if rr.plain != "" {
+				// Legacy row: plaintext column has the value.
+				rr.k.Key = rr.plain
+				// Best-effort background migration to ciphertext.
+				// Failures are retried on the next read.
+				if ct, eerr := s.Secrets.Encrypt([]byte(rr.plain)); eerr == nil {
+					_, _ = s.db.Exec(`UPDATE keys SET key='', key_ciphertext=? WHERE id=?`, ct, rr.k.ID)
+				}
+			}
+		} else {
+			// No secrets manager configured (legacy mode): serve
+			// plaintext. If a row carries ciphertext we cannot
+			// decode it, so refuse rather than return "".
+			if rr.cipher != "" {
+				return nil, fmt.Errorf("decrypt key id=%d (no manager): ciphertext present but no secrets manager configured", rr.k.ID)
+			}
+			rr.k.Key = rr.plain
+		}
+		out = append(out, rr.k)
+	}
+	return out, nil
 }
 
 func (s *SQLite) CreateKey(k *model.Key) error {
 	k.CreatedAt = time.Now().UTC()
+	plain := k.Key
+	if plain == "" {
+		return errors.New("key is empty")
+	}
+	cipher := ""
+	storedPlain := plain // default for legacy mode
+	if s.Secrets != nil {
+		ct, err := s.Secrets.Encrypt([]byte(plain))
+		if err != nil {
+			return fmt.Errorf("encrypt key: %w", err)
+		}
+		cipher = ct
+		storedPlain = "" // never store plaintext when a manager is attached
+	}
 	res, err := s.db.Exec(
-		`INSERT INTO keys(channel_id, key, key_masked, status, last_used_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		k.ChannelID, k.Key, k.KeyMasked, int(k.Status), toUnix(k.LastUsedAt), toUnix(k.CreatedAt),
+		`INSERT INTO keys(channel_id, key, key_ciphertext, key_masked, status, last_used_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		k.ChannelID, storedPlain, cipher, k.KeyMasked, int(k.Status), toUnix(k.LastUsedAt), toUnix(k.CreatedAt),
 	)
 	if err != nil {
 		return err
 	}
 	id, _ := res.LastInsertId()
 	k.ID = id
+	// Leave k.Key populated in-memory so callers (e.g. admin
+	// response, pool seeding) get the plaintext immediately.
 	return nil
 }
 
