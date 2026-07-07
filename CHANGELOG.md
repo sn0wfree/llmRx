@@ -236,6 +236,16 @@ P0 + P1 + P2 + P3 + P6: bcrypt 密码 hash + 改密 UI + 告警子系统（webho
 - `cmd/gateway/main.go` constructs and wires `runtime.Defaults`,
   `broker.Broker`, and `alert.Manager`.
 - Coverage gate raised from 50% to 55%.
+- **Docker runtime image shrunk to ~13 MB** (was ~109 MB). The
+  multi-stage distroless Dockerfile is replaced by a thin
+  `FROM scratch` + statically-linked CGO binary (`-ldflags="-s -w
+  -extldflags '-static'"`); the Go binary itself handles master-key
+  bootstrap (`env → /data/llmrx.key → generate`), bind-mount
+  `/data` chown fixup, privilege drop (`setuid` to llmrx), and
+  docker HEALTHCHECK probe (`-healthcheck` flag does raw TCP +
+  HTTP/1.0 GET). No shell, no busybox, no separate init helper,
+  no entrypoint script. Unit tests in `cmd/gateway/bootstrap_test.go`
+  cover all three bootstrap functions and the healthcheck probe.
 
 ### Internal
 - New packages: `internal/auth`, `internal/broker`, `internal/sse`,

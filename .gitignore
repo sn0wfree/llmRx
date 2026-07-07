@@ -35,3 +35,7 @@ internal/intent/rust/Cargo.lock
 # Config (local overrides)
 config.local.yml
 *.env
+
+# Docker master-key material (P0). The shipped docker-compose
+# mounts ./secrets/llmrx_key_master for production deployments.
+/secrets/
