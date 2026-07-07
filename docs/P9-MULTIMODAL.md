@@ -1,7 +1,7 @@
-# P9 — Multimodal Endpoints (Image / Rerank / Audio)
+# P9 — Multimodal Endpoints (Image / Audio / Rerank / Embeddings)
 
-> Date: 2026-07 · Owner: llmRx maintainers · Status: design.
-> Target: after P8 (caching) lands.
+> Date: 2026-07 · Owner: llmRx maintainers · Status: revised after LiteLLM + opencode research.
+> Target: after P8 deferred; precedes P10.
 
 ## 1. Why now
 
@@ -9,320 +9,710 @@ OpenAI-compatible SDK clients (Cursor / Continue / Open WebUI /
 LibreChat / ChatGPT-Next-Web) ship a fixed catalogue of endpoints:
 
 ```
-POST /v1/chat/completions      text + tool calls (have it)
-POST /v1/embeddings            vector embeddings
-POST /v1/images/generations    DALL-E / Imagen / Flux
-POST /v1/audio/transcriptions  Whisper STT
-POST /v1/audio/speech          TTS
-POST /v1/rerank                Cohere / Jina / BGE
+POST /v1/chat/completions      text + tool calls         ✅ P7+
+POST /v1/embeddings            vector embeddings          ❌ NEW
+POST /v1/images/generations    DALL-E / Imagen / Flux     ❌ NEW
+POST /v1/images/edits          image + mask + prompt      ❌ NEW
+POST /v1/images/variations     source-image variations    ❌ NEW (lite)
+POST /v1/audio/transcriptions  Whisper STT                ❌ NEW
+POST /v1/audio/translations    STT + translate            ❌ NEW (lite)
+POST /v1/audio/speech          TTS                        ❌ NEW
+POST /v1/rerank                Cohere / Jina / BGE        ❌ NEW
+POST /v1/moderations           OpenAI moderation          parked (P12)
+POST /v1/videos                Sora 2                     parked (P9.5)
+POST /v1/responses             OpenAI Responses API       parked (P12)
 ```
 
 When a customer installs llmRx and calls `/v1/images/generations`,
 today they get **404**. They uninstall. The same client works
-against LiteLLM / One-API / Bifrost out of the box. See
-`docs/COMPARATIVE.md` §2 — this is the top Tier-1 gap after P8
-caching.
+against LiteLLM / One-API / Bifrost out of the box.
 
-P9 ships the three highest-value endpoints (Image / Rerank /
-Audio STT+TTS) so the OpenAI client experience is complete.
+**Research findings (LiteLLM source + opencode source)** confirm:
 
-## 2. Scope
+1. **LiteLLM pattern** — every non-chat endpoint is a *thin handler*
+   wrapping `ProxyBaseLLMRequestProcessing.base_process_llm_request()`
+   with a `route_type` enum (`aimage_generation`, `arerank`,
+   `atranscription` …). Shared infrastructure (auth, logging, cost,
+   guardrails, OTel, fallbacks, load balancing) flows automatically.
+2. **opencode pattern** — declares per-model `input/output modalities`
+   (`{text, audio, image, video, pdf}`) and **gracefully degrades**
+   unsupported parts to error text instead of 4xx.
+3. **Industry wire format** — OpenAI is canonical. Cohere v2 schema
+   is canonical for `/v1/rerank`. Multipart form for image/audio
+   uploads; JSON for everything else.
 
-| Endpoint | Priority | LoC | Notes |
-|---|:---:|---:|---|
-| `POST /v1/images/generations` | 🥇 | ~250 | OpenAI DALL-E 3 spec, single + batch |
-| `POST /v1/rerank` | 🥇 | ~350 | Cohere-spec primary; Jina + BGE via adapter |
-| `POST /v1/audio/transcriptions` | 🥈 | ~350 | multipart/form-data, Whisper-style |
-| `POST /v1/audio/speech` | 🥉 | ~250 | OpenAI TTS spec |
-| `POST /v1/embeddings` | parked | ~200 | P9.5; trivial OpenAI passthrough |
+This document revises the original spec to adopt these patterns.
 
-Each endpoint follows the same pattern as `/v1/chat/completions`:
-routing (L1 static match on model name) → upstream HTTP call →
-log row → emitLog (with per-token spend tracking).
+## 2. Scope (P9 milestone)
 
-## 3. Routing strategy
+| Endpoint                              | In scope | Notes                                       |
+|---------------------------------------|:---:|---------------------------------------------|
+| `/v1/embeddings`                      | ✅ | OpenAI / Cohere / Voyage / Gemini            |
+| `/v1/images/generations`              | ✅ | OpenAI (DALL-E 3, gpt-image-1)               |
+| `/v1/images/edits`                    | ✅ | OpenAI + Gemini (multipart)                  |
+| `/v1/images/variations`               | ✅ | OpenAI (no prompt)                           |
+| `/v1/audio/transcriptions`            | ✅ | OpenAI Whisper + Groq + Deepgram             |
+| `/v1/audio/translations`              | ✅ | Whisper translate                            |
+| `/v1/audio/speech`                    | ✅ | OpenAI TTS + ElevenLabs                      |
+| `/v1/rerank`                          | ✅ | Cohere / Jina / Voyage / BGE                 |
+| `/v1/videos`, `/v1/videos/{id}/*`     | parked | P9.5 (Sora 2 API still volatile)            |
+| `/v1/moderations`                     | parked | P12 (low demand)                             |
+| `/v1/responses` (OpenAI Responses API) | parked | P12 (GPT-5 native, large surface)            |
+| stdio MCP transport                   | parked | P11.5                                        |
 
-### 3.1 Image (`/v1/images/generations`)
+## 3. Two design decisions
 
+### 3.1 Channel endpoint declaration (vs. implicit Protocol)
+
+Original P9 design inferred endpoint from `channel.Protocol`. New
+design uses an explicit `channel.Endpoint` field, matching LiteLLM's
+`model_info.mode`:
+
+```sql
+ALTER TABLE channels ADD COLUMN endpoint TEXT NOT NULL DEFAULT 'chat';
+-- 'chat' | 'image_generation' | 'image_edit' | 'audio_transcription'
+-- | 'audio_speech' | 'embedding' | 'rerank' | 'video_generation'
+
+ALTER TABLE channels ADD COLUMN capabilities TEXT NOT NULL DEFAULT '{}';
+-- JSON: {"input":{"text":1,"image":1,"audio":0,"video":0,"pdf":0},
+--         "output":{"text":1,"image":1,"audio":1,"video":0,"pdf":0},
+--         "tool_call":1,"reasoning":0,"attachment":1}
+-- (mirrors opencode ProviderCapabilities schema)
 ```
-Request:
-{
-  "prompt": "a corgi in space",
-  "model": "dall-e-3",
-  "n": 1,
-  "size": "1024x1024",
-  "quality": "standard",
-  "response_format": "url",   // or "b64_json"
-  "user": "u-1"
-}
 
-Response:
-{
-  "created": 1699999999,
-  "data": [
-    { "url": "https://oaidalleapiprodscus.blob.core.windows.net/..." },
-    { "b64_json": "..." }
-  ]
-}
-```
+**Why split?** A single OpenAI key handles chat + image + audio + embeddings.
+The endpoint field routes by URL path; the capabilities field validates
+the model's modality support (graceful degradation).
 
-Implementation: **per-channel `endpoint_kind` extension**.
+### 3.2 Capability check: error text, not 4xx
 
-Today `Channel.Protocol` is `openai | anthropic | gemini`. For Image,
-the channel is still OpenAI-compatible but serves a different
-endpoint (`/images/generations`). Two options:
+opencode pattern — when a model doesn't support a modality, the
+client replaces the part with an `ERROR: ...` text rather than
+failing the request:
 
-| Option | Pros | Cons |
-|---|---|---|
-| **A. New `Channel.Kind` field** (`chat | image | rerank | audio`) | Explicit; lets us reject `POST /chat` on an image-only channel | Schema migration; some channels legitimately serve both |
-| **B. URL prefix routing** (gateway rewrites `/chat/completions` → `/images/generations` based on handler) | No schema change | Implicit; harder to debug |
-
-**Decision**: Option B. Each handler picks the right upstream URL;
-`Channel.Protocol` stays unchanged. An Image channel uses
-`OpenAIImageProvider` (new) which always POSTs to
-`/images/generations` on its base URL.
-
-### 3.2 Rerank (`/v1/rerank`)
-
-```
-Request:
-{
-  "model": "cohere-rerank-3",
-  "query": "What is the capital of France?",
-  "documents": ["Paris is the capital of France", "Berlin is in Germany", ...],
-  "top_n": 3,
-  "return_documents": true
-}
-
-Response:
-{
-  "id": "rerank-...",
-  "results": [
-    { "index": 0, "relevance_score": 0.95, "document": "Paris is the capital of France" },
-    { "index": 4, "relevance_score": 0.61, "document": "Parisian cuisine is famous for ..." }
-  ]
+```ts
+// opencode/provider/transform.ts
+if (!model.capabilities.input[modality]) {
+  return { type: "text", text: `ERROR: Cannot read ${name} (this model does not support ${modality} input). Inform the user.` }
 }
 ```
 
-Cohere's wire format. Adapter translates to:
-- Jina AI (`POST https://api.jina.ai/v1/rerank`)
-- BGE reranker (local ONNX — out of scope for now)
-- Custom (LLMRX_EMBED_COMPAT env var → POST `{base}/rerank`)
+We adopt this for llmRx:
+- **Inbound multimodal chat**: if a model doesn't support the part's
+  modality, replace with `ERROR: ...` text. Continue serving.
+- **Endpoint routing**: if no channel has the required endpoint,
+  return 503 (not 404) — "no channel can handle this endpoint".
 
-### 3.3 Audio STT (`/v1/audio/transcriptions`)
+## 4. Storage
 
-multipart/form-data:
+```sql
+-- 4.1 Channels: new columns (see 3.1)
+ALTER TABLE channels ADD COLUMN endpoint TEXT NOT NULL DEFAULT 'chat';
+ALTER TABLE channels ADD COLUMN capabilities TEXT NOT NULL DEFAULT '{}';
+
+-- 4.2 Endpoint pricing: per-unit (not per-token)
+CREATE TABLE endpoint_prices (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id   INTEGER NOT NULL,
+    endpoint     TEXT    NOT NULL,        -- 'image_generation' | 'audio_speech' | ...
+    model        TEXT    NOT NULL,        -- 'gpt-image-1' | 'tts-1' | 'whisper-1' | ...
+    unit         TEXT    NOT NULL,        -- 'per_image' | 'per_second' | 'per_char'
+    unit_size    REAL    NOT NULL DEFAULT 1,  -- 1024x1024=1, 1792x1024=2 (image); 1.0 (default)
+    price_usd    REAL    NOT NULL DEFAULT 0,
+    FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE,
+    UNIQUE (channel_id, model, unit, unit_size)
+);
+
+-- 4.3 Endpoint audit log rows
+-- (logs.endpoint already exists in P6 schema; expand enum to include new endpoints)
 ```
+
+**Pricing examples**:
+
+| Channel.Model | Endpoint | Unit | Unit size | Price |
+|---|---|---|---|---|
+| OpenAI gpt-image-1 | image_generation | per_image | 1024x1024 | $0.020 |
+| OpenAI gpt-image-1 | image_generation | per_image | 1536x1024 | $0.030 |
+| OpenAI dall-e-3 | image_generation | per_image | 1024x1024 | $0.040 |
+| OpenAI tts-1 | audio_speech | per_char | 1 | $0.000015 |
+| OpenAI whisper-1 | audio_transcription | per_second | 1 | $0.006 |
+| Cohere rerank-3.5 | rerank | per_search_unit | 1 | $0.002 |
+
+## 5. Provider interface extension
+
+```go
+// internal/provider/provider.go
+type Provider interface {
+    // existing (P7+)
+    Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error)
+    StreamChat(ctx context.Context, req *ChatRequest) (<-chan Chunk, error)
+
+    // new (P9)
+    Embed(ctx context.Context, req *EmbedRequest) (*EmbedResponse, error)
+    GenerateImage(ctx context.Context, req *ImageRequest) (*ImageResponse, error)
+    EditImage(ctx context.Context, req *ImageEditRequest) (*ImageResponse, error)
+    Transcribe(ctx context.Context, req *TranscribeRequest) (*TranscriptionResponse, error)
+    Speech(ctx context.Context, req *TTSRequest) (io.ReadCloser, error)
+    Rerank(ctx context.Context, req *RerankRequest) (*RerankResponse, error)
+
+    // meta
+    Capabilities() Capabilities
+}
+```
+
+Each provider implements only the methods it supports. For unsupported
+methods, return `ErrUnsupported`.
+
+```go
+// internal/provider/openai/multi.go
+func (p *Provider) Embed(ctx, req) (*EmbedResponse, error) { ... }
+func (p *Provider) GenerateImage(ctx, req) (*ImageResponse, error) { ... }
+func (p *Provider) EditImage(ctx, req) (*ImageResponse, error) { ... }
+func (p *Provider) Transcribe(ctx, req) (*TranscriptionResponse, error) { ... }
+func (p *Provider) Speech(ctx, req) (io.ReadCloser, error) { ... }
+// Rerank: NOT supported (returns ErrUnsupported)
+```
+
+## 6. Handler layout
+
+```
+internal/api/
+├── chat.go              (existing, P7+)
+├── embeddings.go        NEW (250 LoC, 1 endpoint)
+├── images.go            NEW (350 LoC, 3 endpoints)
+├── audio.go             NEW (400 LoC, 3 endpoints)
+├── rerank.go            NEW (250 LoC, 1 endpoint)
+└── multimodal.go        NEW (200 LoC, shared: hooks, headers, cost)
+
+internal/multimodal/
+├── multipart.go         NEW (parse multipart → bytes + meta)
+├── capabilities.go      NEW (modality validation + graceful degradation)
+├── cost.go              NEW (per-unit pricing + token hybrid)
+└── response.go          NEW (hidden params headers, error mapping)
+```
+
+### 6.1 Shared base processor pattern
+
+Following LiteLLM's thin-handler discipline, every endpoint
+handler is ~30-60 LoC and delegates to a shared base processor:
+
+```go
+// internal/api/multimodal.go
+func (h *Handler) processMultimodal(
+    w http.ResponseWriter,
+    r *http.Request,
+    endpoint string,                  // 'image_generation', 'rerank', ...
+    parsed *multimodal.Parsed,         // JSON or multipart
+) {
+    // 1. token auth + rate limit
+    info := middleware.AuthFromContext(r.Context())
+    if !h.limiter.Allow(info.TokenID, estimateCost(parsed, endpoint)) {
+        writeError(w, 429, "rate_limit_exceeded"); return
+    }
+
+    // 2. route to channel
+    ch := h.router.PickByEndpoint(endpoint)
+    if ch == nil {
+        writeError(w, 503, "no_channel_available"); return
+    }
+
+    // 3. capability check
+    if err := multimodal.CheckCapability(ch, endpoint, parsed); err != nil {
+        writeError(w, 400, err.Error()); return
+    }
+
+    // 4. pre-call hook (guardrails)
+    h.hooks.PreCall(r.Context(), endpoint, parsed)
+
+    // 5. upstream call
+    start := time.Now()
+    resp, err := h.provider.For(ch).Call(r.Context(), endpoint, parsed)
+    latency := time.Since(start)
+
+    // 6. post-call hook (OTel, logging, cost)
+    h.hooks.PostCall(r.Context(), endpoint, ch, resp, err, latency)
+
+    // 7. add hidden params headers (LiteLLM pattern)
+    multimodal.WriteHiddenHeaders(w, ch, resp, err)
+
+    // 8. write response
+    if err != nil {
+        writeUpstreamError(w, err); return
+    }
+    resp.WriteTo(w)
+}
+```
+
+### 6.2 Multipart parsing
+
+```go
+// internal/multimodal/multipart.go
+type Parsed struct {
+    Fields     map[string]string    // prompt, model, response_format, ...
+    Files      map[string][]byte    // image[0], mask, file
+    FileNames  map[string]string    // image[0].png → MIME inferred
+    FileMetas  map[string]multipart.FileHeader
+}
+
+func Parse(r *http.Request, maxMemory int64) (*Parsed, error) {
+    // Auto-detect content-type
+    ct := r.Header.Get("Content-Type")
+    if strings.HasPrefix(ct, "multipart/form-data") {
+        return parseMultipart(r, maxMemory)
+    }
+    return parseJSON(r)
+}
+
+// filenames used by providers' SDKs to infer MIME
+func (p *Parsed) FileNameFor(key string) string {
+    if name, ok := p.FileNames[key]; ok { return name }
+    return key + ".bin"  // default
+}
+```
+
+### 6.3 Capability check (graceful degradation)
+
+```go
+// internal/multimodal/capabilities.go
+func CheckAndDegrade(
+    ch *model.Channel,
+    endpoint string,
+    parsed *Parsed,
+) {
+    // For chat endpoint, degrade multimodal input parts
+    if endpoint == "chat" && parsed.Fields["messages"] != "" {
+        degradeUnsupportedParts(ch, parsed)
+        return
+    }
+    // For other endpoints, validate the *single* required modality
+    req := requiredModality(endpoint)
+    if req == "" { return }
+    if !supports(ch.Capabilities(), req) {
+        // Replace content with error text
+        parsed.Fields["prompt"] = "ERROR: channel " + ch.Name + " does not support " + req
+    }
+}
+
+func requiredModality(endpoint string) string {
+    switch endpoint {
+    case "image_generation":  return "output.image"
+    case "image_edit":        return "input.image,output.image"
+    case "audio_speech":      return "output.audio"
+    case "audio_transcription": return "input.audio"
+    case "rerank":            return ""  // text only
+    case "embedding":         return ""  // text or image
+    default:                  return ""
+    }
+}
+
+func supports(caps Capabilities, mod string) bool {
+    parts := strings.Split(mod, ",")
+    for _, p := range parts {
+        side, mod := splitModality(p)  // "input.image" → "input", "image"
+        if !caps[side][mod] { return false }
+    }
+    return true
+}
+
+func mimeToModality(mime string) string {
+    switch {
+    case strings.HasPrefix(mime, "image/"): return "image"
+    case strings.HasPrefix(mime, "audio/"): return "audio"
+    case strings.HasPrefix(mime, "video/"): return "video"
+    case mime == "application/pdf":         return "pdf"
+    }
+    return ""
+}
+```
+
+### 6.4 Cost calculation (per-unit hybrid)
+
+```go
+// internal/multimodal/cost.go
+type CostBreakdown struct {
+    InputUSD  float64
+    OutputUSD float64
+    UnitUSD   float64
+    TotalUSD  float64
+}
+
+func CalcCost(ch *model.Channel, endpoint string, req *Parsed, resp *Response) CostBreakdown {
+    var b CostBreakdown
+    switch endpoint {
+    case "chat":
+        // existing token-based math
+        promptCost := float64(resp.Usage.PromptTokens) * ch.InputPriceUSD / 1_000_000
+        compCost   := float64(resp.Usage.CompletionTokens) * ch.OutputPriceUSD / 1_000_000
+        b.InputUSD  = promptCost
+        b.OutputUSD = compCost
+
+    case "image_generation":
+        // per-image pricing (vary by size)
+        unitSize := req.SizeUnit()  // 1024x1024 → 1, 1792x1024 → 2
+        price := lookupPrice(ch.ID, endpoint, req.Model, "per_image", unitSize)
+        b.UnitUSD = price * float64(resp.N)
+
+    case "audio_speech":
+        charCount := utf8.RuneCountInString(req.Fields["input"])
+        price := lookupPrice(ch.ID, endpoint, req.Model, "per_char", 1)
+        b.UnitUSD = price * float64(charCount)
+
+    case "audio_transcription":
+        seconds := req.DurationSeconds  // from upstream or estimate
+        price := lookupPrice(ch.ID, endpoint, req.Model, "per_second", 1)
+        b.UnitUSD = price * seconds
+
+    case "rerank":
+        // Cohere-style: billed per search unit (1 per query)
+        price := lookupPrice(ch.ID, endpoint, req.Model, "per_search_unit", 1)
+        b.UnitUSD = price
+
+    case "embedding":
+        // token-based, like chat but cheaper
+        b.InputUSD = float64(resp.Usage.PromptTokens) * ch.InputPriceUSD / 1_000_000
+    }
+    b.TotalUSD = b.InputUSD + b.OutputUSD + b.UnitUSD
+    return b
+}
+```
+
+### 6.5 Hidden params headers (LiteLLM pattern)
+
+```go
+// internal/multimodal/response.go
+func WriteHiddenHeaders(w http.ResponseWriter, ch *model.Channel, resp *Response, err error) {
+    h := w.Header()
+    if resp != nil {
+        if resp.ModelID != ""    { h.Set("X-Model-Id", resp.ModelID) }
+        if resp.CacheKey != ""   { h.Set("X-Cache-Key", resp.CacheKey) }
+        if resp.APIBase != ""    { h.Set("X-Upstream-Api-Base", resp.APIBase) }
+        h.Set("X-Cost-USD", strconv.FormatFloat(resp.Cost.TotalUSD, 'f', 6, 64))
+        h.Set("X-Request-Id", resp.RequestID)
+    }
+}
+```
+
+## 7. Wire format (per endpoint)
+
+### 7.1 `/v1/embeddings`
+
+```jsonc
+// Request
+{ "model": "text-embedding-3-small", "input": ["hello", "world"],
+  "encoding_format": "float", "dimensions": 1536, "user": "u-123" }
+
+// Response
+{ "object": "list",
+  "data": [{"object":"embedding","index":0,"embedding":[0.01,...]}],
+  "model": "text-embedding-3-small-v2",
+  "usage": {"prompt_tokens": 2, "total_tokens": 2} }
+```
+
+### 7.2 `/v1/images/generations`
+
+```jsonc
+// Request
+{ "model": "gpt-image-1", "prompt": "a cat", "n": 1,
+  "size": "1024x1024", "response_format": "url", "user": "u-123" }
+
+// Response (url)
+{ "created": 1700000000, "data": [{"url":"https://...","revised_prompt":"A cute cat"}] }
+
+// Response (b64_json)
+{ "created": 1700000000, "data": [{"b64_json":"iVBORw0K...","revised_prompt":"..."}] }
+```
+
+### 7.3 `/v1/images/edits` (multipart)
+
+```
+POST /v1/images/edits
+Content-Type: multipart/form-data; boundary=----xxx
+Authorization: Bearer sk-xxx
+
+------xxx
+Content-Disposition: form-data; name="image"; filename="cat.png"
+Content-Type: image/png
+
+<binary>
+------xxx
+Content-Disposition: form-data; name="mask"; filename="mask.png"
+Content-Type: image/png
+
+<binary>
+------xxx
+Content-Disposition: form-data; name="prompt"
+
+a cat with a hat
+------xxx
+Content-Disposition: form-data; name="model"
+
+gpt-image-1
+------xxx
+Content-Disposition: form-data; name="n"
+
+1
+------xxx
+Content-Disposition: form-data; name="size"
+
+1024x1024
+------xxx--
+```
+
+Response: same shape as generations.
+
+### 7.4 `/v1/audio/transcriptions` (multipart)
+
+```
+POST /v1/audio/transcriptions
+Content-Type: multipart/form-data
+
 file=@recording.mp3
 model=whisper-1
 language=en
-response_format=json   // or text, srt, verbose_json
-temperature=0
+response_format=json
 ```
 
-OpenAI Whisper spec. Upstream is OpenAI-compatible (`POST
-/audio/transcriptions`). Multipart body parsing via Go stdlib
-`mime/multipart` — no new deps.
-
-### 3.4 Audio TTS (`/v1/audio/speech`)
-
-```
-Request:
-{
-  "model": "tts-1",
-  "input": "Hello, world.",
-  "voice": "alloy",
-  "response_format": "mp3",     // or opus, aac, flac, wav, pcm
-  "speed": 1.0
-}
-
-Response: binary audio stream
+Response:
+```jsonc
+{ "text": "Hello, world!" }
 ```
 
-Upstream returns the raw bytes (not JSON). Handler streams the
-bytes through to the client with the right `Content-Type`.
+Optional formats: `text`, `srt`, `verbose_json`.
 
-## 4. Pricing model
+### 7.5 `/v1/audio/speech` (JSON → binary stream)
 
-Each `Channel` gains an optional `endpoint_pricing` JSON column or a
-dedicated `endpoint_prices` table. Schema choice:
+```jsonc
+// Request
+{ "model": "tts-1", "input": "Hello, world!", "voice": "alloy",
+  "response_format": "mp3", "speed": 1.0 }
 
-```sql
-CREATE TABLE endpoint_prices (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    channel_id INTEGER NOT NULL,
-    endpoint TEXT NOT NULL,           -- 'image' | 'rerank' | 'audio_stt' | 'audio_tts'
-    model TEXT NOT NULL,
-    unit_price_usd REAL NOT NULL DEFAULT 0,  -- per image, per search, per minute audio
-    unit TEXT NOT NULL,               -- 'image' | 'search' | 'minute' | '1k_char'
-    FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
-);
-CREATE UNIQUE INDEX idx_endpoint_prices ON endpoint_prices(channel_id, endpoint, model);
+// Response
+HTTP/1.1 200 OK
+Content-Type: audio/mpeg
+Content-Length: 12345
+<binary mp3 bytes>
 ```
 
-Calc:
-- Image: `n_images * unit_price_usd`
-- Rerank: `n_documents_searched * unit_price_usd` (or a flat per-search fee — provider-dependent)
-- STT: `minutes_audio * unit_price_usd`
-- TTS: `characters * unit_price_usd / 1000`
+### 7.6 `/v1/rerank` (Cohere v2 schema)
 
-`model.Log` gains:
-```go
-type Log struct {
-    // ... existing fields ...
-    Endpoint     string  `json:"endpoint"`     // 'chat' | 'image' | 'rerank' | 'audio_stt' | 'audio_tts'
-    Units        int     `json:"units"`        // n_images, n_docs, minutes, chars
-}
+```jsonc
+// Request
+{ "model": "rerank-english-v3.0",
+  "query": "What is the capital of the US?",
+  "documents": ["Carson City is the capital of Nevada.",
+                "Washington DC is the capital of the US.",
+                "Paris is the capital of France."],
+  "top_n": 3 }
+
+// Response
+{ "id": "rerank-abc",
+  "results": [
+    {"index": 1, "relevance_score": 0.999},
+    {"index": 0, "relevance_score": 0.327}
+  ],
+  "meta": { "billed_units": { "search_units": 1 } } }
 ```
 
-Migration via `addColumnIfMissing` (default `endpoint='chat'`,
-`units=0`).
-
-## 5. Per-token spend tracking (extension)
-
-The same `IncrementTokenSpend(tokenID, amount)` from the multi-tenant
-work applies. emitLog now reads:
+### 7.7 `/v1/images/variations` (multipart)
 
 ```
-real   = calcEndpointCost(channel, req, usage)   // channel-specific
-billed = real * markup * plan_markup
+POST /v1/images/variations
+file=@image.png
+model=dall-e-2
+n=2
+size=512x512
+response_format=url
 ```
 
-`calcEndpointCost` is one switch per endpoint type.
+Response: same shape as generations.
 
-## 6. Wiring on the `api.Handler`
+## 8. Routing
 
 ```go
-func (h *Handler) Routes() http.Handler {
-    r := chi.NewRouter()
-    r.Post("/chat/completions", h.ChatCompletions)
-    r.Post("/images/generations", h.ImageGenerations)
-    r.Post("/audio/transcriptions", h.AudioTranscriptions)
-    r.Post("/audio/speech", h.AudioSpeech)
-    r.Post("/rerank", h.Rerank)
-    r.Get("/models", h.ListModels)
-    return r
+// internal/api/multimodal.go (extends existing router)
+func (h *Handler) routeByEndpoint(endpoint string) (*model.Channel, error) {
+    candidates := h.channels.Filter(func(c *model.Channel) bool {
+        return c.Endpoint == endpoint && c.Enabled
+    })
+    if len(candidates) == 0 {
+        return nil, fmt.Errorf("no enabled channel for endpoint %s", endpoint)
+    }
+    return h.thompson.Pick(candidates), nil  // reuse existing Thompson router
 }
 ```
 
-Each new handler:
+**Thompson sampling** stays per-endpoint. Each channel has independent
+sampling state per endpoint (so image_gen traffic doesn't affect chat
+quality sampling).
 
-1. Decodes request body (multipart for audio, JSON otherwise).
-2. Calls `router.RouteWith(ctx, model)` — same L1-L5 pipeline.
-3. Resolves the right `EndpointProvider` based on the channel's
-   `protocol` (openai-compatible serves all 4; cohere-jina serves
-   rerank; etc.).
-4. Calls the provider.
-5. Emits a log row with the right `endpoint` tag.
+## 9. Rate limiting
 
-## 7. Providers
+Extend `internal/ratelimit` to support custom units:
 
 ```go
-// internal/provider/image.go
-type ImageProvider interface {
-    Name() string
-    Generate(ctx context.Context, req *ImageRequest, apiKey, baseURL string) (*ImageResponse, error)
+type AllowOpts struct {
+    TokenID int64
+    RPM     int               // per-minute
+    TPM     int               // tokens per minute
+    EstimatedTokens int       // for chat
+    Units   int               // for image/audio/rerank (1 per call usually)
+    UnitType string           // 'image' | 'audio_minute' | 'search_unit'
 }
 
-// internal/provider/rerank.go
-type RerankProvider interface {
-    Name() string
-    Rerank(ctx context.Context, req *RerankRequest, apiKey, baseURL string) (*RerankResponse, error)
-}
-
-// internal/provider/audio.go
-type AudioTranscriptionProvider interface {
-    Name() string
-    Transcribe(ctx context.Context, req *AudioRequest, apiKey, baseURL string) (*TranscriptionResponse, error)
-}
-type AudioSpeechProvider interface {
-    Name() string
-    Speak(ctx context.Context, req *SpeechRequest, apiKey, baseURL string) (io.ReadCloser, error)
+func (l *Limiter) Allow(opts AllowOpts) bool {
+    // 1. RPM check (per-call)
+    // 2. TPM check (token-based, only for chat/embed)
+    // 3. Unit-type-specific check
+    //    - 'image': per_image RPH
+    //    - 'audio_minute': per-minute-of-audio RPH
+    //    - 'search_unit': per-search RPH
 }
 ```
 
-Concrete implementations:
+For P9 we keep it simple: only RPM + estimated-cost-based TPM.
+Image/audio/rerank each count as 1 RPM request. Cost is tracked
+separately via `spend_logs`.
 
-| Endpoint | Default provider | Notes |
-|---|---|---|
-| Image | `OpenAIImageProvider` | POST `{base}/images/generations` |
-| Rerank | `CohereRerankProvider` | POST `{base}/rerank` |
-| Audio STT | `OpenAIAudioProvider` (Whisper-compatible) | POST `{base}/audio/transcriptions` |
-| Audio TTS | `OpenAIAudioProvider` | POST `{base}/audio/speech` (binary stream) |
+## 10. Tests
 
-All share the same `http.Client` plumbing as today's chat providers.
+### 10.1 Unit tests (per package)
 
-## 8. Tests
-
-| Test | Coverage |
+| Test | What |
 |---|---|
-| `image_generations_happy_path` | 200, n=1, url returned |
-| `image_generations_b64_json` | response_format=b64_json works |
-| `image_generations_routes_to_cheapest_channel` | L3 cost sort applies |
-| `image_generations_records_log_with_endpoint` | logs.endpoint='image' |
-| `rerank_cohere_happy_path` | top_n + scores + documents |
-| `rerank_no_documents` | 400 |
-| `audio_transcriptions_whisper` | multipart upload → json result |
-| `audio_transcriptions_verbose_json` | segments + duration |
-| `audio_speech_mp3_stream` | bytes streamed through |
-| `audio_speech_speed_validation` | 0.25..4.0 range |
-| `calc_image_cost` | n=2 + 0.02/image = 0.04 |
-| `calc_rerank_cost` | n_docs=1000 + 0.001/search = 1.0 |
-| `calc_audio_stt_cost` | minutes=2.5 + 0.006/min = 0.015 |
-| `calc_audio_tts_cost` | chars=10000 + 0.015/1k_char = 0.15 |
+| `multipart_test.go` | Parse JSON / Parse multipart / MIME inference from filename |
+| `capabilities_test.go` | `supports()` matrix / graceful degradation / opencode parity |
+| `cost_test.go` | per-token / per-image / per-char / per-second / per-search_unit |
+| `response_test.go` | Hidden params headers / error mapping |
+| `embeddings_test.go` | Mock OpenAI embeddings endpoint / multi-input / dimensions |
+| `images_test.go` | generations / edits / variations / b64 vs url |
+| `audio_test.go` | transcription (json/text/srt) / speech (binary stream) |
+| `rerank_test.go` | Cohere schema parity / top_n / relevance_score range |
+| `provider/openai_test.go` | All 6 new methods against `httptest` mock |
+| `provider/anthropic_test.go` | Embed (not supported → ErrUnsupported) |
+| `provider/gemini_test.go` | Embed + image_gen |
 
-## 9. Acceptance criteria
+### 10.2 E2E tests (httptest)
+
+```go
+// internal/api/multimodal_e2e_test.go
+func TestImagesGenerations_E2E(t *testing.T) {
+    // 1. Set up mock upstream returning b64_json
+    mock := httptest.NewServer(handler returning canned OpenAI image response)
+    // 2. Register channel pointing at mock
+    // 3. POST /v1/images/generations via testhelper
+    // 4. Assert 200 + body shape + hidden params headers
+    // 5. Assert logs row with cost > 0
+    // 6. Assert endpoint_prices lookup used (cost = price * n)
+}
+```
+
+Same pattern for all 7 new endpoints. ~7 e2e tests + ~40 unit tests.
+
+## 11. Acceptance criteria
 
 | Metric | Target |
 |---|---|
-| All four endpoints respond 200 on happy path | ✅ |
-| All four endpoints log `endpoint` field | ✅ |
-| Image response_format b64_json works | ✅ |
-| Rerank returns documents when `return_documents=true` | ✅ |
-| STT accepts multipart upload up to 25 MB | ✅ |
-| TTS streams binary bytes (no JSON wrap) | ✅ |
-| Spend tracking increments for all 4 endpoints | ✅ |
-| Test coverage ≥ 70 % for new packages | ✅ |
-| Coverage gate overall ≥ 65 % | ✅ |
-| Zero new external dependencies | ✅ (multipart is stdlib) |
+| All 8 new endpoints respond (200 OK in e2e) | ✅ |
+| Multipart parsing handles `image[]` (multiple) | ✅ |
+| Multipart parsing handles `mask` (optional) | ✅ |
+| Per-unit cost calculated for all 8 endpoints | ✅ |
+| Per-token cost for chat/embedding (unchanged) | ✅ |
+| Hidden params headers present on all responses | ✅ |
+| Capability graceful degradation: unsupported modality → error text | ✅ |
+| Channel.endpoint selector routes correctly | ✅ |
+| Rate limit (RPM) per channel / per token | ✅ |
+| `provider.Capabilities()` returns supported endpoints | ✅ |
+| Coverage ≥ 70 % for `internal/multimodal`, `internal/api/{embeddings,images,audio,rerank}.go` | ✅ |
+| Coverage overall ≥ 65 % | ✅ |
+| Race-clean | ✅ |
 
-## 10. Files to add / touch
+## 12. Files to add / touch
 
 ```
-internal/provider/image.go              # ImageProvider interface + OpenAI impl
-internal/provider/rerank.go             # RerankProvider + Cohere impl
-internal/provider/audio.go              # AudioProvider (STT + TTS)
-internal/api/image.go                   # handler
-internal/api/rerank.go                  # handler
-internal/api/audio.go                   # handlers (multipart + stream)
-internal/model/types.go                 # Log.Endpoint, Log.Units
-internal/store/sqlite.go                # endpoint_prices table + log columns
-internal/store/store.go                 # ListEndpointPrices + CreateEndpointPrice
-internal/admin/handler.go               # endpoint_prices CRUD
-web/src/pages/Settings.tsx              # new endpoint section
-internal/api/image_test.go
-internal/api/rerank_test.go
-internal/api/audio_test.go
-internal/provider/image_test.go
-internal/provider/rerank_test.go
-internal/provider/audio_test.go
+NEW
+internal/multimodal/multipart.go        ~150 LoC
+internal/multimodal/multipart_test.go   ~80 LoC
+internal/multimodal/capabilities.go     ~100 LoC
+internal/multimodal/capabilities_test.go~80 LoC
+internal/multimodal/cost.go             ~150 LoC
+internal/multimodal/cost_test.go        ~100 LoC
+internal/multimodal/response.go         ~80 LoC
+internal/multimodal/response_test.go    ~50 LoC
+internal/api/multimodal.go              ~200 LoC
+internal/api/embeddings.go              ~250 LoC
+internal/api/embeddings_test.go         ~100 LoC
+internal/api/images.go                  ~350 LoC
+internal/api/images_test.go             ~150 LoC
+internal/api/audio.go                   ~400 LoC
+internal/api/audio_test.go              ~150 LoC
+internal/api/rerank.go                  ~250 LoC
+internal/api/rerank_test.go             ~100 LoC
+internal/api/multimodal_e2e_test.go     ~300 LoC
+internal/provider/openai/multimodal.go  ~500 LoC
+internal/provider/anthropic/multimodal.go ~100 LoC
+internal/provider/gemini/multimodal.go  ~200 LoC
+internal/model/types.go                 +Capabilities struct
+internal/store/sqlite.go                +endpoint_prices table + CRUD
+internal/store/store.go                 +CRUD signatures
+internal/admin/handler.go               +CRUD endpoints
+internal/ratelimit/ratelimit.go         +UnitType support
+web/src/pages/Channels.tsx              +Endpoint / capabilities / endpoint_prices UI
+web/src/pages/Settings.tsx              +Capabilities matrix preview
+docs/P9-MULTIMODAL.md                   this file
+
+MODIFY
+internal/api/router.go                  +register 7 new routes
+internal/api/router.go                  +routeByEndpoint()
+internal/provider/provider.go           +Embed/Image/Audio/Rerank interfaces
+internal/model/types.go                 +Channel.Endpoint / Channel.Capabilities
+internal/store/sqlite.go                +channels.endpoint, channels.capabilities migrations
+internal/ratelimit/ratelimit_test.go    +UnitType tests
 ```
 
-## 11. Rollout
+Total new LoC: **~4150**.
 
-1. Add `Log.Endpoint` + `Log.Units` + `endpoint_prices` table.
-2. Land `internal/provider/image.go` + handler + tests.
-3. Land `internal/provider/rerank.go` + handler + tests.
-4. Land `internal/provider/audio.go` + handlers + tests.
-5. Admin UI for endpoint prices.
-6. README + CHANGELOG.
-7. Optional: `embeddings` (P9.5).
+## 13. New dependencies
 
-## 12. Risks
+**None.** All needed functionality is in stdlib
+(`net/http`, `mime/multipart`, `encoding/json`, `io`, `unicode/utf8`)
+or already vendored.
+
+## 14. Rollout
+
+1. Land schema migration (channels.endpoint, channels.capabilities,
+   endpoint_prices table) + small CRUD in admin.
+2. Land `internal/multimodal/*` (multipart + capabilities + cost +
+   response) with full unit tests.
+3. Land provider interface extension + OpenAI implementation.
+4. Land `/v1/embeddings` (simplest) — verify end-to-end.
+5. Land `/v1/images/generations` + `/v1/images/edits` +
+   `/v1/images/variations`.
+6. Land `/v1/audio/transcriptions` + `/v1/audio/speech` +
+   `/v1/audio/translations`.
+7. Land `/v1/rerank`.
+8. Add Anthropic + Gemini partial support (embed + image_edit for
+   Anthropic, embed + image_gen for Gemini).
+9. Web UI: Channel form adds endpoint selector + capabilities matrix
+   auto-derived from endpoint_prices catalog.
+10. README + CHANGELOG.
+
+## 15. Risks
 
 | Risk | Mitigation |
 |---|---|
-| Multipart parsing DoS | `http.MaxBytesReader(w, body, 25<<20)` (25 MB cap) |
-| Binary audio responses confused for text | Inspect `Content-Type` from upstream; pass through verbatim |
-| Rerank providers have non-uniform pricing | Per-channel pricing table; defaults to 0 (free) on miss |
-| L4 intent classifier doesn't apply to non-chat | Skip L4 for image / audio / rerank handlers |
+| Multipart parsing edge cases (boundary in body) | Use `mime.ParseMediaType` + `multipart.NewReader`; test with adversarial inputs |
+| File size DoS (10 MB image × 100 concurrent) | Cap `r.Body` via `http.MaxBytesReader` per-endpoint |
+| Binary streaming backpressure (TTS) | Stream directly via `io.Copy` with `Flush()` per chunk |
+| Provider diverges from OpenAI schema (Anthropic image_edit) | Capability check + graceful degradation |
+| Upstream billing mismatch | Compare `cost_usd` from response vs our calc; alert on >5% delta |
+| Modalities.json drift from models.dev catalog | Ship with v1 catalog; admins can override per channel |
+
+## 16. Future (P9.5+)
+
+- **Video endpoints** (`/v1/videos`) — wait for Sora 2 API to stabilize.
+- **Image variations** — could be deprecated (DALL-E 2 only).
+- **Audio translations** — small win, ship if cheap.
+- **Embeddings images** — Gemini 2 multimodal embeddings.
+- **Auto-cache mode** — opencode-style automatic cache_control injection.
+- **Responses API** — GPT-5 native format (large surface).
+- **MCP stdio transport** — see `docs/P11-MCP.md`.
