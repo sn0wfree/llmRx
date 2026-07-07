@@ -117,3 +117,85 @@ func TestAdminOnly_BadSession(t *testing.T) {
 		t.Fatalf("expected 403, got %d", rec.Code)
 	}
 }
+
+func TestTokenInfo_HasModelAccess(t *testing.T) {
+	empty := TokenInfo{}
+	if !empty.HasModelAccess("gpt-4") {
+		t.Fatal("empty whitelist = unrestricted")
+	}
+	restricted := TokenInfo{ModelsWhitelist: []string{"gpt-4", "claude-3"}}
+	if !restricted.HasModelAccess("gpt-4") {
+		t.Fatal("gpt-4 should be allowed")
+	}
+	if !restricted.HasModelAccess("claude-3") {
+		t.Fatal("claude-3 should be allowed")
+	}
+	if restricted.HasModelAccess("gemini-pro") {
+		t.Fatal("gemini-pro should be denied")
+	}
+	star := TokenInfo{ModelsWhitelist: []string{"*"}}
+	if !star.HasModelAccess("anything") {
+		t.Fatal("* should match anything")
+	}
+}
+
+func TestTokenInfo_HasIPAccess(t *testing.T) {
+	empty := TokenInfo{}
+	if !empty.HasIPAccess("1.2.3.4") {
+		t.Fatal("empty IP whitelist = unrestricted")
+	}
+	restricted := TokenInfo{IPWhitelist: []string{"1.2.3.4", "10.0.0.0/8"}}
+	if !restricted.HasIPAccess("1.2.3.4") {
+		t.Fatal("1.2.3.4 should be allowed")
+	}
+	if !restricted.HasIPAccess("10.0.0.0/8") {
+		t.Fatal("10.0.0.0/8 should be allowed (exact-string match)")
+	}
+	if restricted.HasIPAccess("8.8.8.8") {
+		t.Fatal("8.8.8.8 should be denied")
+	}
+}
+
+func TestWithLimits_BlocksRPM(t *testing.T) {
+	enforcer := &fakeEnforcer{allow: false, reason: "rpm exceeded"}
+	lookup := func(string) (TokenInfo, bool) {
+		return TokenInfo{ID: 7, Key: "sk-test"}, true
+	}
+	h := WithLimits(lookup, enforcer)(passthrough())
+	rec := do(t, h, "Bearer sk-test")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "rpm exceeded") {
+		t.Fatalf("body: %s", rec.Body.String())
+	}
+}
+
+func TestWithLimits_AllowsWhenAllowed(t *testing.T) {
+	enforcer := &fakeEnforcer{allow: true}
+	lookup := func(string) (TokenInfo, bool) {
+		return TokenInfo{ID: 7, Key: "sk-test"}, true
+	}
+	h := WithLimits(lookup, enforcer)(passthrough())
+	rec := do(t, h, "Bearer sk-test")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+}
+
+func TestWithLimits_NilEnforcerPassesThrough(t *testing.T) {
+	h := WithLimits(func(string) (TokenInfo, bool) { return TokenInfo{}, true }, nil)(passthrough())
+	rec := do(t, h, "Bearer sk-test")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+}
+
+type fakeEnforcer struct {
+	allow  bool
+	reason string
+}
+
+func (f *fakeEnforcer) Allow(tokenID int64, rpm, tpm int, promptEstimate int) (bool, string) {
+	return f.allow, f.reason
+}

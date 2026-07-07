@@ -10,6 +10,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/sn0wfree/llmRx/internal/admin"
+	"github.com/sn0wfree/llmRx/internal/alert"
 	"github.com/sn0wfree/llmRx/internal/api"
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/config"
@@ -29,6 +30,7 @@ type Server struct {
 	pool   *pool.ChannelPool
 	store  store.Store
 	tokens *tokencache.Cache
+	admin  *admin.Handler
 	engine *chi.Mux
 }
 
@@ -64,8 +66,9 @@ func (s *Server) registerMiddleware() {
 func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defaults) {
 	handler := api.New(s.cfg, s.router, s.pool, s.store, lb, rt)
 	adminHandler := admin.New(s.store, s.pool, s.router, s.tokens, lb, rt)
+	s.admin = adminHandler
 
-	s.engine.With(authmw.Token(s.tokens.Lookup)).
+	s.engine.With(authmw.WithLimits(s.tokens.Lookup, handler.Limits())).
 		Mount("/v1", handler.Routes())
 
 	s.engine.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -82,4 +85,12 @@ func (s *Server) Start() error {
 	addr := fmt.Sprintf(":%d", s.cfg.Server.Port)
 	log.Printf("listening on %s (tokens=%d)", addr, s.tokens.Size())
 	return http.ListenAndServe(addr, s.engine)
+}
+
+// SetAlertManager injects the alert manager into the admin handler
+// so that POST /api/v1/reload can also refresh alert rules.
+func (s *Server) SetAlertManager(m *alert.Manager) {
+	if s.admin != nil {
+		s.admin.SetAlertManager(m)
+	}
 }

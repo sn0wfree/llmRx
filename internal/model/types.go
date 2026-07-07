@@ -105,6 +105,7 @@ type Token struct {
 	Status          TokenStatus `json:"status"`
 	RPM             int         `json:"rpm"`
 	TPM             int         `json:"tpm"`
+	UsedUSD         float64     `json:"used_usd"`
 	ModelsWhitelist []string    `json:"models_whitelist" gorm:"serializer:json"`
 	IPWhitelist     []string    `json:"ip_whitelist" gorm:"serializer:json"`
 	ExpiresAt       time.Time   `json:"expires_at"`

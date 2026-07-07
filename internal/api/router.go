@@ -15,6 +15,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/provider"
+	"github.com/sn0wfree/llmRx/internal/ratelimit"
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
@@ -29,6 +30,7 @@ type Handler struct {
 	store     store.Store
 	logBroker *broker.Broker[*model.Log]
 	rt        *runtime.Defaults
+	limits    *ratelimit.Limiter
 }
 
 func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Handler {
@@ -45,7 +47,28 @@ func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st 
 		store:     st,
 		logBroker: lb,
 		rt:        rt,
+		limits:    ratelimit.New(),
 	}
+}
+
+// Limits exposes the rate limiter for the server to wire into the
+// middleware. The limiter is process-local (in-memory sliding window).
+func (h *Handler) Limits() *ratelimit.Limiter { return h.limits }
+
+// SetStore wires the underlying store reference. Tests use this to
+// inject a fake store; production wires the real SQLite.
+func (h *Handler) SetStore(st store.Store) { h.store = st }
+
+// Store returns the wired store; tests use it to assert log writes.
+func (h *Handler) Store() store.Store { return h.store }
+
+// lookupTokenInfo extracts the TokenInfo placed in the request
+// context by middleware.Token. Returns ok=false when the request
+// was authenticated without a TokenInfo in context (some unit tests
+// bypass the middleware by going directly through a Handler method).
+func lookupTokenInfo(ctx context.Context) (middleware.TokenInfo, bool) {
+	v, ok := ctx.Value(middleware.TokenInfoKey).(middleware.TokenInfo)
+	return v, ok
 }
 
 // providerFor returns the provider matching channel.Protocol,
@@ -148,6 +171,19 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-token model whitelist + IP whitelist enforcement.
+	if info, ok := lookupTokenInfo(r.Context()); ok {
+		if !info.HasModelAccess(req.Model) {
+			writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
+			return
+		}
+		ip := clientIP(r)
+		if !info.HasIPAccess(ip) {
+			writeError(w, http.StatusForbidden, "ip not allowed for this token", "ip_not_allowed")
+			return
+		}
+	}
+
 	if req.Stream {
 		h.streamChatCompletions(w, r, &req)
 		return
@@ -169,12 +205,12 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.router.RecordFailure(route.Channel.ID)
 		writeError(w, statusCode, "upstream error: "+err.Error(), "upstream_error")
-		h.emitLog(tokenID, req.Model, route, nil, duration, statusCode, true, clientIP(r))
+		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, clientIP(r))
 		return
 	}
 
 	h.router.RecordSuccess(route.Channel.ID)
-	h.emitLog(tokenID, req.Model, route, &resp.Usage, duration, statusCode, false, clientIP(r))
+	h.emitLog(r.Context(), tokenID, req.Model, route, &resp.Usage, duration, statusCode, false, clientIP(r))
 	writeJSON(w, resp)
 }
 
@@ -196,7 +232,7 @@ func lookupTokenID(ctx context.Context, st store.Store) int64 {
 	return v
 }
 
-func (h *Handler) emitLog(tokenID int64, modelName string, route *router.RouteResult, usage *provider.Usage, durationMs int64, statusCode int, failed bool, ip string) {
+func (h *Handler) emitLog(ctx context.Context, tokenID int64, modelName string, route *router.RouteResult, usage *provider.Usage, durationMs int64, statusCode int, failed bool, ip string) {
 	real := 0.0
 	cached := 0
 	if usage != nil {
@@ -205,6 +241,7 @@ func (h *Handler) emitLog(tokenID int64, modelName string, route *router.RouteRe
 			cached = usage.PromptTokensDetails.CachedTokens
 		}
 	}
+	billed := h.billedCost(ctx, real)
 	status := "ok"
 	if failed {
 		status = "fail"
@@ -212,7 +249,7 @@ func (h *Handler) emitLog(tokenID int64, modelName string, route *router.RouteRe
 	log.Printf("log status=%s model=%s channel=%s key=%s prompt=%d completion=%d cached=%d real_usd=%.6f billed_usd=%.6f duration_ms=%d code=%d path=%s",
 		status, modelName, route.Channel.Name, route.Key.KeyMasked,
 		promptTokens(usage), completionTokens(usage), cached,
-		real, real*h.Markup(),
+		real, billed,
 		durationMs, statusCode, route.RouterLog,
 	)
 	entry := &model.Log{
@@ -224,7 +261,7 @@ func (h *Handler) emitLog(tokenID int64, modelName string, route *router.RouteRe
 		CompletionTokens: completionTokens(usage),
 		CachedTokens:    cached,
 		RealCostUSD:     real,
-		BilledCostUSD:   real * h.Markup(),
+		BilledCostUSD:   billed,
 		DurationMs:      durationMs,
 		StatusCode:      statusCode,
 		RouterPath:      route.RouterLog,
@@ -236,6 +273,57 @@ func (h *Handler) emitLog(tokenID int64, modelName string, route *router.RouteRe
 	if h.logBroker != nil {
 		h.logBroker.Publish(entry)
 	}
+	// Increment per-token spend + per-plan spend. Failures are
+	// logged but don't break the request path.
+	planID := planIDFromContext(ctx)
+	if tokenID > 0 && billed > 0 {
+		if err := h.store.IncrementTokenSpend(tokenID, billed); err != nil {
+			log.Printf("warn: increment token spend: %v", err)
+		}
+		if planID > 0 {
+			if err := h.store.IncrementPlanSpend(planID, billed); err != nil {
+				log.Printf("warn: increment plan spend: %v", err)
+			}
+		}
+	}
+	// Account completion tokens against the rate limiter's TPM
+	// budget so a stream of long completions eventually trips the
+	// per-token ceiling.
+	if tokenID > 0 && usage != nil && h.limits != nil {
+		h.limits.Account(tokenID, usage.PromptTokens+usage.CompletionTokens)
+	}
+}
+
+// billedCost returns the per-token / per-plan-adjusted billed cost.
+// Server-wide markup is applied first; if the token has a Plan with
+// a non-1.0 markup_ratio, it scales on top. Lookup is best-effort;
+// a failed plan fetch falls back to the channel markup alone.
+func (h *Handler) billedCost(ctx context.Context, real float64) float64 {
+	base := real * h.Markup()
+	if h.store == nil {
+		return base
+	}
+	planID := planIDFromContext(ctx)
+	if planID == 0 {
+		return base
+	}
+	plan, err := h.store.GetPlan(planID)
+	if err != nil || plan == nil || plan.MarkupRatio <= 0 {
+		return base
+	}
+	return base * plan.MarkupRatio
+}
+
+// planIDFromContext extracts TokenInfo.PlanID from a request context.
+func planIDFromContext(ctx context.Context) int64 {
+	if ctx == nil {
+		return 0
+	}
+	v, ok := ctx.Value(middleware.TokenInfoKey).(middleware.TokenInfo)
+	if !ok {
+		return 0
+	}
+	return v.PlanID
 }
 
 func promptTokens(u *provider.Usage) int {
@@ -368,7 +456,7 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 		fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", err.Error())
 		flusher.Flush()
 		h.router.RecordFailure(route.Channel.ID)
-		h.emitLog(lookupTokenID(r.Context(), h.store), req.Model, route, nil,
+		h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, nil,
 			time.Since(start).Milliseconds(), http.StatusBadGateway, true, clientIP(r))
 		return
 	}
@@ -386,7 +474,7 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 			h.router.RecordFailure(route.Channel.ID)
 			fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", reason)
 			flusher.Flush()
-			h.emitLog(lookupTokenID(r.Context(), h.store), req.Model, route, usage,
+			h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
 				time.Since(start).Milliseconds(), http.StatusGatewayTimeout, true, clientIP(r))
 			return
 		case ev, ok := <-ch:
@@ -398,7 +486,7 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 				h.router.RecordFailure(route.Channel.ID)
 				fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", ev.Err.Error())
 				flusher.Flush()
-				h.emitLog(lookupTokenID(r.Context(), h.store), req.Model, route, usage,
+				h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
 					time.Since(start).Milliseconds(), http.StatusBadGateway, true, clientIP(r))
 				return
 			}
@@ -420,7 +508,7 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 				fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", "stream max body bytes exceeded")
 				flusher.Flush()
 				h.router.RecordFailure(route.Channel.ID)
-				h.emitLog(lookupTokenID(r.Context(), h.store), req.Model, route, usage,
+				h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
 					time.Since(start).Milliseconds(), http.StatusRequestEntityTooLarge, true, clientIP(r))
 				return
 			}
@@ -436,7 +524,7 @@ done:
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
 	h.router.RecordSuccess(route.Channel.ID)
-	h.emitLog(lookupTokenID(r.Context(), h.store), req.Model, route, usage,
+	h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
 		time.Since(start).Milliseconds(), http.StatusOK, false, clientIP(r))
 }
 

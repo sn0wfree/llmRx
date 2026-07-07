@@ -10,9 +10,10 @@ import (
 type contextKey string
 
 const (
-	TokenKey  contextKey = "token_key"
-	TokenIDKey contextKey = "token_id"
-	UserKey   contextKey = "user_key"
+	TokenKey    contextKey = "token_key"
+	TokenIDKey  contextKey = "token_id"
+	TokenInfoKey contextKey = "token_info"
+	UserKey     contextKey = "user_key"
 )
 
 type errorBody struct {
@@ -36,10 +37,49 @@ func writeAuthError(w http.ResponseWriter, status int, msg, code string) {
 // TokenInfo is what TokenLookup resolves a bearer token to. The
 // caller-side stores the ID under the request context so handlers
 // can persist a foreign key without re-querying.
+//
+// RPM / TPM are the per-minute / per-token limits configured on the
+// token row (0 = unlimited). ModelWhitelist is the list of models
+// the token is allowed to call (empty = any). PlanID ties the token
+// to a billing Plan whose markup_ratio applies on top of the channel
+// markup.
 type TokenInfo struct {
-	ID   int64
-	Key  string
-	Name string
+	ID             int64
+	Key            string
+	Name           string
+	PlanID         int64
+	RPM            int
+	TPM            int
+	ModelsWhitelist []string
+	IPWhitelist     []string
+}
+
+// HasModelAccess returns true if the requested model is allowed by
+// the token's whitelist. Empty whitelist = no restriction.
+func (t TokenInfo) HasModelAccess(model string) bool {
+	if len(t.ModelsWhitelist) == 0 {
+		return true
+	}
+	for _, m := range t.ModelsWhitelist {
+		if m == model || m == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+// HasIPAccess returns true if the request IP is allowed by the
+// token's IP whitelist. Empty whitelist = no restriction.
+func (t TokenInfo) HasIPAccess(ip string) bool {
+	if len(t.IPWhitelist) == 0 {
+		return true
+	}
+	for _, w := range t.IPWhitelist {
+		if w == ip || w == "*" {
+			return true
+		}
+	}
+	return false
 }
 
 // TokenLookup resolves a bearer token to its TokenInfo. Returning
@@ -72,9 +112,51 @@ func Token(lookup TokenLookup) func(http.Handler) http.Handler {
 
 			ctx := context.WithValue(r.Context(), TokenIDKey, info.ID)
 			ctx = context.WithValue(ctx, TokenKey, info.Key)
+			ctx = context.WithValue(ctx, TokenInfoKey, info)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// LimitEnforcer decides whether a request is allowed under the
+// token's per-minute / per-token rate limits. The implementation
+// is injected by the caller so middleware stays storage-free.
+type LimitEnforcer interface {
+	Allow(tokenID int64, rpm, tpm int, promptEstimate int) (allowed bool, reason string)
+}
+
+// WithLimits wraps Token() with RPM/TPM enforcement. Enforcer may be
+// nil (limits ignored).
+func WithLimits(lookup TokenLookup, enforcer LimitEnforcer) func(http.Handler) http.Handler {
+	base := Token(lookup)
+	if enforcer == nil {
+		return base
+	}
+	return func(next http.Handler) http.Handler {
+		return base(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			info, _ := lookup(extractBearer(r))
+			if info.ID == 0 {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// The middleware can't know the prompt size yet; it
+			// accounts for the request itself (1 unit). Streaming
+			// completion usage is accounted later in emitLog.
+			if ok, reason := enforcer.Allow(info.ID, info.RPM, info.TPM, 1); !ok {
+				writeAuthError(w, http.StatusTooManyRequests, reason, "rate_limited")
+				return
+			}
+			next.ServeHTTP(w, r)
+		}))
+	}
+}
+
+func extractBearer(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return ""
+	}
+	return strings.TrimPrefix(auth, "Bearer ")
 }
 
 // AdminOnly checks a session_token via the provided lookup. The
