@@ -198,16 +198,20 @@ func lookupTokenID(ctx context.Context, st store.Store) int64 {
 
 func (h *Handler) emitLog(tokenID int64, modelName string, route *router.RouteResult, usage *provider.Usage, durationMs int64, statusCode int, failed bool, ip string) {
 	real := 0.0
+	cached := 0
 	if usage != nil {
 		real = calcCost(route.Channel, *usage)
+		if usage.PromptTokensDetails != nil {
+			cached = usage.PromptTokensDetails.CachedTokens
+		}
 	}
 	status := "ok"
 	if failed {
 		status = "fail"
 	}
-	log.Printf("log status=%s model=%s channel=%s key=%s prompt=%d completion=%d real_usd=%.6f billed_usd=%.6f duration_ms=%d code=%d path=%s",
+	log.Printf("log status=%s model=%s channel=%s key=%s prompt=%d completion=%d cached=%d real_usd=%.6f billed_usd=%.6f duration_ms=%d code=%d path=%s",
 		status, modelName, route.Channel.Name, route.Key.KeyMasked,
-		promptTokens(usage), completionTokens(usage),
+		promptTokens(usage), completionTokens(usage), cached,
 		real, real*h.Markup(),
 		durationMs, statusCode, route.RouterLog,
 	)
@@ -218,6 +222,7 @@ func (h *Handler) emitLog(tokenID int64, modelName string, route *router.RouteRe
 		Model:           modelName,
 		PromptTokens:    promptTokens(usage),
 		CompletionTokens: completionTokens(usage),
+		CachedTokens:    cached,
 		RealCostUSD:     real,
 		BilledCostUSD:   real * h.Markup(),
 		DurationMs:      durationMs,
@@ -279,10 +284,30 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, modelsResp{Object: "list", Data: data})
 }
 
+// calcCost returns the real USD cost of a single chat completion.
+// The cached-token discount applies only to the prompt leg: when the
+// upstream reports that some prompt tokens were served from its
+// prompt cache (Anthropic, OpenAI GPT-5+, etc.), the gateway charges
+// only the discount fraction of InputPrice for those tokens. The
+// discount is configured per channel (CachedInputDiscount). If the
+// discount is zero, no savings apply (and cached tokens still count
+// toward PromptTokens for billing purposes).
 func calcCost(ch *model.Channel, usage provider.Usage) float64 {
-	input := (float64(usage.PromptTokens) / 1000000.0) * ch.InputPrice
-	output := (float64(usage.CompletionTokens) / 1000000.0) * ch.OutputPrice
-	return input + output
+	prompt := float64(usage.PromptTokens)
+	cached := 0.0
+	if usage.PromptTokensDetails != nil {
+		cached = float64(usage.PromptTokensDetails.CachedTokens)
+		if cached > prompt {
+			cached = prompt
+		}
+	}
+	normal := (prompt - cached) / 1000000.0 * ch.InputPrice
+	cachedCost := 0.0
+	if ch.CachedInputDiscount > 0 {
+		cachedCost = cached / 1000000.0 * ch.InputPrice * ch.CachedInputDiscount
+	}
+	output := float64(usage.CompletionTokens) / 1000000.0 * ch.OutputPrice
+	return normal + cachedCost + output
 }
 
 

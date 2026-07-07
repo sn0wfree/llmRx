@@ -296,6 +296,114 @@ func TestAnthropic_TranslateReq_MultimodalContentString(t *testing.T) {
 	}
 }
 
+func TestAnthropic_TranslateReq_CacheControlOnSystem(t *testing.T) {
+	p := NewAnthropicProvider()
+	in := &ChatRequest{
+		Model: "claude-3",
+		Messages: []Message{
+			{Role: "system", Content: "You are a helpful assistant.", CacheControl: &CacheCtl{Type: "ephemeral"}},
+			{Role: "user", Content: "hi"},
+		},
+		MaxTokens: 32,
+	}
+	out := p.translateReq(in)
+	// System must be emitted as an array of blocks when cache_control
+	// is set; otherwise Anthropic rejects the request.
+	blocks, ok := out.System.([]anthropicSystemBlock)
+	if !ok {
+		t.Fatalf("system should be array form, got %T %+v", out.System, out.System)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 system block, got %d", len(blocks))
+	}
+	if blocks[0].CacheControl == nil || blocks[0].CacheControl.Type != "ephemeral" {
+		t.Errorf("cache_control missing or wrong: %+v", blocks[0].CacheControl)
+	}
+	if blocks[0].Text != "You are a helpful assistant." {
+		t.Errorf("system text: %q", blocks[0].Text)
+	}
+}
+
+func TestAnthropic_TranslateReq_CacheControlOnMessage(t *testing.T) {
+	p := NewAnthropicProvider()
+	in := &ChatRequest{
+		Model: "claude-3",
+		Messages: []Message{
+			{Role: "user", Content: "long-context prefix", CacheControl: &CacheCtl{Type: "ephemeral"}},
+		},
+		MaxTokens: 32,
+	}
+	out := p.translateReq(in)
+	if len(out.Messages) != 1 {
+		t.Fatalf("messages: %d", len(out.Messages))
+	}
+	parts, ok := out.Messages[0].Content.([]anthropicContentBlock)
+	if !ok {
+		t.Fatalf("content should be array form, got %T %+v", out.Messages[0].Content, out.Messages[0].Content)
+	}
+	if len(parts) != 1 || parts[0].Text != "long-context prefix" {
+		t.Fatalf("content parts: %+v", parts)
+	}
+	if parts[0].CacheControl == nil || parts[0].CacheControl.Type != "ephemeral" {
+		t.Errorf("cache_control missing on content block")
+	}
+}
+
+func TestAnthropic_TranslateReq_NoCacheControlUsesStringForm(t *testing.T) {
+	p := NewAnthropicProvider()
+	in := &ChatRequest{
+		Model: "claude-3",
+		Messages: []Message{
+			{Role: "system", Content: "plain system"},
+			{Role: "user", Content: "hi"},
+		},
+		MaxTokens: 32,
+	}
+	out := p.translateReq(in)
+	if s, ok := out.System.(string); !ok || s != "plain system" {
+		t.Errorf("plain system should stay string, got %T %+v", out.System, out.System)
+	}
+	if s, ok := out.Messages[0].Content.(string); !ok || s != "hi" {
+		t.Errorf("plain content should stay string, got %T %+v", out.Messages[0].Content, out.Messages[0].Content)
+	}
+}
+
+func TestAnthropic_TranslateReq_CacheControlWiredJSON(t *testing.T) {
+	// Round-trip through json.Marshal to confirm the wire format
+	// matches Anthropic's spec.
+	p := NewAnthropicProvider()
+	in := &ChatRequest{
+		Model: "claude-3",
+		Messages: []Message{
+			{Role: "system", Content: "you are terse", CacheControl: &CacheCtl{Type: "5m"}},
+			{Role: "user", Content: "summarize"},
+		},
+		MaxTokens: 16,
+	}
+	out := p.translateReq(in)
+	body, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, body)
+	}
+	// system should be an array
+	sys, ok := got["system"].([]any)
+	if !ok || len(sys) != 1 {
+		t.Fatalf("system should be array, got %T %+v", got["system"], got["system"])
+	}
+	blk := sys[0].(map[string]any)
+	if blk["type"] != "text" || blk["text"] != "you are terse" {
+		t.Errorf("block: %+v", blk)
+	}
+	cc, _ := blk["cache_control"].(map[string]any)
+	if cc == nil || cc["type"] != "5m" {
+		t.Errorf("cache_control: %+v", blk["cache_control"])
+	}
+}
+
 // ---------- Gemini ----------
 
 func TestGemini_TranslateReq_FullGenerationConfig(t *testing.T) {

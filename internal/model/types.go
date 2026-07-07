@@ -60,7 +60,17 @@ type Channel struct {
 	Priority       int                `json:"priority"`
 	InputPrice     float64            `json:"input_price_per_1m"`
 	OutputPrice    float64            `json:"output_price_per_1m"`
-	CircuitBreaker CircuitBreakerConfig `json:"circuit_breaker" gorm:"serializer:json"`
+	// CachedInputDiscount is the rate applied to prompt tokens that
+	// the upstream identifies as cache hits. The actual charge for
+	// cached tokens is CachedInputDiscount * InputPrice per 1M tokens.
+	//
+	//   0.1 = pay 10% of normal (Anthropic default = 90% off)
+	//   0.0 = cached tokens free
+	//   1.0 = no discount (cached = normal rate)
+	//
+	// Default if unset: 0.1.
+	CachedInputDiscount float64       `json:"cached_input_discount"`
+	CircuitBreaker      CircuitBreakerConfig `json:"circuit_breaker" gorm:"serializer:json"`
 	Status         ChannelStatus      `json:"status"`
 	CreatedAt      time.Time          `json:"created_at"`
 	UpdatedAt      time.Time          `json:"updated_at"`
@@ -121,6 +131,11 @@ type Log struct {
 	Model           string    `json:"model" gorm:"size:128"`
 	PromptTokens    int       `json:"prompt_tokens"`
 	CompletionTokens int      `json:"completion_tokens"`
+	// CachedTokens is the number of prompt tokens served from the
+	// upstream's prompt cache (Anthropic, OpenAI GPT-5+, etc.). The
+	// real cost calculation subtracts (CachedTokens * InputPrice *
+	// (1 - CachedInputDiscount)).
+	CachedTokens    int       `json:"cached_tokens"`
 	RealCostUSD     float64   `json:"real_cost_usd"`
 	BilledCostUSD   float64   `json:"billed_cost_usd"`
 	DurationMs      int64     `json:"duration_ms"`

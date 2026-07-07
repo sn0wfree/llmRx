@@ -58,16 +58,18 @@ func (s *SQLite) migrate() error {
 			session_exp INTEGER NOT NULL DEFAULT 0,
 			created_at INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS channels (
+`CREATE TABLE IF NOT EXISTS channels (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT UNIQUE NOT NULL,
 			provider TEXT NOT NULL,
 			protocol TEXT NOT NULL DEFAULT 'openai',
 			base_url TEXT NOT NULL,
 			models TEXT NOT NULL,
+			intents TEXT NOT NULL DEFAULT '[]',
 			priority INTEGER NOT NULL DEFAULT 0,
 			input_price REAL NOT NULL DEFAULT 0,
 			output_price REAL NOT NULL DEFAULT 0,
+			cached_input_discount REAL NOT NULL DEFAULT 0.1,
 			circuit_breaker TEXT NOT NULL DEFAULT '{}',
 			status INTEGER NOT NULL DEFAULT 1,
 			created_at INTEGER NOT NULL,
@@ -115,6 +117,7 @@ func (s *SQLite) migrate() error {
 			model TEXT NOT NULL DEFAULT '',
 			prompt_tokens INTEGER NOT NULL DEFAULT 0,
 			completion_tokens INTEGER NOT NULL DEFAULT 0,
+			cached_tokens INTEGER NOT NULL DEFAULT 0,
 			real_cost_usd REAL NOT NULL DEFAULT 0,
 			billed_cost_usd REAL NOT NULL DEFAULT 0,
 			duration_ms INTEGER NOT NULL DEFAULT 0,
@@ -163,7 +166,16 @@ func (s *SQLite) migrate() error {
 	if err := s.addColumnIfMissing("channels", "protocol", "TEXT NOT NULL DEFAULT 'openai'"); err != nil {
 		return err
 	}
-	return s.addColumnIfMissing("channels", "intents", "TEXT NOT NULL DEFAULT '[]'")
+	if err := s.addColumnIfMissing("channels", "intents", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing("channels", "cached_input_discount", "REAL NOT NULL DEFAULT 0.1"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing("logs", "cached_tokens", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *SQLite) addColumnIfMissing(table, column, decl string) error {
@@ -226,7 +238,7 @@ func decodeCB(s string) model.CircuitBreakerConfig {
 // ---------------- Channels ----------------
 
 func (s *SQLite) GetChannels() ([]model.Channel, error) {
-	rows, err := s.db.Query(`SELECT id, name, provider, protocol, base_url, models, intents, priority, input_price, output_price, circuit_breaker, status, created_at, updated_at FROM channels ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, created_at, updated_at FROM channels ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +255,7 @@ func (s *SQLite) GetChannels() ([]model.Channel, error) {
 }
 
 func (s *SQLite) GetChannel(id int64) (*model.Channel, error) {
-	row := s.db.QueryRow(`SELECT id, name, provider, protocol, base_url, models, intents, priority, input_price, output_price, circuit_breaker, status, created_at, updated_at FROM channels WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT id, name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, created_at, updated_at FROM channels WHERE id = ?`, id)
 	return scanChannel(row)
 }
 
@@ -254,12 +266,15 @@ func (s *SQLite) CreateChannel(ch *model.Channel) error {
 	if ch.Protocol == "" {
 		ch.Protocol = "openai"
 	}
+	if ch.CachedInputDiscount == 0 {
+		ch.CachedInputDiscount = 0.1
+	}
 	res, err := s.db.Exec(
-		`INSERT INTO channels(name, provider, protocol, base_url, models, intents, priority, input_price, output_price, circuit_breaker, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO channels(name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ch.Name, ch.Provider, ch.Protocol, ch.BaseURL,
 		encodeStrings(ch.Models), encodeStrings(ch.Intents),
-		ch.Priority, ch.InputPrice, ch.OutputPrice, encodeCB(ch.CircuitBreaker),
+		ch.Priority, ch.InputPrice, ch.OutputPrice, ch.CachedInputDiscount, encodeCB(ch.CircuitBreaker),
 		int(ch.Status), toUnix(ch.CreatedAt), toUnix(ch.UpdatedAt),
 	)
 	if err != nil {
@@ -275,11 +290,14 @@ func (s *SQLite) UpdateChannel(ch *model.Channel) error {
 	if ch.Protocol == "" {
 		ch.Protocol = "openai"
 	}
+	if ch.CachedInputDiscount == 0 {
+		ch.CachedInputDiscount = 0.1
+	}
 	_, err := s.db.Exec(
-		`UPDATE channels SET name=?, provider=?, protocol=?, base_url=?, models=?, intents=?, priority=?, input_price=?, output_price=?, circuit_breaker=?, status=?, updated_at=? WHERE id=?`,
+		`UPDATE channels SET name=?, provider=?, protocol=?, base_url=?, models=?, intents=?, priority=?, input_price=?, output_price=?, cached_input_discount=?, circuit_breaker=?, status=?, updated_at=? WHERE id=?`,
 		ch.Name, ch.Provider, ch.Protocol, ch.BaseURL,
 		encodeStrings(ch.Models), encodeStrings(ch.Intents),
-		ch.Priority, ch.InputPrice, ch.OutputPrice, encodeCB(ch.CircuitBreaker),
+		ch.Priority, ch.InputPrice, ch.OutputPrice, ch.CachedInputDiscount, encodeCB(ch.CircuitBreaker),
 		int(ch.Status), toUnix(ch.UpdatedAt), ch.ID,
 	)
 	return err
@@ -299,7 +317,7 @@ func scanChannel(r interface {
 	var created, updated int64
 	if err := r.Scan(&ch.ID, &ch.Name, &ch.Provider, &ch.Protocol, &ch.BaseURL,
 		&modelsJSON, &intentsJSON, &ch.Priority,
-		&ch.InputPrice, &ch.OutputPrice, &cbJSON, &status, &created, &updated); err != nil {
+		&ch.InputPrice, &ch.OutputPrice, &ch.CachedInputDiscount, &cbJSON, &status, &created, &updated); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
 		}
@@ -605,9 +623,9 @@ func (s *SQLite) CreateLog(l *model.Log) error {
 		l.CreatedAt = time.Now().UTC()
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		l.TokenID, l.ChannelID, l.KeyID, l.Model, l.PromptTokens, l.CompletionTokens,
+		`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		l.TokenID, l.ChannelID, l.KeyID, l.Model, l.PromptTokens, l.CompletionTokens, l.CachedTokens,
 		l.RealCostUSD, l.BilledCostUSD, l.DurationMs, l.StatusCode, l.RouterPath, l.RequestIP, toUnix(l.CreatedAt),
 	)
 	if err != nil {
@@ -628,7 +646,7 @@ func (s *SQLite) GetLogs(limit, offset int) ([]model.Log, error) {
 	if offset < 0 {
 		offset = 0
 	}
-	rows, err := s.db.Query(`SELECT id, token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, created_at FROM logs ORDER BY id DESC LIMIT ? OFFSET ?`, limit, offset)
+	rows, err := s.db.Query(`SELECT id, token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, created_at FROM logs ORDER BY id DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -638,7 +656,7 @@ func (s *SQLite) GetLogs(limit, offset int) ([]model.Log, error) {
 		var l model.Log
 		var created int64
 		if err := rows.Scan(&l.ID, &l.TokenID, &l.ChannelID, &l.KeyID, &l.Model,
-			&l.PromptTokens, &l.CompletionTokens, &l.RealCostUSD, &l.BilledCostUSD,
+			&l.PromptTokens, &l.CompletionTokens, &l.CachedTokens, &l.RealCostUSD, &l.BilledCostUSD,
 			&l.DurationMs, &l.StatusCode, &l.RouterPath, &l.RequestIP, &created); err != nil {
 			return nil, err
 		}
@@ -696,7 +714,7 @@ func (s *SQLite) QueryLogs(f LogFilter) ([]model.Log, int64, error) {
 		return nil, 0, err
 	}
 
-	q := "SELECT id, token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, created_at FROM logs " +
+	q := "SELECT id, token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, created_at FROM logs " +
 		where + " ORDER BY id DESC LIMIT ? OFFSET ?"
 	qargs := append(append([]any{}, args...), f.Limit, f.Offset)
 	rows, err := s.db.Query(q, qargs...)
@@ -709,7 +727,7 @@ func (s *SQLite) QueryLogs(f LogFilter) ([]model.Log, int64, error) {
 		var l model.Log
 		var created int64
 		if err := rows.Scan(&l.ID, &l.TokenID, &l.ChannelID, &l.KeyID, &l.Model,
-			&l.PromptTokens, &l.CompletionTokens, &l.RealCostUSD, &l.BilledCostUSD,
+			&l.PromptTokens, &l.CompletionTokens, &l.CachedTokens, &l.RealCostUSD, &l.BilledCostUSD,
 			&l.DurationMs, &l.StatusCode, &l.RouterPath, &l.RequestIP, &created); err != nil {
 			return nil, 0, err
 		}

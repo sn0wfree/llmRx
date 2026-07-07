@@ -58,7 +58,7 @@ func (p *AnthropicProvider) Name() string { return "anthropic" }
 type anthropicRequest struct {
 	Model       string             `json:"model"`
 	Messages    []anthropicMessage `json:"messages"`
-	System      string             `json:"system,omitempty"`
+	System      any                `json:"system,omitempty"` // string OR []anthropicSystemBlock
 	MaxTokens   int                `json:"max_tokens,omitempty"`
 	Temperature *float64           `json:"temperature,omitempty"`
 	TopP        *float64           `json:"top_p,omitempty"`
@@ -70,6 +70,23 @@ type anthropicRequest struct {
 	ToolChoice  any                `json:"tool_choice,omitempty"`
 }
 
+// anthropicSystemBlock is one entry in the array form of "system".
+// Anthropic accepts the string form for plain system prompts, but
+// the array form is required when cache_control is set.
+type anthropicSystemBlock struct {
+	Type        string         `json:"type"` // "text"
+	Text        string         `json:"text"`
+	CacheControl *anthropicCacheCtl `json:"cache_control,omitempty"`
+}
+
+// anthropicCacheCtl is Anthropic's prompt-cache directive on either
+// a system block or a content block. Anthropic accepts
+// {type: "ephemeral"} on messages and {type: "5m" | "1h" | "ephemeral"}
+// on the system block. The gateway passes the type through verbatim.
+type anthropicCacheCtl struct {
+	Type string `json:"type"`
+}
+
 // anthropicTool mirrors Anthropic's tool block.
 type anthropicTool struct {
 	Name        string         `json:"name"`
@@ -77,9 +94,21 @@ type anthropicTool struct {
 	InputSchema map[string]any `json:"input_schema"`
 }
 
+// anthropicMessage.Content is string OR []anthropicContentBlock. The
+// array form is required to attach cache_control to user/assistant
+// messages.
 type anthropicMessage struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"` // string OR []anthropicContentBlock
+}
+
+// anthropicContentBlock is one item in the array form of a message's
+// content. We currently emit only "text" blocks; image and other
+// types are forwarded verbatim if the upstream needs them.
+type anthropicContentBlock struct {
+	Type         string             `json:"type"` // "text" | "image" | "tool_use" | "tool_result"
+	Text         string             `json:"text,omitempty"`
+	CacheControl *anthropicCacheCtl `json:"cache_control,omitempty"`
 }
 
 type anthropicResponse struct {
@@ -149,14 +178,37 @@ func (p *AnthropicProvider) Chat(req *ChatRequest, apiKey, baseURL string) (*Cha
 }
 
 func (p *AnthropicProvider) translateReq(req *ChatRequest) anthropicRequest {
-	var systemParts []string
+	var systemStrings []string
+	var systemBlocks []anthropicSystemBlock
 	var msgs []anthropicMessage
 	for _, m := range req.Messages {
 		if m.Role == "system" {
-			systemParts = append(systemParts, m.ContentString())
+			txt := m.ContentString()
+			if m.CacheControl != nil {
+				// System block with cache_control. Anthropic only
+				// accepts the array form when cache_control is set.
+				systemBlocks = append(systemBlocks, anthropicSystemBlock{
+					Type:         "text",
+					Text:         txt,
+					CacheControl: &anthropicCacheCtl{Type: m.CacheControl.Type},
+				})
+			} else {
+				systemStrings = append(systemStrings, txt)
+			}
 			continue
 		}
-		msgs = append(msgs, anthropicMessage{Role: m.Role, Content: m.ContentString()})
+		// Non-system message: switch to array form only when
+		// cache_control is set, otherwise keep the string form to
+		// minimise wire bytes.
+		var content any = m.ContentString()
+		if m.CacheControl != nil {
+			content = []anthropicContentBlock{{
+				Type:         "text",
+				Text:         m.ContentString(),
+				CacheControl: &anthropicCacheCtl{Type: m.CacheControl.Type},
+			}}
+		}
+		msgs = append(msgs, anthropicMessage{Role: m.Role, Content: content})
 	}
 	maxTokens := req.MaxTokens
 	if req.MaxCompletionTokens > 0 {
@@ -165,10 +217,16 @@ func (p *AnthropicProvider) translateReq(req *ChatRequest) anthropicRequest {
 	if maxTokens == 0 {
 		maxTokens = 1024 // Anthropic requires max_tokens
 	}
+	// System: array form if any block carries cache_control,
+	// otherwise a plain string is preferred.
+	var systemField any = strings.Join(systemStrings, "\n")
+	if len(systemBlocks) > 0 {
+		systemField = systemBlocks
+	}
 	out := anthropicRequest{
 		Model:       req.Model,
 		Messages:    msgs,
-		System:      strings.Join(systemParts, "\n"),
+		System:      systemField,
 		MaxTokens:   maxTokens,
 		Temperature: req.Temperature,
 		TopP:        req.TopP,
