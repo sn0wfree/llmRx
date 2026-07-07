@@ -77,9 +77,16 @@ type Channel struct {
 }
 
 type Key struct {
-	ID          int64     `json:"id" gorm:"primaryKey"`
-	ChannelID   int64     `json:"channel_id" gorm:"index"`
+	ID         int64     `json:"id" gorm:"primaryKey"`
+	ChannelID  int64     `json:"channel_id" gorm:"index"`
+	// Key is the plaintext form. After P0 the store treats this
+	// field as **transient** — write paths accept plaintext, store
+	// it encrypted in KeyCiphertext, and zero out Key. Read paths
+	// decrypt KeyCiphertext back into Key. Legacy rows created
+	// before P0 still have plaintext in Key and an empty
+	// KeyCiphertext; the store migrates them lazily on first read.
 	Key         string    `json:"key,omitempty" gorm:"size:512"`
+	KeyCiphertext string  `json:"-" gorm:"size:1024"`
 	KeyMasked   string    `json:"key_masked" gorm:"size:64"`
 	Status      KeyStatus `json:"status"`
 	LastUsedAt  time.Time `json:"last_used_at"`

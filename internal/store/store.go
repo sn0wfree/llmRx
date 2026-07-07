@@ -1,12 +1,15 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 
 	"github.com/sn0wfree/llmRx/internal/model"
 )
 
 type Store interface {
+	Ping(ctx context.Context) error
+
 	// Channels
 	GetChannels() ([]model.Channel, error)
 	GetChannel(id int64) (*model.Channel, error)

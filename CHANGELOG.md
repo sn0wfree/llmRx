@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   m=65536 KiB, t=3, p=2, 16-byte salt, 32-byte key. Both bcrypt
   and pre-P6 plaintext hashes are detected and transparently
   upgraded to Argon2id on the user's next successful login.
+- **At-rest encryption of channel API keys** (AES-256-GCM).
+  New `internal/secrets` package wraps the AEAD; master key is
+  loaded from `LLMRX_KEY_MASTER` (32-byte hex, `openssl rand -hex 32`)
+  at startup. New `key_ciphertext` column on `keys`; the legacy
+  `key` column is treated as transient — writes encrypt + clear
+  plaintext, reads decrypt ciphertext, and legacy rows are
+  best-effort migrated on first access. The gateway refuses to
+  start without a master key in production; `DEV_ALLOW_PLAINTEXT_KEYS=true`
+  re-enables plaintext mode for local dev only. A tampered
+  ciphertext, a wrong master key, or a ciphertext row read
+  without a configured manager all fail loudly (no silent empty
+  Authorization header to the upstream). Admin handlers mask
+  secrets via `secrets.Mask` (`sk-a***mnop`). `store.Store`
+  interface gains `Ping(ctx)`.
 
 ### Added
 
@@ -225,9 +239,11 @@ P0 + P1 + P2 + P3 + P6: bcrypt 密码 hash + 改密 UI + 告警子系统（webho
 
 ### Internal
 - New packages: `internal/auth`, `internal/broker`, `internal/sse`,
-  `internal/alert`, `internal/alert/channels`, `internal/runtime`.
+  `internal/alert`, `internal/alert/channels`, `internal/runtime`,
+  `internal/secrets`.
 - `internal/store.Store` interface gains: `DeleteLogsBefore`,
-  full alerts CRUD, `RawQuery` / `RawQueryRow` for subsystem SQL.
+  full alerts CRUD, `RawQuery` / `RawQueryRow` for subsystem SQL,
+  `Ping(ctx)` for liveness checks.
 - `middleware.AdminOnly` accepts `?session_token=` query string as
   the final auth fallback (needed by EventSource which can't set
   custom headers).

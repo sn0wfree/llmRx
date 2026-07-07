@@ -12,6 +12,7 @@ type Config struct {
 	Strategy StrategyConfig  `yaml:"strategy"`
 	Tokens   []TokenConfig   `yaml:"tokens"`
 	Channels []ChannelConfig `yaml:"channels"`
+	Secrets  SecretsConfig   `yaml:"secrets"`
 }
 
 type ServerConfig struct {
@@ -56,6 +57,18 @@ type TokenConfig struct {
 type DatabaseConfig struct {
 	Driver string `yaml:"driver"`
 	DSN    string `yaml:"dsn"`
+}
+
+// SecretsConfig controls the at-rest encryption of channel API keys
+// (added in P0). KeyMasterEnv names the env var holding the 32-byte
+// hex master key. Empty value falls back to LLMRX_KEY_MASTER. If
+// the env var is missing, the gateway refuses to start — there is
+// no plaintext fallback in production. For local dev only, set
+// DEV_ALLOW_PLAINTEXT_KEYS=true to skip the requirement (not
+// recommended for any non-localhost deployment).
+type SecretsConfig struct {
+	KeyMasterEnv string `yaml:"key_master_env"`
+	DevAllowPlaintext bool `yaml:"dev_allow_plaintext_keys"`
 }
 
 func Load(path string) (*Config, error) {
