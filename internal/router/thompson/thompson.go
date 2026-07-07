@@ -131,6 +131,13 @@ func (s *Sampler) Reset(id int64) {
 	delete(s.state, id)
 }
 
+// ResetAll clears every channel's posterior. Used by admin /reload.
+func (s *Sampler) ResetAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state = make(map[int64]*beta)
+}
+
 // Ranked is the result of a single Thompson sample: a candidate
 // channel paired with the score we drew.
 type Ranked struct {
