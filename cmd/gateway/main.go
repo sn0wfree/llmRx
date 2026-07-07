@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"os"
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/alert"
@@ -23,7 +24,35 @@ import (
 
 func main() {
 	cfgPath := flag.String("config", "config.yml", "config file path")
+	hcAddr := flag.String("healthcheck", "", "if set (e.g. 127.0.0.1:8787), probe /health and exit; used by docker HEALTHCHECK")
 	flag.Parse()
+
+	// `-healthcheck addr` short-circuits before any side-effects: no
+	// config load, no DB open, no privilege drop. The probe just
+	// dials addr, sends GET /health, and returns 0 on HTTP 200.
+	if *hcAddr != "" {
+		os.Exit(runHealthcheck(*hcAddr, 5*time.Second))
+	}
+
+	// Resolve LLMRX_KEY_MASTER (env → /data/llmrx.key → generate).
+	// Must run BEFORE privilege drop and BEFORE secrets.FromEnv.
+	if err := bootstrapMasterKey("LLMRX_KEY_MASTER", "/data/llmrx.key"); err != nil {
+		log.Fatalf("secrets: %v", err)
+	}
+
+	// If running as root (typical docker entrypoint), chown bind-
+	// mounted /data and drop to llmrx before opening the DB.
+	if err := maybeChownDataDir("/data", "llmrx"); err != nil {
+		log.Printf("secrets: chown /data: %v (continuing — DB writes may fail)", err)
+	}
+	// Write a starter config.yml if /data is fresh — lets `docker
+	// compose up` Just Work without a manual config step.
+	if err := maybeWriteStarterConfig("/data", "/data/config.yml"); err != nil {
+		log.Printf("config: %v (continuing — provide your own config.yml)", err)
+	}
+	if err := dropPrivileges("llmrx"); err != nil {
+		log.Fatalf("secrets: %v", err)
+	}
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {

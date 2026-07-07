@@ -1,8 +1,34 @@
-version: "3.8"
+# docker-compose.yml — llmRx gateway
+#
+# Quick start (recommended; works on restricted networks):
+#   make docker-build          # build the image via `docker build`
+#   make docker-run            # `docker compose up -d` against it
+#
+# The build step is decoupled from compose on purpose: the default
+# compose build path goes through buildkitd, which does NOT honor
+# the docker daemon's `registry-mirrors` config. On hosts where
+# registry-1.docker.io is unreachable, `docker compose up --build`
+# will fail. Doing `make docker-build` first (which uses the
+# docker daemon's path) avoids the problem.
+#
+# Alternatively, if your host has working buildkitd (public
+# internet), you can still use:
+#   docker compose up -d --build
+#
+# Production pattern: provide your own master key.
+#   1. Generate one:    openssl rand -hex 32
+#   2. Inject via .env:  LLMRX_KEY_MASTER=<that hex string>
+#   Or use a docker secret (see commented `secrets:` block below).
+#
+# Without LLMRX_KEY_MASTER set, the gateway auto-generates a fresh
+# key and persists it to /data/llmrx.key (mode 0600). The first
+# `make docker-run` Just Works; subsequent restarts reuse the same
+# key. For multi-host setups, replace this with explicit key
+# injection.
 
 services:
   llmrx:
-    image: ghcr.io/sn0wfree/llmrx:latest
+    image: llmrx:local
     build:
       context: .
       dockerfile: Dockerfile
@@ -12,10 +38,28 @@ services:
       - "8787:8787"
     volumes:
       - llmrx-data:/data
-      - ./config.yml:/data/config.yml:ro
     environment:
       LLMRX_DB: /data/llmrx.db
+      # Uncomment to inject a master key from .env (see .env.example):
+      # LLMRX_KEY_MASTER: ${LLMRX_KEY_MASTER}
+      # Uncomment to allow plaintext channel keys (DEV ONLY):
+      # DEV_ALLOW_PLAINTEXT_KEYS: "true"
+    # secrets:
+    #   - llmrx_key_master
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/llmRx", "-healthcheck", "127.0.0.1:8787"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
 volumes:
   llmrx-data:
     name: llmrx-data
+
+# secrets:
+#   llmrx_key_master:
+#     file: ./secrets/llmrx_key_master
+# (Uncomment the secrets: block above AND the `secrets:` line on the
+# service to mount ./secrets/llmrx_key_master read-only. The
+# bootstrap code reads it from /run/secrets/llmrx_key_master.)

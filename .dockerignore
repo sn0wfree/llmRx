@@ -1,18 +1,38 @@
+# VCS / IDE / OS junk
 .git
 .github
 .gitignore
 .idea
 .vscode
-*.md
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.log
 llmRx
-data
+
+# Local DB + data + secrets (mount as volumes / inject as
+# docker secrets instead of baking them into the image).
+data/
 *.db
 *.db-*
+secrets/
+
+# Node + web build artifacts (rebuilt by the host build script
+# when web/src changes; the committed internal/webui/dist is
+# already go:embed'd into the binary).
 web/node_modules
-web/src
-internal/webui/dist
-Dockerfile
-.dockerignore
-docker-compose.yml
-*.log
-.DS_Store
+web/dist
+
+# The Dockerfile copies: build/llmRx (host-compiled binary),
+# internal/webui/dist (committed SPA, embedded into the binary
+# at compile time — kept here only as a safety net), go.mod,
+# go.sum. Everything else above is noise.
