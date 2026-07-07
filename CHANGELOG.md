@@ -171,6 +171,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `IncrementTokenSpend`, `IncrementPlanSpend`.
 
 #### Docs
+- `docs/OPERATIONS.md` — operations runbook: 3 deployment paths
+  (Docker / compose / bare-metal), master-key rotation, backup &
+  restore, monitoring / reverse-proxy / HA / failover, full
+  troubleshooting catalogue, production checklist.
 - `docs/ARCHITECTURE.md` — 18 sections, covers routing pipeline,
   broker, SSE, alerts, L4/L5, caching discount, multi-tenant,
   hot reload.
@@ -182,6 +186,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `docs/P9-MULTIMODAL.md` — Image / Rerank / Audio endpoints (P9).
 - `docs/P10-OBSERVABILITY.md` — OTel + Prometheus (P10).
 - `docs/P11-MCP.md` — MCP gateway (P11).
+- `.env.example` — expanded to 12 documented variables (was 3);
+  grouped by section with explicit dev-only / production markers.
 
 #### CI
 - `test.yml` coverage gate raised from 55% → 60% → still ~65% after
