@@ -194,6 +194,7 @@ export interface Channel {
   priority: number;
   input_price_per_1m: number;
   output_price_per_1m: number;
+  cached_input_discount: number;
   status: number;
   circuit_breaker: { max_failures: number; reset_timeout: number };
 }
