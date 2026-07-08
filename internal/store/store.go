@@ -37,6 +37,7 @@ type Store interface {
 	GetPlan(id int64) (*model.Plan, error)
 	CreatePlan(p *model.Plan) error
 	UpdatePlan(p *model.Plan) error
+	DeletePlan(id int64) error
 
 	// Users
 	GetUsers() ([]model.User, error)

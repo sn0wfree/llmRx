@@ -491,6 +491,10 @@ function MaintenanceTab() {
   const [breakerResetMs, setBreakerResetMs] = useState(30000);
   const [alertCooldown, setAlertCooldown] = useState(300);
   const [logRetention, setLogRetention] = useState(30);
+  const [streamTimeout, setStreamTimeout] = useState(300);
+  const [streamMaxBody, setStreamMaxBody] = useState(32 * 1024 * 1024);
+  const [maxLogSubscribers, setMaxLogSubscribers] = useState(0);
+  const [logLevel, setLogLevel] = useState(1);
   const [saved, setSaved] = useState<any>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -501,11 +505,19 @@ function MaintenanceTab() {
       setBreakerResetMs(r.breaker_reset_timeout_ms);
       setAlertCooldown(r.alert_cooldown_sec);
       setLogRetention(r.log_retention_days);
+      setStreamTimeout(r.stream_timeout_sec);
+      setStreamMaxBody(r.stream_max_body_bytes);
+      setMaxLogSubscribers(r.max_log_subscribers);
+      setLogLevel(r.log_level);
       setSaved({
         breaker_max_failures: r.breaker_max_failures,
         breaker_reset_timeout_ms: r.breaker_reset_timeout_ms,
         alert_cooldown_sec: r.alert_cooldown_sec,
         log_retention_days: r.log_retention_days,
+        stream_timeout_sec: r.stream_timeout_sec,
+        stream_max_body_bytes: r.stream_max_body_bytes,
+        max_log_subscribers: r.max_log_subscribers,
+        log_level: r.log_level,
       });
     }).catch((e) => setError(e?.message || 'failed'));
   }, []);
@@ -519,12 +531,20 @@ function MaintenanceTab() {
         breaker_reset_timeout_ms: breakerResetMs,
         alert_cooldown_sec: alertCooldown,
         log_retention_days: logRetention,
+        stream_timeout_sec: streamTimeout,
+        stream_max_body_bytes: streamMaxBody,
+        max_log_subscribers: maxLogSubscribers,
+        log_level: logLevel,
       });
       setSaved({
         breaker_max_failures: r.breaker_max_failures,
         breaker_reset_timeout_ms: r.breaker_reset_timeout_ms,
         alert_cooldown_sec: r.alert_cooldown_sec,
         log_retention_days: r.log_retention_days,
+        stream_timeout_sec: r.stream_timeout_sec,
+        stream_max_body_bytes: r.stream_max_body_bytes,
+        max_log_subscribers: r.max_log_subscribers,
+        log_level: r.log_level,
       });
     } catch (e: any) {
       setError(e?.message || 'failed');
@@ -538,7 +558,11 @@ function MaintenanceTab() {
       saved.breaker_max_failures !== breakerMax ||
       saved.breaker_reset_timeout_ms !== breakerResetMs ||
       saved.alert_cooldown_sec !== alertCooldown ||
-      saved.log_retention_days !== logRetention
+      saved.log_retention_days !== logRetention ||
+      saved.stream_timeout_sec !== streamTimeout ||
+      saved.stream_max_body_bytes !== streamMaxBody ||
+      saved.max_log_subscribers !== maxLogSubscribers ||
+      saved.log_level !== logLevel
     );
 
   return (
@@ -572,6 +596,29 @@ function MaintenanceTab() {
       </div>
 
       <div className="card p-5 mb-4">
+        <h2 className="text-sm font-semibold text-slate-700 mb-1">Streaming caps</h2>
+        <p className="text-xs text-slate-500 mb-4">
+          Per-stream limits applied to /v1/chat/completions when stream=true. Set to 0 to disable.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <NumberField
+            label="Timeout (sec, 0 = disabled)"
+            value={streamTimeout}
+            onChange={setStreamTimeout}
+            min={0}
+            max={3600}
+          />
+          <NumberField
+            label="Max body bytes (0 = unlimited)"
+            value={streamMaxBody}
+            onChange={setStreamMaxBody}
+            min={0}
+            max={1 << 30}
+          />
+        </div>
+      </div>
+
+      <div className="card p-5 mb-4">
         <h2 className="text-sm font-semibold text-slate-700 mb-1">Alerts</h2>
         <NumberField
           label="Default cooldown (sec)"
@@ -595,6 +642,35 @@ function MaintenanceTab() {
           min={0}
           max={3650}
         />
+      </div>
+
+      <div className="card p-5 mb-4">
+        <h2 className="text-sm font-semibold text-slate-700 mb-1">Log broker & level</h2>
+        <p className="text-xs text-slate-500 mb-4">
+          Cap concurrent SSE log subscribers and choose the minimum log level emitted to stderr.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <NumberField
+            label="Max SSE subscribers (0 = unlimited)"
+            value={maxLogSubscribers}
+            onChange={setMaxLogSubscribers}
+            min={0}
+            max={100000}
+          />
+          <label className="block text-sm">
+            <span className="text-slate-600">Log level</span>
+            <select
+              className="input mt-1"
+              value={logLevel}
+              onChange={(e) => setLogLevel(parseInt(e.target.value, 10))}
+            >
+              <option value={0}>0 — debug (everything)</option>
+              <option value={1}>1 — info (default)</option>
+              <option value={2}>2 — warn (drop info)</option>
+              <option value={3}>3 — error (drop everything below)</option>
+            </select>
+          </label>
+        </div>
       </div>
 
       <div className="flex items-center justify-between">

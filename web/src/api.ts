@@ -152,6 +152,10 @@ export const api = {
       alert_cooldown_sec: number;
       log_retention_days: number;
       markup_ratio: number;
+      stream_timeout_sec: number;
+      stream_max_body_bytes: number;
+      max_log_subscribers: number;
+      log_level: number;
     }>('GET', '/config'),
   updateConfig: (body: {
     cost_strategy?: string;
@@ -160,6 +164,10 @@ export const api = {
     alert_cooldown_sec?: number;
     log_retention_days?: number;
     markup_ratio?: number;
+    stream_timeout_sec?: number;
+    stream_max_body_bytes?: number;
+    max_log_subscribers?: number;
+    log_level?: number;
   }) =>
     request<{
       cost_strategy: string;
@@ -168,7 +176,18 @@ export const api = {
       alert_cooldown_sec: number;
       log_retention_days: number;
       markup_ratio: number;
+      stream_timeout_sec: number;
+      stream_max_body_bytes: number;
+      max_log_subscribers: number;
+      log_level: number;
     }>('PUT', '/config', body),
+
+  // Plans CRUD
+  listPlans: () => request<{ data: Plan[] }>('GET', '/plans'),
+  createPlan: (body: Partial<Plan>) => request<Plan>('POST', '/plans', body),
+  updatePlan: (id: number, body: Partial<Plan>) =>
+    request<Plan>('PUT', `/plans/${id}`, body),
+  deletePlan: (id: number) => request<{ ok: boolean }>('DELETE', `/plans/${id}`),
 
   changePassword: (userId: number, body: { old_password?: string; new_password: string }) =>
     request<{ ok: boolean }>('POST', `/users/${userId}/password`, body),
@@ -189,6 +208,7 @@ export interface Channel {
   id: number;
   name: string;
   provider: string;
+  protocol: string;
   base_url: string;
   models: string[];
   priority: number;
@@ -218,6 +238,17 @@ export interface Token {
   expires_at: string;
   last_used_at: string;
   created_at: string;
+}
+
+export interface Plan {
+  id: number;
+  name: string;
+  budget_usd: number;
+  used_usd: number;
+  markup_ratio: number;
+  status: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface LogEntry {

@@ -653,6 +653,16 @@ func (s *SQLite) UpdatePlan(p *model.Plan) error {
 	return err
 }
 
+// DeletePlan removes a plan row. Tokens that referenced it keep
+// plan_id pointing at the now-missing row; the chat pipeline
+// treats plan_id=0 (or unknown) as "no plan limit". Callers
+// (admin handler) are expected to null out tokens.plan_id FIRST
+// when an explicit unlink is desired.
+func (s *SQLite) DeletePlan(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM plans WHERE id=?`, id)
+	return err
+}
+
 // ---------------- Users ----------------
 
 func (s *SQLite) GetUsers() ([]model.User, error) {
