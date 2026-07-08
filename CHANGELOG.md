@@ -194,6 +194,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   hardening. New optional step builds the L4 cdylib when `cargo`
   is on PATH.
 
+#### 配置可网页化（Config Webification，P-A + P-B + P-C + Effective）
+- **P-A**: Runtime 配置线程安全 + 持久化。`runtime.Defaults` 所有字段改用
+  `atomic.Int64` / `atomic.Pointer[string]`（原 `sync.RWMutex`），消除
+  admin PUT 写与多个中间件 handler 并发读之间的 read/write race。
+  新增 `Snapshot()` / `Apply()` / `Marshal()` 方法。启动时从 `runtime_settings`
+  表恢复上次配置；首次启动 fallback 到 YAML seed。
+- **P-B**: 运行时配置热重载。`markup_ratio` / `breaker_max_failures` /
+  `alert_cooldown_sec` / `log_retention_days` / `stream_timeout_sec` /
+  `stream_max_body_bytes` / `cost_strategy` 全部接通 runtime Defaults，
+  `PUT /api/v1/config` 即时生效。B2 修复：alert cooldown 在 AlertManager
+  循环中走实时值；B3 修复：log retention 后台清理循环同理。新增
+  `runtime_settings` 表（`id INTEGER CHECK(id=1), settings TEXT`，单行 JSON）。
+- **P-C**: Plans 完整 CRUD（`model.Plan` + Store + admin handler，前端可增删改查）。
+  Channel protocol 字段从前端透传到 store 写入，admin handler 增加 `protocol`
+  字段校验（`openai` / `anthropic` / `gemini`）。Settings 页从 4 tab 扩展到
+  5 tab（Routing / Security / Alerts / Maintenance / Plans）。
+- **Effective Tab**: `GET /api/v1/effective` 返回当前运行态全貌：runtime snapshot
+  + source（db / yaml）+ channels / tokens / plans / alerts 摘要 + 错误隔离。
+  前端 5 个折叠面板，副本字段格式化（$ 符号、✓/—、秒后缀），Copy as JSON 按钮。
+- **Fixed**: `seedTokens()` 未将 `cfg.Tokens[].Models` 写入 `model.Token.ModelsWhitelist`，
+  YAML 声明的 token 模型白名单首次启动时丢失。新增测试覆盖。
+- **Removed**: dead `server.rate_limit` 字段 — 从未被任何生产代码读取，仅存于
+  struct 定义和 YAML 模板中。
+
 ## [P6] — earlier
 
 P0 + P1 + P2 + P3 + P6: bcrypt 密码 hash + 改密 UI + 告警子系统（webhook + 站内） + SSE 实时日志 + Settings 4 Tab + 运行时 markup + 日志保留 + Dockerfile（distroless） + docker-compose + Docker CI（amd64+arm64）。
