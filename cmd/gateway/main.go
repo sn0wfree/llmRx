@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"log"
 	"os"
@@ -90,18 +91,40 @@ func main() {
 
 	tokCache := tokencache.New(st)
 	eng := router.New(st, cp)
-	if s := cfg.Strategy.CostStrategy; s != "" {
-		eng.SetStrategy(model.CostStrategy(s))
-	}
 	logBroker := broker.New[*model.Log](cfg.Server.MaxLogSubscribers)
 	defer logBroker.Close()
 
 	rt := runtime.New()
+	// 1) YAML seeds: the user-supplied config file is the
+	//    "factory default" for every tunable.
 	rt.SetMarkupRatio(cfg.Server.MarkupRatio)
 	rt.SetBreakerMaxFailures(int64(cfg.Server.BreakerMax))
 	rt.SetBreakerResetTimeoutMs(int64(cfg.Server.BreakerResetMs))
 	rt.SetAlertCooldownSec(int64(cfg.Server.AlertCooldownSec))
 	rt.SetLogRetentionDays(int64(cfg.Server.LogRetentionDays))
+	if s := cfg.Strategy.CostStrategy; s != "" {
+		// B4: cost strategy must seed BOTH the router engine and
+		// the runtime snapshot so the API/UI return the same
+		// value the router is actually using.
+		rt.SetCostStrategy(s)
+		eng.SetStrategy(model.CostStrategy(s))
+	}
+	// 2) DB override: any admin changes persisted to
+	//    runtime_settings take precedence over the YAML seeds.
+	if raw, err := st.GetRuntimeSettings(); err != nil {
+		log.Printf("runtime: read settings: %v (continuing with YAML seeds)", err)
+	} else if len(raw) > 0 {
+		var snap runtime.Snapshot
+		if err := json.Unmarshal(raw, &snap); err != nil {
+			log.Printf("runtime: parse settings: %v (continuing with YAML seeds)", err)
+		} else {
+			rt.Apply(snap)
+			if snap.CostStrategy != "" {
+				eng.SetStrategy(model.CostStrategy(snap.CostStrategy))
+			}
+			log.Printf("runtime: applied persisted settings on top of YAML seeds")
+		}
+	}
 
 	alertMgr := alert.NewManager(st, []alert.Channel{
 		channels.NewBuiltin(),

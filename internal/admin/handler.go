@@ -1095,6 +1095,17 @@ func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		h.rt.SetMarkupRatio(*body.MarkupRatio)
 	}
+	// Persist the resulting snapshot to the runtime_settings table
+	// so the changes survive restarts. Failure to persist is
+	// surfaced as 500 — the in-memory change has already been
+	// applied, but we don't want to silently lose it.
+	if raw, err := h.rt.Marshal(); err != nil {
+		writeErr(w, http.StatusInternalServerError, "marshal: "+err.Error())
+		return
+	} else if err := h.store.SetRuntimeSettings(raw); err != nil {
+		writeErr(w, http.StatusInternalServerError, "persist: "+err.Error())
+		return
+	}
 	// Re-emit the effective values.
 	h.GetConfig(w, r)
 }
