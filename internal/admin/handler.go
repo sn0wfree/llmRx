@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -33,6 +34,7 @@ type Handler struct {
 	logBroker  *broker.Broker[*model.Log]
 	rt         *runtime.Defaults
 	cfg        *config.Config
+	keyFile    string
 	sessionTTL time.Duration
 	alertMgr   AlertReloader
 }
@@ -44,11 +46,11 @@ type AlertReloader interface {
 	Reload() error
 }
 
-func New(st store.Store, cp *pool.ChannelPool, eng *router.RouterEngine, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults, cfg *config.Config) *Handler {
+func New(st store.Store, cp *pool.ChannelPool, eng *router.RouterEngine, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults, cfg *config.Config, keyFile string) *Handler {
 	if rt == nil {
 		rt = runtime.New()
 	}
-	return &Handler{store: st, pool: cp, router: eng, tokens: tc, logBroker: lb, rt: rt, cfg: cfg, sessionTTL: 24 * time.Hour}
+	return &Handler{store: st, pool: cp, router: eng, tokens: tc, logBroker: lb, rt: rt, cfg: cfg, keyFile: keyFile, sessionTTL: 24 * time.Hour}
 }
 
 // SetAlertManager lets main.go inject the alert manager for /reload.
@@ -110,6 +112,7 @@ func (h *Handler) Routes() http.Handler {
 		r.Put("/config", h.UpdateConfig)
 		r.Get("/effective", h.EffectiveConfig)
 		r.Post("/reload", h.ReloadAll)
+		r.Post("/secrets/rotate", h.RotateSecrets)
 	})
 	return r
 }
@@ -611,9 +614,9 @@ func (h *Handler) ReloadAll(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(reloads) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":           true,
-			"channels":     h.pool.GetAllChannels() != nil,
-			"tokens":       h.tokens.Size(),
+			"ok":             true,
+			"channels":       h.pool.GetAllChannels() != nil,
+			"tokens":         h.tokens.Size(),
 			"alerts_reloaded": h.alertMgr != nil,
 		})
 		return
@@ -621,6 +624,44 @@ func (h *Handler) ReloadAll(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusInternalServerError, map[string]any{
 		"ok":      false,
 		"reloads": reloads,
+	})
+}
+
+func (h *Handler) RotateSecrets(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		NewMasterKey string `json:"new_master_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(body.NewMasterKey) != 64 {
+		writeErr(w, http.StatusBadRequest, "master key must be 64 hex characters")
+		return
+	}
+	if _, err := hex.DecodeString(body.NewMasterKey); err != nil {
+		writeErr(w, http.StatusBadRequest, "master key is not valid hex")
+		return
+	}
+
+	count, err := h.store.RotateMasterKey(body.NewMasterKey)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if h.keyFile != "" {
+		if err := os.WriteFile(h.keyFile, []byte(body.NewMasterKey+"\n"), 0o600); err != nil {
+			writeErr(w, http.StatusInternalServerError, "rotated keys but failed to persist new key: "+err.Error())
+			return
+		}
+	}
+
+	_ = os.Setenv("LLMRX_KEY_MASTER", body.NewMasterKey)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"rotated": count,
 	})
 }
 

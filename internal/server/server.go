@@ -25,23 +25,25 @@ import (
 )
 
 type Server struct {
-	cfg    *config.Config
-	router *router.RouterEngine
-	pool   *pool.ChannelPool
-	store  store.Store
-	tokens *tokencache.Cache
-	admin  *admin.Handler
-	engine *chi.Mux
+	cfg     *config.Config
+	keyFile string
+	router  *router.RouterEngine
+	pool    *pool.ChannelPool
+	store   store.Store
+	tokens  *tokencache.Cache
+	admin   *admin.Handler
+	engine  *chi.Mux
 }
 
-func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Server {
+func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults, keyFile string) *Server {
 	s := &Server{
-		cfg:    cfg,
-		router: eng,
-		pool:   cp,
-		store:  st,
-		tokens: tc,
-		engine: chi.NewRouter(),
+		cfg:     cfg,
+		keyFile: keyFile,
+		router:  eng,
+		pool:    cp,
+		store:   st,
+		tokens:  tc,
+		engine:  chi.NewRouter(),
 	}
 	s.registerMiddleware()
 	s.registerRoutes(lb, rt)
@@ -65,7 +67,7 @@ func (s *Server) registerMiddleware() {
 
 func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defaults) {
 	handler := api.New(s.cfg, s.router, s.pool, s.store, lb, rt)
-	adminHandler := admin.New(s.store, s.pool, s.router, s.tokens, lb, rt, s.cfg)
+	adminHandler := admin.New(s.store, s.pool, s.router, s.tokens, lb, rt, s.cfg, s.keyFile)
 	s.admin = adminHandler
 
 	s.engine.With(authmw.WithLimits(s.tokens.Lookup, handler.Limits())).

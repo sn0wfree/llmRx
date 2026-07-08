@@ -463,6 +463,61 @@ func (s *SQLite) DeleteKey(id int64) error {
 	return err
 }
 
+func (s *SQLite) ReencryptAllKeys(oldMgr, newMgr *secrets.Manager) (int, error) {
+	rows, err := s.db.Query(`SELECT id, key_ciphertext FROM keys WHERE key_ciphertext != ''`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	type kr struct {
+		id     int64
+		cipher string
+	}
+	var keys []kr
+	for rows.Next() {
+		var r kr
+		if err := rows.Scan(&r.id, &r.cipher); err != nil {
+			return 0, err
+		}
+		keys = append(keys, r)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	rows.Close()
+
+	for _, r := range keys {
+		pt, err := oldMgr.Decrypt(r.cipher)
+		if err != nil {
+			return 0, fmt.Errorf("decrypt key %d: %w", r.id, err)
+		}
+		newCT, err := newMgr.Encrypt(pt)
+		if err != nil {
+			return 0, fmt.Errorf("encrypt key %d: %w", r.id, err)
+		}
+		if _, err := s.db.Exec(`UPDATE keys SET key_ciphertext = ? WHERE id = ?`, newCT, r.id); err != nil {
+			return 0, fmt.Errorf("update key %d: %w", r.id, err)
+		}
+	}
+	return len(keys), nil
+}
+
+func (s *SQLite) RotateMasterKey(newKeyHex string) (int, error) {
+	m, err := secrets.FromHexKey(newKeyHex)
+	if err != nil {
+		return 0, err
+	}
+	if s.Secrets == nil {
+		return 0, errors.New("no secrets manager configured; cannot rotate")
+	}
+	n, err := s.ReencryptAllKeys(s.Secrets, m)
+	if err != nil {
+		return 0, err
+	}
+	s.Secrets = m
+	return n, nil
+}
+
 // ---------------- Tokens ----------------
 
 func (s *SQLite) GetToken(key string) (*model.Token, error) {

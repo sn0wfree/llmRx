@@ -71,7 +71,7 @@ func New(t *testing.T) *App {
 	logBroker := broker.New[*model.Log](128)
 	rt := runtime.New()
 	cfg := &config.Config{}
-	adminH := admin.New(st, cp, eng, cache, logBroker, rt, cfg)
+	adminH := admin.New(st, cp, eng, cache, logBroker, rt, cfg, "")
 
 	mp := &MockProvider{}
 	chatH := api.New(cfg, eng, cp, st, logBroker, rt)

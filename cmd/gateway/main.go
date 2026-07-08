@@ -154,7 +154,7 @@ func main() {
 	go logRetentionLoop(ctx, st, rt)
 	go alertMgr.Start(ctx)
 
-	srv := server.New(cfg, eng, cp, st, tokCache, logBroker, rt)
+	srv := server.New(cfg, eng, cp, st, tokCache, logBroker, rt, "/data/llmrx.key")
 	srv.SetAlertManager(alertMgr)
 
 	log.Printf("starting llmRx gateway on :%d (channels=%d tokens=%d db=%s)",

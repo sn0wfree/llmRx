@@ -144,6 +144,66 @@ func TestKeys_WrongMasterKeyFails(t *testing.T) {
 	_ = mgrA // silence unused
 }
 
+func TestRotateMasterKey_Reencrypts(t *testing.T) {
+	s, _ := openTempWithSecrets(t)
+	ch := &model.Channel{Name: "c", Provider: "x", BaseURL: "x", Status: model.ChannelEnabled}
+	if err := s.CreateChannel(ch); err != nil {
+		t.Fatal(err)
+	}
+	plain := "sk-before-rotation"
+	if err := s.CreateKey(&model.Key{ChannelID: ch.ID, Key: plain, KeyMasked: secrets.Mask(plain), Status: model.KeyActive}); err != nil {
+		t.Fatal(err)
+	}
+
+	newHex := "000000000000000000000000000000000000000000000000000000000000000a"
+	n, err := s.RotateMasterKey(newHex)
+	if err != nil {
+		t.Fatalf("RotateMasterKey: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("rotated %d keys, want 1", n)
+	}
+
+	ks, err := s.GetKeys(ch.ID)
+	if err != nil || len(ks) != 1 {
+		t.Fatalf("GetKeys: %v %v", ks, err)
+	}
+	if ks[0].Key != plain {
+		t.Errorf("plaintext after rotation: got %q want %q", ks[0].Key, plain)
+	}
+
+	// Also verify that a new key written post-rotation uses the new
+	// master key, and is still readable.
+	plain2 := "sk-after-rotation"
+	if err := s.CreateKey(&model.Key{ChannelID: ch.ID, Key: plain2, KeyMasked: secrets.Mask(plain2), Status: model.KeyActive}); err != nil {
+		t.Fatal(err)
+	}
+	ks, err = s.GetKeys(ch.ID)
+	if err != nil || len(ks) != 2 {
+		t.Fatalf("GetKeys after second key: %v %v", ks, err)
+	}
+	if ks[0].Key != plain {
+		t.Errorf("first key corrupted: got %q", ks[0].Key)
+	}
+	if ks[1].Key != plain2 {
+		t.Errorf("second key corrupted: got %q", ks[1].Key)
+	}
+}
+
+func TestRotateMasterKey_InvalidHex(t *testing.T) {
+	s, _ := openTempWithSecrets(t)
+	if _, err := s.RotateMasterKey("short"); err == nil {
+		t.Fatal("expected error for short hex key")
+	}
+}
+
+func TestRotateMasterKey_NoManager(t *testing.T) {
+	s := openTemp(t)
+	if _, err := s.RotateMasterKey("000000000000000000000000000000000000000000000000000000000000000a"); err == nil {
+		t.Fatal("expected error when no secrets manager configured")
+	}
+}
+
 func TestKeys_NoManager_LegacyPlaintext(t *testing.T) {
 	// When no manager is configured and the row uses the legacy
 	// plaintext column, GetKeys must still serve the value.
