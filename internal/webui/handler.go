@@ -14,21 +14,22 @@ import (
 
 // Handler holds dependencies for the admin web UI.
 type Handler struct {
-	store     store.Store
-	renderer  *Renderer
-	adminH    *webAPIBridge
+	store      store.Store
+	renderer   *Renderer
+	adminH     *webAPIBridge
+	configPath string
 }
 
 // New creates a web UI handler. adminAPI provides the legacy
 // JSON endpoints under /api/v1/* that the page handlers still call
 // (e.g. for reload after writes). The handler routes /admin/* to
 // HTML pages backed by embedded templates.
-func New(st store.Store, adminAPI *webAPIBridge) (*Handler, error) {
+func New(st store.Store, adminAPI *webAPIBridge, configPath string) (*Handler, error) {
 	r, err := NewRenderer()
 	if err != nil {
 		return nil, err
 	}
-	return &Handler{store: st, renderer: r, adminH: adminAPI}, nil
+	return &Handler{store: st, renderer: r, adminH: adminAPI, configPath: configPath}, nil
 }
 
 // Routes returns the http handler that serves /admin/*.
@@ -88,6 +89,22 @@ func (h *Handler) Routes() http.Handler {
 		r.Post("/users", h.UserCreate)
 		r.Post("/users/{id}/password", h.UserPasswordSubmit)
 		r.Delete("/users/{id}", h.UserDelete)
+
+		// Logs / Alerts / Analytics / Config (Phase 2)
+		r.Get("/logs", h.LogsPage)
+		r.Get("/logs/stream", h.LogsStream)
+
+		r.Get("/alerts", h.AlertsPage)
+		r.Get("/alerts/new", h.AlertNewForm)
+		r.Get("/alerts/{id}/edit", h.AlertEditForm)
+		r.Post("/alerts", h.AlertCreate)
+		r.Post("/alerts/{id}", h.AlertAction)
+
+		r.Get("/analytics", h.AnalyticsPage)
+
+		r.Get("/config", h.ConfigPage)
+		r.Post("/config", h.ConfigSave)
+		r.Get("/effective", h.EffectivePage)
 	})
 
 	return r

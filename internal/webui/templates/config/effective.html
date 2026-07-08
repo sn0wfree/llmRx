@@ -1,0 +1,23 @@
+{{define "effective_body"}}<div class="mb-6">
+  <h1 class="text-2xl font-bold text-gray-900">运行时配置</h1>
+  <p class="mt-1 text-sm text-gray-500">当前生效的所有设置（YAML 覆盖 + DB 覆盖）</p>
+</div>
+
+<div class="bg-white shadow rounded-lg p-6">
+  <table class="min-w-full text-sm">
+    <tbody>
+      {{range $k, $v := .Effective}}
+      <tr class="border-b last:border-b-0">
+        <td class="py-2 pr-4 text-gray-600 font-mono text-xs w-1/3">{{$k}}</td>
+        <td class="py-2 font-mono text-xs break-all">{{$v}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="2" class="py-4 text-center text-gray-500">没有运行时设置（全部使用 YAML 默认）</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+<div class="mt-4 text-sm text-gray-500">
+  <a href="/admin/config" class="text-blue-600 hover:underline">编辑 config.yml</a>
+</div>
+<div id="flash"></div>{{end}}
