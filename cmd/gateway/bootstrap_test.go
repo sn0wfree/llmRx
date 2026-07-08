@@ -8,6 +8,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sn0wfree/llmRx/internal/config"
+	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/store"
 )
 
 func TestBootstrapMasterKey_FromEnv(t *testing.T) {
@@ -171,6 +175,47 @@ func TestRunHealthcheck_NoListener(t *testing.T) {
 	ln.Close() // free the port — nothing listening now
 	if rc := runHealthcheck(addr, 200*time.Millisecond); rc != 1 {
 		t.Errorf("runHealthcheck on dead addr = %d, want 1", rc)
+	}
+}
+
+func TestSeedTokens_WiresModelsWhitelist(t *testing.T) {
+	cfg := &config.Config{
+		Tokens: []config.TokenConfig{
+			{Key: "sk-test-foo", Name: "foo", Models: []string{"deepseek-chat", "deepseek-reasoner"}},
+			{Key: "sk-test-bar", Name: "bar"},
+		},
+	}
+	st, err := store.OpenSQLite(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	if err := seedTokens(st, cfg); err != nil {
+		t.Fatalf("seedTokens: %v", err)
+	}
+	toks, err := st.GetTokens()
+	if err != nil {
+		t.Fatalf("GetTokens: %v", err)
+	}
+	var foo, bar *model.Token
+	for i := range toks {
+		switch toks[i].Key {
+		case "sk-test-foo":
+			foo = &toks[i]
+		case "sk-test-bar":
+			bar = &toks[i]
+		}
+	}
+	if foo == nil {
+		t.Fatal("token sk-test-foo not found")
+	}
+	if len(foo.ModelsWhitelist) != 2 || foo.ModelsWhitelist[0] != "deepseek-chat" {
+		t.Errorf("foo.ModelsWhitelist = %v, want [deepseek-chat deepseek-reasoner]", foo.ModelsWhitelist)
+	}
+	if bar == nil {
+		t.Fatal("token sk-test-bar not found")
+	}
+	if len(bar.ModelsWhitelist) != 0 {
+		t.Errorf("bar.ModelsWhitelist = %v, want []", bar.ModelsWhitelist)
 	}
 }
 

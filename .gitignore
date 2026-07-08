@@ -5,6 +5,7 @@
 *.so
 *.dylib
 llmRx
+gateway
 
 # Go
 *.test
