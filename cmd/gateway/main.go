@@ -98,22 +98,10 @@ func main() {
 
 	rt := runtime.New()
 	rt.SetMarkupRatio(cfg.Server.MarkupRatio)
-	rt.BreakerMaxFailures = int64(cfg.Server.BreakerMax)
-	if rt.BreakerMaxFailures <= 0 {
-		rt.BreakerMaxFailures = 5
-	}
-	rt.BreakerResetTimeoutMs = int64(cfg.Server.BreakerResetMs)
-	if rt.BreakerResetTimeoutMs <= 0 {
-		rt.BreakerResetTimeoutMs = 30000
-	}
-	rt.AlertCooldownSec = int64(cfg.Server.AlertCooldownSec)
-	if rt.AlertCooldownSec <= 0 {
-		rt.AlertCooldownSec = 300
-	}
-	rt.LogRetentionDays = int64(cfg.Server.LogRetentionDays)
-	if rt.LogRetentionDays <= 0 {
-		rt.LogRetentionDays = 30
-	}
+	rt.SetBreakerMaxFailures(int64(cfg.Server.BreakerMax))
+	rt.SetBreakerResetTimeoutMs(int64(cfg.Server.BreakerResetMs))
+	rt.SetAlertCooldownSec(int64(cfg.Server.AlertCooldownSec))
+	rt.SetLogRetentionDays(int64(cfg.Server.LogRetentionDays))
 
 	alertMgr := alert.NewManager(st, []alert.Channel{
 		channels.NewBuiltin(),
@@ -125,7 +113,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go cleanupLoop(ctx, st)
-	go logRetentionLoop(ctx, st, int(rt.LogRetentionDays))
+	go logRetentionLoop(ctx, st, rt)
 	go alertMgr.Start(ctx)
 
 	srv := server.New(cfg, eng, cp, st, tokCache, logBroker, rt)
@@ -159,9 +147,11 @@ func cleanupLoop(ctx context.Context, st store.Store) {
 }
 
 // logRetentionLoop deletes log rows older than retentionDays once a
-// day. retentionDays <= 0 disables the loop.
-func logRetentionLoop(ctx context.Context, st store.Store, retentionDays int) {
-	if retentionDays <= 0 {
+// day. retentionDays <= 0 disables the loop. Reads the current
+// retention window from rt on every tick so admin updates take
+// effect without a restart.
+func logRetentionLoop(ctx context.Context, st store.Store, rt *runtime.Defaults) {
+	if rt.LogRetentionDays() <= 0 {
 		return
 	}
 	t := time.NewTicker(24 * time.Hour)
@@ -171,6 +161,10 @@ func logRetentionLoop(ctx context.Context, st store.Store, retentionDays int) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			retentionDays := int(rt.LogRetentionDays())
+			if retentionDays <= 0 {
+				return
+			}
 			cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour).Unix()
 			if n, err := st.DeleteLogsBefore(cutoff); err != nil {
 				log.Printf("log retention: %v", err)

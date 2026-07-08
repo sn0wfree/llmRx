@@ -1026,10 +1026,10 @@ func (h *Handler) writeNamed(w http.ResponseWriter, r *http.Request, fn func(sto
 func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"cost_strategy":            string(h.router.CostStrategy()),
-		"breaker_max_failures":     h.rt.BreakerMaxFailures,
-		"breaker_reset_timeout_ms": h.rt.BreakerResetTimeoutMs,
-		"alert_cooldown_sec":       h.rt.AlertCooldownSec,
-		"log_retention_days":       h.rt.LogRetentionDays,
+		"breaker_max_failures":     h.rt.BreakerMaxFailures(),
+		"breaker_reset_timeout_ms": h.rt.BreakerResetTimeoutMs(),
+		"alert_cooldown_sec":       h.rt.AlertCooldownSec(),
+		"log_retention_days":       h.rt.LogRetentionDays(),
 		"markup_ratio":             h.rt.MarkupRatio(),
 	})
 }
@@ -1065,28 +1065,28 @@ func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "breaker_max_failures must be 1..1000")
 			return
 		}
-		h.rt.BreakerMaxFailures = *body.BreakerMaxFailures
+		h.rt.SetBreakerMaxFailures(*body.BreakerMaxFailures)
 	}
 	if body.BreakerResetTimeoutMs != nil {
 		if *body.BreakerResetTimeoutMs < 100 || *body.BreakerResetTimeoutMs > 24*60*60*1000 {
 			writeErr(w, http.StatusBadRequest, "breaker_reset_timeout_ms must be 100..86400000")
 			return
 		}
-		h.rt.BreakerResetTimeoutMs = *body.BreakerResetTimeoutMs
+		h.rt.SetBreakerResetTimeoutMs(*body.BreakerResetTimeoutMs)
 	}
 	if body.AlertCooldownSec != nil {
 		if *body.AlertCooldownSec < 0 || *body.AlertCooldownSec > 24*60*60 {
 			writeErr(w, http.StatusBadRequest, "alert_cooldown_sec must be 0..86400")
 			return
 		}
-		h.rt.AlertCooldownSec = *body.AlertCooldownSec
+		h.rt.SetAlertCooldownSec(*body.AlertCooldownSec)
 	}
 	if body.LogRetentionDays != nil {
 		if *body.LogRetentionDays < 0 || *body.LogRetentionDays > 3650 {
 			writeErr(w, http.StatusBadRequest, "log_retention_days must be 0..3650")
 			return
 		}
-		h.rt.LogRetentionDays = *body.LogRetentionDays
+		h.rt.SetLogRetentionDays(*body.LogRetentionDays)
 	}
 	if body.MarkupRatio != nil {
 		if *body.MarkupRatio < 0.01 || *body.MarkupRatio > 1000 {
