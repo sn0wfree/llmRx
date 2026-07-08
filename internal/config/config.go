@@ -13,9 +13,11 @@ type Config struct {
 	Tokens   []TokenConfig   `yaml:"tokens"`
 	Channels []ChannelConfig `yaml:"channels"`
 	Secrets  SecretsConfig   `yaml:"secrets"`
+	BYOK     BYOKConfig      `yaml:"byok"`
 }
 
 type ServerConfig struct {
+	Host                string  `yaml:"host"`
 	Port                int     `yaml:"port"`
 	LogLevel            string  `yaml:"log_level"`
 	AdminPassword       string  `yaml:"admin_password"`
@@ -68,6 +70,18 @@ type DatabaseConfig struct {
 type SecretsConfig struct {
 	KeyMasterEnv string `yaml:"key_master_env"`
 	DevAllowPlaintext bool `yaml:"dev_allow_plaintext_keys"`
+}
+
+// BYOKConfig is the (Phase 1.5 reserved) BYOK configuration. The
+// feature is not yet implemented; keep Enabled=false. When the
+// feature ships, WhitelistIPs and WhitelistEmails will gate which
+// callers may present their own upstream key.
+type BYOKConfig struct {
+	Enabled          bool     `yaml:"enabled"`
+	WhitelistIPs     []string `yaml:"whitelist_ips"`
+	WhitelistEmails  []string `yaml:"whitelist_emails"`
+	MaxKeysPerIP     int      `yaml:"max_keys_per_ip"`
+	TTLDays           int      `yaml:"ttl_days"`
 }
 
 func Load(path string) (*Config, error) {
