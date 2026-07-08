@@ -5,6 +5,7 @@ import (
 	"database/sql"
 
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/secrets"
 )
 
 type Store interface {
@@ -84,6 +85,12 @@ type Store interface {
 	// recorded yet — caller should fall back to YAML seeds).
 	GetRuntimeSettings() ([]byte, error)
 	SetRuntimeSettings(payload []byte) error
+
+	// ReencryptAllKeys re-encrypts every key_ciphertext row from
+	// oldMgr to newMgr. Returns the count of keys rotated.
+	ReencryptAllKeys(oldMgr, newMgr *secrets.Manager) (int, error)
+	SetSecrets(m *secrets.Manager)
+	RotateMasterKey(newKeyHex string) (int, error)
 }
 
 type LogStats struct {

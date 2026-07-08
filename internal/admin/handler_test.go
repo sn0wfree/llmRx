@@ -1202,3 +1202,42 @@ func bcryptHashForTest(pw string) (string, error) {
 	// Use a tiny bcrypt wrapper via the x/crypto package the auth pkg already imports.
 	return authBcrypt(pw)
 }
+
+func TestRotateSecrets_RejectsWhenNoManager(t *testing.T) {
+	app := testhelper.New(t)
+	sess := login(t, app)
+	rec := do(t, app.Admin.Routes(), http.MethodPost, "/secrets/rotate", sess,
+		`{"new_master_key":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var m map[string]any
+	decodeJSON(t, rec, &m)
+	err, _ := m["error"].(map[string]any)
+	if err == nil {
+		t.Fatal("expected error field")
+	}
+	if !strings.Contains(err["message"].(string), "no secrets manager") {
+		t.Errorf("unexpected error: %v", err["message"])
+	}
+}
+
+func TestRotateSecrets_RejectsShortKey(t *testing.T) {
+	app := testhelper.New(t)
+	sess := login(t, app)
+	rec := do(t, app.Admin.Routes(), http.MethodPost, "/secrets/rotate", sess,
+		`{"new_master_key":"short"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRotateSecrets_RejectsInvalidHex(t *testing.T) {
+	app := testhelper.New(t)
+	sess := login(t, app)
+	rec := do(t, app.Admin.Routes(), http.MethodPost, "/secrets/rotate", sess,
+		`{"new_master_key":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
