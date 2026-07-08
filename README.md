@@ -199,22 +199,19 @@ docker compose up -d --build
 ### 一键启动
 
 ```bash
-# 1. 构建后端（Go 1.18+）
-go build -o llmRx ./cmd/gateway
+./start.sh
+```
 
-# 2. （可选）前端首次构建；dist 已随仓库提交，可直接跳过
-# cd web && npm install && npm run build && cd ..
+首次运行自动生成 master key + 构建二进制 + 启动服务。再次运行直接用已有二进制。
 
-# 3. 生成 master key（32 字节 hex，用于 channel API key 静态加密）
+访问 `http://localhost:8787/admin/`（默认 `admin / admin`），详细用法见下方。
+
+等价于手动三步：
+
+```bash
 export LLMRX_KEY_MASTER=$(openssl rand -hex 32)
-
-# 4. 启动：首次会 seed 默认 admin（用户名 admin，密码见 server.admin_password）
+go build -o llmRx ./cmd/gateway
 ./llmRx -config config.yml
-
-# 5. 访问
-# 管理控制台 → http://localhost:8787/admin/
-# API 入口   → http://localhost:8787/v1/chat/completions
-# 健康检查   → http://localhost:8787/health
 ```
 
 > ⚠️ **生产环境必须设置 `LLMRX_KEY_MASTER`**，否则网关启动会直接退出。
