@@ -5,6 +5,7 @@ import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import Channels from './pages/Channels';
 import Tokens from './pages/Tokens';
+import Plans from './pages/Plans';
 import Logs from './pages/Logs';
 import Analytics from './pages/Analytics';
 import Settings from './pages/Settings';
@@ -48,6 +49,7 @@ export default function App() {
       {page === 'dashboard' && <Dashboard onNavigate={navigate} />}
       {page === 'channels' && <Channels />}
       {page === 'tokens' && <Tokens />}
+      {page === 'plans' && <Plans />}
       {page === 'logs' && <Logs />}
       {page === 'analytics' && <Analytics />}
       {page === 'settings' && <Settings />}

@@ -11,6 +11,7 @@ const NAV: { id: string; label: string; icon: string }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: '📊' },
   { id: 'channels', label: 'Channels', icon: '📡' },
   { id: 'tokens', label: 'Tokens', icon: '🔑' },
+  { id: 'plans', label: 'Plans', icon: '💳' },
   { id: 'logs', label: 'Logs', icon: '📋' },
   { id: 'analytics', label: 'Analytics', icon: '📈' },
   { id: 'settings', label: 'Settings', icon: '⚙️' },

@@ -1,9 +1,16 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, Channel } from '../api';
 
+const PROTOCOLS = [
+  { id: 'openai', label: 'OpenAI-compatible', hint: 'POST {base}/chat/completions' },
+  { id: 'anthropic', label: 'Anthropic', hint: 'POST {base}/v1/messages (x-api-key)' },
+  { id: 'gemini', label: 'Google Gemini', hint: 'POST {base}/v1beta/models/{m}:generateContent' },
+] as const;
+
 interface ChannelForm {
   name: string;
   provider: string;
+  protocol: string;
   base_url: string;
   models: string;
   priority: number;
@@ -17,6 +24,7 @@ interface ChannelForm {
 const EMPTY: ChannelForm = {
   name: '',
   provider: 'openai',
+  protocol: 'openai',
   base_url: 'https://api.openai.com/v1',
   models: '',
   priority: 1,
@@ -53,6 +61,7 @@ export default function Channels() {
       await api.createChannel({
         name: form.name,
         provider: form.provider,
+        protocol: form.protocol,
         base_url: form.base_url,
         models: form.models.split(',').map((s) => s.trim()).filter(Boolean),
         priority: form.priority,
@@ -122,6 +131,20 @@ export default function Channels() {
               <label className="label">Provider</label>
               <input className="input" required value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })} />
             </div>
+            <div>
+              <label className="label">Protocol</label>
+              <select
+                className="input"
+                value={form.protocol}
+                onChange={(e) => setForm({ ...form, protocol: e.target.value })}
+              >
+                {PROTOCOLS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label} — {p.hint}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="md:col-span-2">
               <label className="label">Base URL</label>
               <input className="input" required value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
@@ -170,6 +193,7 @@ export default function Channels() {
               <th className="px-4 py-2 font-medium text-slate-600">ID</th>
               <th className="px-4 py-2 font-medium text-slate-600">Name</th>
               <th className="px-4 py-2 font-medium text-slate-600">Provider</th>
+              <th className="px-4 py-2 font-medium text-slate-600">Protocol</th>
               <th className="px-4 py-2 font-medium text-slate-600">Models</th>
               <th className="px-4 py-2 font-medium text-slate-600">Priority</th>
               <th className="px-4 py-2 font-medium text-slate-600">Status</th>
@@ -182,6 +206,11 @@ export default function Channels() {
                 <td className="px-4 py-2 text-slate-500">{ch.id}</td>
                 <td className="px-4 py-2 font-medium">{ch.name}</td>
                 <td className="px-4 py-2">{ch.provider}</td>
+                <td className="px-4 py-2 text-slate-600">
+                  <span className="badge bg-slate-50 text-slate-700 border border-slate-200">
+                    {ch.protocol || 'openai'}
+                  </span>
+                </td>
                 <td className="px-4 py-2 text-slate-600">
                   {ch.models.map((m) => (
                     <span key={m} className="badge bg-slate-100 text-slate-700 mr-1 mb-1 inline-block">
@@ -213,7 +242,7 @@ export default function Channels() {
             ))}
             {items.length === 0 && (
               <tr>
-                <td className="px-4 py-6 text-center text-slate-400" colSpan={7}>
+                <td className="px-4 py-6 text-center text-slate-400" colSpan={8}>
                   No channels yet.
                 </td>
               </tr>

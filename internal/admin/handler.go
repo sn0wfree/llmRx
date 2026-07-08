@@ -99,6 +99,11 @@ func (h *Handler) Routes() http.Handler {
 		r.Get("/analytics/by-model", h.AnalyticsByModel)
 		r.Get("/analytics/by-channel", h.AnalyticsByChannel)
 		r.Get("/analytics/by-token", h.AnalyticsByToken)
+		r.Get("/plans", h.ListPlans)
+		r.Post("/plans", h.CreatePlan)
+		r.Get("/plans/{id}", h.GetPlan)
+		r.Put("/plans/{id}", h.UpdatePlan)
+		r.Delete("/plans/{id}", h.DeletePlan)
 		r.Get("/config", h.GetConfig)
 		r.Put("/config", h.UpdateConfig)
 		r.Post("/reload", h.ReloadAll)
@@ -266,6 +271,17 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name, provider, base_url required")
 		return
 	}
+	if ch.Protocol == "" {
+		ch.Protocol = "openai"
+	} else {
+		switch ch.Protocol {
+		case "openai", "anthropic", "gemini",
+			"openai-compatible", "anthropic-messages", "google-gemini":
+		default:
+			writeErr(w, http.StatusBadRequest, "protocol must be openai|anthropic|gemini")
+			return
+		}
+	}
 	if ch.Status == 0 {
 		ch.Status = model.ChannelEnabled
 	}
@@ -304,6 +320,20 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	if patch.BaseURL != "" {
 		cur.BaseURL = patch.BaseURL
+	}
+	// Protocol is the only field that uses empty-string as a
+	// valid value (defaulting to "openai" in seed). To allow
+	// explicit setting via PUT, we accept any non-empty value and
+	// fall through to the default when not provided.
+	if patch.Protocol != "" {
+		switch patch.Protocol {
+		case "openai", "anthropic", "gemini",
+			"openai-compatible", "anthropic-messages", "google-gemini":
+			cur.Protocol = patch.Protocol
+		default:
+			writeErr(w, http.StatusBadRequest, "protocol must be openai|anthropic|gemini")
+			return
+		}
 	}
 	if patch.Models != nil {
 		cur.Models = patch.Models
