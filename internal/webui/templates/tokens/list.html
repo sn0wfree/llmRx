@@ -1,0 +1,69 @@
+{{define "tokens_list_body"}}<div class="mb-6 flex justify-between items-center">
+  <div>
+    <h1 class="text-2xl font-bold text-gray-900">Token 管理</h1>
+    <p class="mt-1 text-sm text-gray-500">管理 LLM API Token（消费者凭证）</p>
+  </div>
+  <a href="/admin/tokens/new" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+    + 新建 Token
+  </a>
+</div>
+
+<div class="mb-4">
+  <input type="search" name="q" placeholder="搜索 Token 名称..."
+         hx-get="/admin/tokens/partial/list"
+         hx-trigger="keyup changed delay:300ms"
+         hx-target="#token-table-body"
+         hx-swap="innerHTML"
+         hx-push-url="false"
+         class="w-full max-w-md px-3 py-2 border border-gray-300 rounded-md text-sm">
+</div>
+
+<div class="bg-white shadow rounded-lg overflow-hidden">
+  <table class="min-w-full divide-y divide-gray-200">
+    <thead class="bg-gray-50">
+      <tr>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">名称</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Key</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Plan</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">限流 (RPM/TPM)</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">状态</th>
+        <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">操作</th>
+      </tr>
+    </thead>
+    <tbody id="token-table-body" class="bg-white divide-y divide-gray-200">
+      {{template "tokens_table_body" .}}
+    </tbody>
+  </table>
+</div>
+<div id="flash"></div>{{end}}
+
+{{define "tokens_table_body"}}{{range .Tokens}}
+<tr id="token-row-{{.ID}}">
+  <td class="px-6 py-4 whitespace-nowrap">
+    <div class="text-sm font-medium text-gray-900">{{.Name}}</div>
+  </td>
+  <td class="px-6 py-4 whitespace-nowrap">
+    <code class="text-xs bg-gray-50 px-2 py-1 rounded font-mono">sk-...{{slice .Key (sub (len .Key) 4)}}</code>
+  </td>
+  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+    {{if .PlanID}}#{{.PlanID}}{{else}}<span class="text-gray-400">无</span>{{end}}
+  </td>
+  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{{.RPM}} / {{.TPM}}</td>
+  <td class="px-6 py-4 whitespace-nowrap">
+    {{if eq .Status 0}}<span class="px-2 py-0.5 text-xs bg-green-100 text-green-800 rounded">启用</span>
+    {{else}}<span class="px-2 py-0.5 text-xs bg-gray-100 text-gray-800 rounded">禁用</span>{{end}}
+  </td>
+  <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+    <a href="/admin/tokens/{{.ID}}/edit" class="text-blue-600 hover:text-blue-900 mr-3">编辑</a>
+    <button hx-delete="/admin/tokens/{{.ID}}"
+            hx-target="#token-row-{{.ID}}"
+            hx-swap="outerHTML"
+            hx-confirm="确定删除 Token {{.Name}}？将立即失效。"
+            class="text-red-600 hover:text-red-900">删除</button>
+  </td>
+</tr>
+{{else}}
+<tr><td colspan="6" class="px-6 py-12 text-center text-sm text-gray-500">
+  还没有 Token。<a href="/admin/tokens/new" class="text-blue-600 hover:underline">新建第一个 Token</a>
+</td></tr>
+{{end}}{{end}}

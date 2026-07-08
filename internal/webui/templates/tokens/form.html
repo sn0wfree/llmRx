@@ -1,0 +1,94 @@
+{{define "tokens_form_body"}}<div class="mb-6">
+  <a href="/admin/tokens" class="text-sm text-gray-500 hover:text-gray-700">← 返回列表</a>
+  <h1 class="text-2xl font-bold text-gray-900 mt-2">
+    {{if .Token}}编辑 Token{{else}}新建 Token{{end}}
+  </h1>
+</div>
+
+{{if .FormError}}
+<div class="mb-4 p-3 rounded bg-red-100 text-red-800 border border-red-200 text-sm">{{.FormError}}</div>
+{{end}}
+
+{{if .NewKey}}
+<div class="mb-4 p-4 rounded bg-yellow-50 text-yellow-900 border border-yellow-200">
+  <p class="font-medium">请保存此 Key（仅显示一次）：</p>
+  <code class="block mt-2 text-sm font-mono bg-white p-2 rounded break-all">{{.NewKey}}</code>
+</div>
+{{end}}
+
+<form method="POST"
+      action="{{if .Token}}/admin/tokens/{{.Token.ID}}{{else}}/admin/tokens{{end}}"
+      class="bg-white shadow rounded-lg p-6 space-y-6 max-w-3xl">
+  {{if .Token}}<input type="hidden" name="_method" value="PUT">{{end}}
+
+  <div>
+    <h2 class="text-lg font-medium text-gray-900 mb-4">基本信息</h2>
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700">名称 *</label>
+        <input type="text" name="name" required value="{{or .FormData.Name .Token.Name}}"
+               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700">关联 Plan ID</label>
+        <input type="number" name="plan_id" value="{{or .FormData.PlanIDStr (printf "%d" .Token.PlanID)}}"
+               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm" placeholder="0">
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <h2 class="text-lg font-medium text-gray-900 mb-4">限流</h2>
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700">RPM (每分钟请求)</label>
+        <input type="number" name="rpm" value="{{or .FormData.RPMStr (printf "%d" .Token.RPM)}}"
+               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm" placeholder="0 = 不限">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700">TPM (每分钟 tokens)</label>
+        <input type="number" name="tpm" value="{{or .FormData.TPMStr (printf "%d" .Token.TPM)}}"
+               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm" placeholder="0 = 不限">
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <h2 class="text-lg font-medium text-gray-900 mb-4">白名单</h2>
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700">模型白名单（每行一个）</label>
+        <textarea name="models_whitelist" rows="3" placeholder="gpt-4&#10;gpt-3.5-turbo"
+                  class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm">{{or .FormData.ModelsStr (joinStrings .Token.ModelsWhitelist)}}</textarea>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700">IP 白名单（每行一个，留空 = 不限）</label>
+        <textarea name="ip_whitelist" rows="3" placeholder="192.168.1.0/24"
+                  class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm">{{or .FormData.IPsStr (joinStrings .Token.IPWhitelist)}}</textarea>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <label class="block text-sm font-medium text-gray-700">过期天数（0 = 永不过期）</label>
+    <input type="number" name="expires_in_days" value="{{.FormData.ExpiresDaysStr}}"
+           class="mt-1 block w-full max-w-xs px-3 py-2 border border-gray-300 rounded-md text-sm">
+  </div>
+
+  <div>
+    <label class="flex items-center">
+      <input type="checkbox" name="status" value="1"
+             {{if or (eq .FormData.Status "1") (eq .Token.Status 0) (and (not .FormData) (not .Token))}}checked{{end}}
+             class="rounded border-gray-300">
+      <span class="ml-2 text-sm text-gray-700">启用</span>
+    </label>
+  </div>
+
+  <div class="flex justify-end gap-3 pt-4 border-t">
+    <a href="/admin/tokens" class="px-4 py-2 text-gray-700 hover:text-gray-900 text-sm">取消</a>
+    <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+      {{if .Token}}保存{{else}}创建{{end}}
+    </button>
+  </div>
+</form>
+<div id="flash"></div>{{end}}
