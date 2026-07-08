@@ -189,6 +189,10 @@ export const api = {
     request<Plan>('PUT', `/plans/${id}`, body),
   deletePlan: (id: number) => request<{ ok: boolean }>('DELETE', `/plans/${id}`),
 
+  // Effective: read-only aggregation of every tunable + every
+  // CRUD entity. Used by the "Effective" tab in Settings.
+  getEffective: () => request<EffectiveView>('GET', '/effective'),
+
   changePassword: (userId: number, body: { old_password?: string; new_password: string }) =>
     request<{ ok: boolean }>('POST', `/users/${userId}/password`, body),
 
@@ -307,4 +311,64 @@ export interface AlertEvent {
   payload: string;
   delivered_webhook: boolean;
   acknowledged: boolean;
+}
+
+// EffectiveSection is the standard wrapper for each list
+// returned by GET /api/v1/effective. items is the data (or []
+// on error), count is the number actually returned, error is
+// null on success.
+export interface EffectiveSection<T> {
+  items: T[];
+  count: number;
+  error: string | null;
+}
+
+export interface EffectiveChannel {
+  id: number;
+  name: string;
+  protocol: string;
+  priority: number;
+  status: number;
+  model_count: number;
+}
+
+export interface EffectiveToken {
+  id: number;
+  name: string;
+  plan_id: number;
+  status: number;
+  rpm: number;
+  tpm: number;
+}
+
+export interface EffectivePlan {
+  id: number;
+  name: string;
+  budget_usd: number;
+  used_usd: number;
+  markup_ratio: number;
+  status: number;
+}
+
+export interface EffectiveAlert {
+  id: number;
+  name: string;
+  type: string;
+  enabled: boolean;
+  threshold: number;
+  cooldown_sec: number;
+}
+
+export interface EffectiveRuntime {
+  values: Record<string, unknown>;
+  source: 'db' | 'yaml';
+}
+
+export interface EffectiveView {
+  runtime: EffectiveRuntime;
+  yaml_seeds: Record<string, unknown>;
+  channels: EffectiveSection<EffectiveChannel>;
+  tokens: EffectiveSection<EffectiveToken>;
+  plans: EffectiveSection<EffectivePlan>;
+  alerts: EffectiveSection<EffectiveAlert>;
 }

@@ -70,10 +70,11 @@ func New(t *testing.T) *App {
 	eng := router.New(st, cp)
 	logBroker := broker.New[*model.Log](128)
 	rt := runtime.New()
-	adminH := admin.New(st, cp, eng, cache, logBroker, rt)
+	cfg := &config.Config{}
+	adminH := admin.New(st, cp, eng, cache, logBroker, rt, cfg)
 
 	mp := &MockProvider{}
-	chatH := api.New(&config.Config{}, eng, cp, st, logBroker, rt)
+	chatH := api.New(cfg, eng, cp, st, logBroker, rt)
 	chatH.SetProvider(mp)
 	// Also override the per-protocol map so the chat handler picks
 	// the mock regardless of the channel's Protocol field.
@@ -103,7 +104,7 @@ func New(t *testing.T) *App {
 		Provider:  mp,
 		LogBroker: logBroker,
 		RT:        rt,
-		Cfg:       &config.Config{},
+		Cfg:       cfg,
 		Mux:       mux,
 	}
 }

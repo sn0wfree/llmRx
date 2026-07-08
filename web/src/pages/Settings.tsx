@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
-import { api } from '../api';
+import React, { useEffect, useState } from 'react';
+import { api, EffectiveView } from '../api';
 
-type Tab = 'routing' | 'security' | 'alerts' | 'maintenance';
+type Tab = 'routing' | 'security' | 'alerts' | 'maintenance' | 'effective';
 
 export default function Settings() {
   const [tab, setTab] = useState<Tab>('routing');
@@ -15,7 +15,7 @@ export default function Settings() {
 
       <div className="border-b border-slate-200 mb-6">
         <nav className="flex gap-6">
-          {(['routing', 'security', 'alerts', 'maintenance'] as Tab[]).map((t) => (
+          {(['routing', 'security', 'alerts', 'maintenance', 'effective'] as Tab[]).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -35,6 +35,7 @@ export default function Settings() {
       {tab === 'security' && <SecurityTab />}
       {tab === 'alerts' && <AlertsTab />}
       {tab === 'maintenance' && <MaintenanceTab />}
+      {tab === 'effective' && <EffectiveTab />}
     </div>
   );
 }
@@ -714,5 +715,249 @@ function NumberField({
         onChange={(e) => onChange(parseInt(e.target.value, 10) || 0)}
       />
     </label>
+  );
+}
+
+// =================================================================
+// Effective Tab — read-only view of every tunable + every CRUD
+// entity. Useful for "what does the gateway look like right now"
+// diagnostics. Folds the runtime, channels, tokens, plans and
+// alerts into one screen with a Copy-as-JSON button at the top.
+// =================================================================
+
+function EffectiveTab() {
+  const [data, setData] = useState<EffectiveView | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    api
+      .getEffective()
+      .then(setData)
+      .catch((e) => setError(e?.message || 'failed'));
+  }, []);
+
+  if (error) {
+    return (
+      <div className="card p-3 bg-red-50 border-red-200 text-red-700 text-sm">
+        {error}
+      </div>
+    );
+  }
+  if (!data) {
+    return <div className="text-sm text-slate-500">Loading…</div>;
+  }
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard API may be unavailable (insecure context, etc.).
+      // Fall back to a textarea selection trick.
+      const ta = document.createElement('textarea');
+      ta.value = JSON.stringify(data, null, 2);
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      } finally {
+        document.body.removeChild(ta);
+      }
+    }
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-xs text-slate-500">
+          Read-only view of every live tunable and every CRUD entity. Source label
+          on runtime shows <code className="text-xs">db</code> when the gateway
+          loaded an override from <code className="text-xs">runtime_settings</code>
+          on startup, otherwise <code className="text-xs">yaml</code>.
+        </p>
+        <button
+          onClick={copy}
+          className="btn-ghost text-xs whitespace-nowrap ml-3"
+          aria-label="Copy as JSON"
+        >
+          {copied ? '✓ Copied' : 'Copy as JSON'}
+        </button>
+      </div>
+
+      <RuntimeSection runtime={data.runtime} yamlSeeds={data.yaml_seeds} />
+      <EntitySection<EffectiveView['channels']>
+        title="Channels"
+        section={data.channels}
+        columns={['name', 'protocol', 'priority', 'status', 'model_count']}
+        labels={['Name', 'Protocol', 'Priority', 'Status', 'Models']}
+      />
+      <EntitySection<EffectiveView['tokens']>
+        title="Tokens"
+        section={data.tokens}
+        columns={['name', 'plan_id', 'status', 'rpm', 'tpm']}
+        labels={['Name', 'Plan', 'Status', 'RPM', 'TPM']}
+      />
+      <EntitySection<EffectiveView['plans']>
+        title="Plans"
+        section={data.plans}
+        columns={['name', 'budget_usd', 'used_usd', 'markup_ratio', 'status']}
+        labels={['Name', 'Budget', 'Used', 'Markup', 'Status']}
+        formatters={{
+          budget_usd: (v) => `$${Number(v).toFixed(2)}`,
+          used_usd: (v) => `$${Number(v).toFixed(4)}`,
+          markup_ratio: (v) => Number(v).toFixed(2),
+        }}
+      />
+      <EntitySection<EffectiveView['alerts']>
+        title="Alerts"
+        section={data.alerts}
+        columns={['name', 'type', 'enabled', 'threshold', 'cooldown_sec']}
+        labels={['Name', 'Type', 'Enabled', 'Threshold', 'Cooldown (s)']}
+        formatters={{
+          enabled: (v) => (v ? '✓' : '—'),
+          threshold: (v) => Number(v).toString(),
+          cooldown_sec: (v) => `${v}s`,
+        }}
+      />
+    </div>
+  );
+}
+
+const RUNTIME_FIELDS: { key: string; label: string }[] = [
+  { key: 'cost_strategy', label: 'Cost strategy' },
+  { key: 'markup_ratio', label: 'Markup ratio' },
+  { key: 'breaker_max_failures', label: 'Breaker max failures' },
+  { key: 'breaker_reset_timeout_ms', label: 'Breaker reset (ms)' },
+  { key: 'alert_cooldown_sec', label: 'Alert cooldown (s)' },
+  { key: 'log_retention_days', label: 'Log retention (days)' },
+  { key: 'stream_timeout_sec', label: 'Stream timeout (s)' },
+  { key: 'stream_max_body_bytes', label: 'Stream max body (bytes)' },
+  { key: 'max_log_subscribers', label: 'Max SSE subscribers' },
+  { key: 'log_level', label: 'Log level (0=debug, 3=error)' },
+];
+
+function RuntimeSection({
+  runtime,
+  yamlSeeds,
+}: {
+  runtime: EffectiveView['runtime'];
+  yamlSeeds: Record<string, unknown>;
+}) {
+  const sourceLabel =
+    runtime.source === 'db' ? (
+      <span className="badge bg-green-50 text-green-700 border border-green-200">
+        db (override)
+      </span>
+    ) : (
+      <span className="badge bg-slate-100 text-slate-600 border border-slate-200">
+        yaml (default)
+      </span>
+    );
+
+  return (
+    <div className="card p-5 mb-4">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-semibold text-slate-700">Runtime defaults</h2>
+        <div className="flex items-center gap-2 text-xs text-slate-500">
+          <span>source:</span>
+          {sourceLabel}
+        </div>
+      </div>
+      <table className="w-full text-sm">
+        <thead className="text-left text-xs text-slate-500 border-b border-slate-100">
+          <tr>
+            <th className="py-2">Field</th>
+            <th>Effective</th>
+            <th className="text-slate-400">YAML seed</th>
+          </tr>
+        </thead>
+        <tbody>
+          {RUNTIME_FIELDS.map((f) => {
+            const eff = runtime.values[f.key];
+            const yaml = yamlSeeds[f.key];
+            return (
+              <tr key={f.key} className="border-t border-slate-100">
+                <td className="py-1.5 text-slate-600">{f.label}</td>
+                <td className="font-medium">{formatValue(eff)}</td>
+                <td className="text-slate-400">{formatValue(yaml)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function formatValue(v: unknown): React.ReactNode {
+  if (v === undefined || v === null || v === '') {
+    return <span className="text-slate-300">—</span>;
+  }
+  if (typeof v === 'number') {
+    return v.toString();
+  }
+  return String(v);
+}
+
+interface EntitySectionProps<T> {
+  title: string;
+  section: T;
+  columns: string[];
+  labels: string[];
+  formatters?: Record<string, (v: unknown) => string>;
+}
+
+function EntitySection<T extends { items: any[]; count: number; error: string | null }>(
+  { title, section, columns, labels, formatters = {} }: EntitySectionProps<T>,
+) {
+  const errorBadge = section.error && (
+    <span
+      className="text-xs text-red-600"
+      title={section.error}
+    >
+      ⚠ {section.error}
+    </span>
+  );
+  return (
+    <details className="card p-5 mb-4" open={section.count > 0}>
+      <summary className="cursor-pointer text-sm font-semibold text-slate-700 flex items-center justify-between">
+        <span>
+          {title} <span className="text-slate-400">({section.count})</span>
+        </span>
+        {errorBadge}
+      </summary>
+      {section.items.length === 0 ? (
+        <p className="text-xs text-slate-400 mt-3">No entries.</p>
+      ) : (
+        <table className="w-full text-sm mt-3">
+          <thead className="text-left text-xs text-slate-500 border-b border-slate-100">
+            <tr>
+              {labels.map((l) => (
+                <th key={l} className="py-2">{l}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {section.items.map((row: any, i: number) => (
+              <tr key={i} className="border-t border-slate-100">
+                {columns.map((c) => {
+                  const raw = row[c];
+                  const fmt = formatters[c];
+                  return (
+                    <td key={c} className="py-1.5 text-slate-700">
+                      {fmt ? fmt(raw) : String(raw ?? '—')}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </details>
   );
 }

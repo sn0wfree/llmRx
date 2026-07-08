@@ -13,6 +13,7 @@ import (
 
 	"github.com/sn0wfree/llmRx/internal/auth"
 	"github.com/sn0wfree/llmRx/internal/broker"
+	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
@@ -31,6 +32,7 @@ type Handler struct {
 	tokens     *tokencache.Cache
 	logBroker  *broker.Broker[*model.Log]
 	rt         *runtime.Defaults
+	cfg        *config.Config
 	sessionTTL time.Duration
 	alertMgr   AlertReloader
 }
@@ -42,11 +44,11 @@ type AlertReloader interface {
 	Reload() error
 }
 
-func New(st store.Store, cp *pool.ChannelPool, eng *router.RouterEngine, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Handler {
+func New(st store.Store, cp *pool.ChannelPool, eng *router.RouterEngine, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults, cfg *config.Config) *Handler {
 	if rt == nil {
 		rt = runtime.New()
 	}
-	return &Handler{store: st, pool: cp, router: eng, tokens: tc, logBroker: lb, rt: rt, sessionTTL: 24 * time.Hour}
+	return &Handler{store: st, pool: cp, router: eng, tokens: tc, logBroker: lb, rt: rt, cfg: cfg, sessionTTL: 24 * time.Hour}
 }
 
 // SetAlertManager lets main.go inject the alert manager for /reload.
@@ -106,6 +108,7 @@ func (h *Handler) Routes() http.Handler {
 		r.Delete("/plans/{id}", h.DeletePlan)
 		r.Get("/config", h.GetConfig)
 		r.Put("/config", h.UpdateConfig)
+		r.Get("/effective", h.EffectiveConfig)
 		r.Post("/reload", h.ReloadAll)
 	})
 	return r
