@@ -1,0 +1,76 @@
+{{define "channels_list_body"}}<div class="mb-6 flex justify-between items-center">
+  <div>
+    <h1 class="text-2xl font-bold text-gray-900">通道管理</h1>
+    <p class="mt-1 text-sm text-gray-500">管理 LLM Provider 通道及其 API Keys</p>
+  </div>
+  <a href="/admin/channels/new" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+    + 新建通道
+  </a>
+</div>
+
+<div class="mb-4">
+  <input type="search"
+         name="q"
+         placeholder="搜索通道名称或 Provider..."
+         hx-get="/admin/channels/partial/list"
+         hx-trigger="keyup changed delay:300ms"
+         hx-target="#channel-table-body"
+         hx-swap="innerHTML"
+         hx-push-url="false"
+         class="w-full max-w-md px-3 py-2 border border-gray-300 rounded-md text-sm">
+</div>
+
+<div class="bg-white shadow rounded-lg overflow-hidden">
+  <table class="min-w-full divide-y divide-gray-200">
+    <thead class="bg-gray-50">
+      <tr>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">名称</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Provider</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">模型</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">优先级</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">状态</th>
+        <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">操作</th>
+      </tr>
+    </thead>
+    <tbody id="channel-table-body" class="bg-white divide-y divide-gray-200">
+      {{template "channels_table_body" .}}
+    </tbody>
+  </table>
+</div>
+<div id="flash"></div>{{end}}
+
+{{define "channels_table_body"}}{{range .Channels}}
+<tr id="channel-row-{{.ID}}">
+  <td class="px-6 py-4 whitespace-nowrap">
+    <div class="text-sm font-medium text-gray-900">{{.Name}}</div>
+    <div class="text-xs text-gray-500">{{truncate .BaseURL 60}}</div>
+  </td>
+  <td class="px-6 py-4 whitespace-nowrap">
+    <span class="px-2 py-0.5 text-xs bg-purple-100 text-purple-800 rounded">{{.Provider}}</span>
+  </td>
+  <td class="px-6 py-4">
+    <div class="flex flex-wrap gap-1">
+      {{range .Models}}
+      <span class="px-2 py-0.5 text-xs bg-gray-100 text-gray-700 rounded">{{.}}</span>
+      {{end}}
+    </div>
+  </td>
+  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{{.Priority}}</td>
+  <td class="px-6 py-4 whitespace-nowrap">{{statusBadge .Status}}</td>
+  <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+    <a href="/admin/channels/{{.ID}}/keys" class="text-indigo-600 hover:text-indigo-900 mr-3">Keys</a>
+    <a href="/admin/channels/{{.ID}}/edit" class="text-blue-600 hover:text-blue-900 mr-3">编辑</a>
+    <button hx-delete="/admin/channels/{{.ID}}"
+            hx-target="#channel-row-{{.ID}}"
+            hx-swap="outerHTML"
+            hx-confirm="确定删除通道 {{.Name}}？所有 API Keys 将一并删除。"
+            class="text-red-600 hover:text-red-900">删除</button>
+  </td>
+</tr>
+{{else}}
+<tr>
+  <td colspan="6" class="px-6 py-12 text-center text-sm text-gray-500">
+    还没有通道。<a href="/admin/channels/new" class="text-blue-600 hover:underline">新建第一个通道</a>
+  </td>
+</tr>
+{{end}}{{end}}

@@ -1,0 +1,28 @@
+{{define "dashboard_body"}}<div class="mb-6">
+  <h1 class="text-2xl font-bold text-gray-900">仪表盘</h1>
+  <p class="mt-1 text-sm text-gray-500">系统总览</p>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+  <div class="bg-white rounded-lg shadow p-5">
+    <div class="text-sm font-medium text-gray-500">活跃 Token</div>
+    <div class="mt-2 text-3xl font-bold text-gray-900">{{.ActiveTokens}}</div>
+  </div>
+  <div class="bg-white rounded-lg shadow p-5">
+    <div class="text-sm font-medium text-gray-500">启用通道</div>
+    <div class="mt-2 text-3xl font-bold text-gray-900">{{.ActiveChannels}}</div>
+  </div>
+  <div class="bg-white rounded-lg shadow p-5">
+    <div class="text-sm font-medium text-gray-500">请求总数</div>
+    <div class="mt-2 text-3xl font-bold text-gray-900">{{.TotalRequests}}</div>
+  </div>
+  <div class="bg-white rounded-lg shadow p-5">
+    <div class="text-sm font-medium text-gray-500">累计花费</div>
+    <div class="mt-2 text-3xl font-bold text-gray-900">${{printf "%.4f" .TotalCost}}</div>
+  </div>
+</div>
+
+<div class="bg-white rounded-lg shadow p-6">
+  <h2 class="text-lg font-medium text-gray-900 mb-4">系统状态</h2>
+  <p class="text-sm text-gray-500">详细统计请前往 <a href="/admin/analytics" class="text-blue-600 hover:underline">分析</a> 页面（Phase 2 上线）</p>
+</div>{{end}}

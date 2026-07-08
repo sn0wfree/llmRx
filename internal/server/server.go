@@ -78,13 +78,29 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	s.engine.Mount("/admin", webui.Handler())
-
-	s.engine.Mount("/api/v1", adminHandler.Routes())
+	// Phase 0: html/template admin UI. Legacy JSON API still
+	// available under /admin/api/v1 for backwards compatibility.
+	webAPIBridge := webui.NewWebAPIBridge(s.store)
+	webAPIBridge.SetReloader(func() error {
+		if err := s.tokens.Reload(); err != nil {
+			return err
+		}
+		return s.pool.LoadFromStore(s.store)
+	})
+	webUI, err := webui.New(s.store, webAPIBridge)
+	if err != nil {
+		log.Fatalf("webui: %v", err)
+	}
+	s.engine.Mount("/admin", webUI.Routes())
+	s.engine.Mount("/admin/api/v1", adminHandler.Routes())
 }
 
 func (s *Server) Start() error {
-	addr := fmt.Sprintf(":%d", s.cfg.Server.Port)
+	host := s.cfg.Server.Host
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	addr := fmt.Sprintf("%s:%d", host, s.cfg.Server.Port)
 	log.Printf("listening on %s (tokens=%d)", addr, s.tokens.Size())
 	return http.ListenAndServe(addr, s.engine)
 }
