@@ -29,7 +29,7 @@ func TestStream_CtxTimeoutFires(t *testing.T) {
 		"openai": cp,
 	})
 	// 1s should easily bound the test.
-	app.Chat.SetStreamCaps(1, 0)
+	app.RT.SetStreamTimeoutSec(1)
 
 	body := `{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
@@ -93,7 +93,7 @@ func TestStream_BodyLimitExceeded(t *testing.T) {
 		"openai": cap,
 	})
 	// 200-byte cap → must terminate before all 5 chunks finish.
-	app.Chat.SetStreamCaps(0, 200)
+	app.RT.SetStreamMaxBodyBytes(200)
 
 	body := `{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
@@ -123,7 +123,7 @@ func TestStream_HappyPathStillCompletes(t *testing.T) {
 		{ID: "c1", Object: "chat.completion.chunk", Model: "m", Choices: []provider.StreamChoice{{Index: 0, Delta: provider.Message{Role: "assistant", Content: "Hi"}}}},
 		{ID: "c2", Object: "chat.completion.chunk", Model: "m", Choices: []provider.StreamChoice{{Index: 0, Delta: provider.Message{}, FinishReason: "stop"}}, Usage: &provider.Usage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7}},
 	}
-	app.Chat.SetStreamCaps(30, 0)
+	app.RT.SetStreamTimeoutSec(30)
 
 	body := `{"model":"m","stream":true,"messages":[]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))

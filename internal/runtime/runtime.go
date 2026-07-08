@@ -24,6 +24,10 @@ type Defaults struct {
 	breakerResetTimeoutMs int64
 	alertCooldownSec      int64
 	logRetentionDays      int64
+	streamTimeoutSec      int64
+	streamMaxBodyBytes    int64
+	maxLogSubscribers     int64
+	logLevelBits          uint64 // slog.Level int64 bits
 
 	costStrategy atomic.Value // string
 }
@@ -35,6 +39,10 @@ func New() *Defaults {
 	atomic.StoreInt64(&d.breakerResetTimeoutMs, 30000)
 	atomic.StoreInt64(&d.alertCooldownSec, 300)
 	atomic.StoreInt64(&d.logRetentionDays, 30)
+	atomic.StoreInt64(&d.streamTimeoutSec, 300)
+	atomic.StoreInt64(&d.streamMaxBodyBytes, 32*1024*1024)
+	atomic.StoreInt64(&d.maxLogSubscribers, 0)
+	atomic.StoreUint64(&d.logLevelBits, uint64(0)) // slog.LevelInfo
 	d.SetMarkupRatio(1.0)
 	d.SetCostStrategy("cheapest")
 	return d
@@ -155,6 +163,128 @@ func (d *Defaults) SetLogRetentionDays(days int64) {
 	atomic.StoreInt64(&d.logRetentionDays, days)
 }
 
+// ---- StreamTimeoutSec ----
+
+// StreamTimeoutSec returns the per-stream wall-clock cap in seconds.
+// 0 disables the cap (stream runs until upstream closes). Default 300.
+func (d *Defaults) StreamTimeoutSec() int64 {
+	return atomic.LoadInt64(&d.streamTimeoutSec)
+}
+
+// SetStreamTimeoutSec updates the cap. Values < 0 floor to 0
+// (disabled); values above 1h are rejected.
+func (d *Defaults) SetStreamTimeoutSec(sec int64) {
+	if sec < 0 {
+		sec = 0
+	}
+	if sec > 3600 {
+		sec = 3600
+	}
+	atomic.StoreInt64(&d.streamTimeoutSec, sec)
+}
+
+// ---- StreamMaxBodyBytes ----
+
+// StreamMaxBodyBytes returns the soft byte cap on the response
+// stream. 0 disables the cap. Default 32 MiB.
+func (d *Defaults) StreamMaxBodyBytes() int64 {
+	return atomic.LoadInt64(&d.streamMaxBodyBytes)
+}
+
+// SetStreamMaxBodyBytes updates the cap. Values < 0 floor to 0.
+// Max 1 GiB.
+func (d *Defaults) SetStreamMaxBodyBytes(n int64) {
+	if n < 0 {
+		n = 0
+	}
+	if n > 1<<30 {
+		n = 1 << 30
+	}
+	atomic.StoreInt64(&d.streamMaxBodyBytes, n)
+}
+
+// ---- MaxLogSubscribers ----
+
+// MaxLogSubscribers returns the broker cap for SSE log subscribers.
+// 0 means unlimited. Default 0.
+func (d *Defaults) MaxLogSubscribers() int64 {
+	return atomic.LoadInt64(&d.maxLogSubscribers)
+}
+
+// SetMaxLogSubscribers updates the cap. Values < 0 floor to 0.
+func (d *Defaults) SetMaxLogSubscribers(n int64) {
+	if n < 0 {
+		n = 0
+	}
+	if n > 100000 {
+		n = 100000
+	}
+	atomic.StoreInt64(&d.maxLogSubscribers, n)
+}
+
+// ---- LogLevel ----
+
+// LogLevel returns the active log filter: 0=debug, 1=info, 2=warn,
+// 3=error. Higher values drop more. Default 1 (info).
+func (d *Defaults) LogLevel() int64 {
+	return int64(atomic.LoadUint64(&d.logLevelBits))
+}
+
+// SetLogLevel updates the filter. Unknown values clamp to the
+// nearest valid level.
+func (d *Defaults) SetLogLevel(level int64) {
+	if level < 0 {
+		level = 0
+	}
+	if level > 3 {
+		level = 3
+	}
+	atomic.StoreUint64(&d.logLevelBits, uint64(level))
+}
+
+// levelForLine inspects the format string for a recognized log
+// level prefix and returns the matching level. The convention is:
+//   - "error: ..."   → 3 (error)
+//   - "warn: ..."    → 2 (warn)
+//   - "info: ..."    → 1 (info)
+//   - "debug: ..."   → 0 (debug)
+//   - everything else → 1 (info, the default)
+//
+// The check is prefix-only so it can be used both at the writer
+// level (log package) and at the call-site level. Lines that
+// don't carry an explicit prefix are treated as info; this is the
+// pre-existing convention in the codebase (all "alert:", "intent:",
+// "secrets:", "router:" etc. calls are info-level).
+func levelForLine(s string) int64 {
+	switch {
+	case len(s) >= 6 && s[:6] == "error:":
+		return 3
+	case len(s) >= 5 && s[:5] == "warn:":
+		return 2
+	case len(s) >= 5 && s[:5] == "info:":
+		return 1
+	case len(s) >= 6 && s[:6] == "debug:":
+		return 0
+	}
+	return 1
+}
+
+// FormatLevel returns the canonical "level: " prefix for a level
+// value. Used by the leveled writer to normalise lines.
+func FormatLevel(level int64) string {
+	switch level {
+	case 0:
+		return "debug: "
+	case 1:
+		return ""
+	case 2:
+		return "warn: "
+	case 3:
+		return "error: "
+	}
+	return ""
+}
+
 // ---- Snapshot (DB persistence) ----
 
 // Snapshot is the JSON-serialisable view of every tunable. Used to
@@ -170,6 +300,10 @@ type Snapshot struct {
 	BreakerResetMs     int64   `json:"breaker_reset_timeout_ms"`
 	AlertCooldownSec   int64   `json:"alert_cooldown_sec"`
 	LogRetentionDays   int64   `json:"log_retention_days"`
+	StreamTimeoutSec   int64   `json:"stream_timeout_sec"`
+	StreamMaxBodyBytes int64   `json:"stream_max_body_bytes"`
+	MaxLogSubscribers  int64   `json:"max_log_subscribers"`
+	LogLevel           int64   `json:"log_level"`
 }
 
 // Snapshot returns the current effective values. Safe to call
@@ -182,13 +316,18 @@ func (d *Defaults) Snapshot() Snapshot {
 		BreakerResetMs:     d.BreakerResetTimeoutMs(),
 		AlertCooldownSec:   d.AlertCooldownSec(),
 		LogRetentionDays:   d.LogRetentionDays(),
+		StreamTimeoutSec:   d.StreamTimeoutSec(),
+		StreamMaxBodyBytes: d.StreamMaxBodyBytes(),
+		MaxLogSubscribers:  d.MaxLogSubscribers(),
+		LogLevel:           d.LogLevel(),
 	}
 }
 
 // Apply replaces every tunable with the values from s. Used at
 // startup to overlay DB-persisted changes on top of the YAML seed
 // values. Unset / zero fields in s are NOT applied — the caller is
-// responsible for ensuring s is well-formed.
+// responsible for ensuring s is well-formed (use ApplyJSON which
+// falls back to current values on parse failure).
 func (d *Defaults) Apply(s Snapshot) {
 	if s.CostStrategy != "" {
 		d.SetCostStrategy(s.CostStrategy)
@@ -208,6 +347,10 @@ func (d *Defaults) Apply(s Snapshot) {
 	if s.LogRetentionDays >= 0 {
 		d.SetLogRetentionDays(s.LogRetentionDays)
 	}
+	d.SetStreamTimeoutSec(s.StreamTimeoutSec)
+	d.SetStreamMaxBodyBytes(s.StreamMaxBodyBytes)
+	d.SetMaxLogSubscribers(s.MaxLogSubscribers)
+	d.SetLogLevel(s.LogLevel)
 }
 
 // Marshal returns the JSON representation of the current snapshot.

@@ -124,6 +124,116 @@ func TestLogRetentionDefaults(t *testing.T) {
 	}
 }
 
+func TestSnapshotRoundtrip(t *testing.T) {
+	d := New()
+	d.SetCostStrategy("balanced")
+	d.SetMarkupRatio(2.5)
+	d.SetBreakerMaxFailures(7)
+	d.SetBreakerResetTimeoutMs(45000)
+	d.SetAlertCooldownSec(600)
+	d.SetLogRetentionDays(14)
+	d.SetStreamTimeoutSec(120)
+	d.SetStreamMaxBodyBytes(16 * 1024 * 1024)
+	d.SetMaxLogSubscribers(64)
+	d.SetLogLevel(2)
+
+	raw, err := d.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var snap Snapshot
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	want := Snapshot{
+		CostStrategy:       "balanced",
+		MarkupRatio:        2.5,
+		BreakerMaxFailures: 7,
+		BreakerResetMs:     45000,
+		AlertCooldownSec:   600,
+		LogRetentionDays:   14,
+		StreamTimeoutSec:   120,
+		StreamMaxBodyBytes: 16 * 1024 * 1024,
+		MaxLogSubscribers:  64,
+		LogLevel:           2,
+	}
+	if snap != want {
+		t.Fatalf("snapshot roundtrip:\n got %+v\nwant %+v", snap, want)
+	}
+
+	// Apply to a fresh Defaults and confirm every field is restored.
+	d2 := New()
+	d2.Apply(snap)
+	if d2.CostStrategy() != "balanced" {
+		t.Fatalf("cost_strategy: got %q", d2.CostStrategy())
+	}
+	if got := d2.MarkupRatio(); got != 2.5 {
+		t.Fatalf("markup: %v", got)
+	}
+	if got := d2.BreakerMaxFailures(); got != 7 {
+		t.Fatalf("breaker max: %d", got)
+	}
+	if got := d2.BreakerResetTimeoutMs(); got != 45000 {
+		t.Fatalf("breaker reset: %d", got)
+	}
+	if got := d2.AlertCooldownSec(); got != 600 {
+		t.Fatalf("alert cooldown: %d", got)
+	}
+	if got := d2.LogRetentionDays(); got != 14 {
+		t.Fatalf("retention: %d", got)
+	}
+	if got := d2.StreamTimeoutSec(); got != 120 {
+		t.Fatalf("stream timeout: %d", got)
+	}
+	if got := d2.StreamMaxBodyBytes(); got != 16*1024*1024 {
+		t.Fatalf("stream max body: %d", got)
+	}
+	if got := d2.MaxLogSubscribers(); got != 64 {
+		t.Fatalf("max log subs: %d", got)
+	}
+	if got := d2.LogLevel(); got != 2 {
+		t.Fatalf("log level: %d", got)
+	}
+}
+
+func TestApplyIgnoresZero(t *testing.T) {
+	// Apply with all zero / empty values should not clobber
+	// fields where zero means "unset" (CostStrategy, MarkupRatio,
+	// BreakerMax, BreakerResetMs). For fields where 0 is a
+	// legitimate value (AlertCooldownSec=0 disables cooldown,
+	// LogRetentionDays=0 disables retention), zero IS applied.
+	d := New()
+	d.SetCostStrategy("balanced")
+	d.SetMarkupRatio(2.0)
+	d.SetBreakerMaxFailures(20)
+	d.SetBreakerResetTimeoutMs(45000)
+	d.SetAlertCooldownSec(600)
+	d.SetLogRetentionDays(14)
+
+	d.Apply(Snapshot{}) // all zero / empty
+
+	if got := d.CostStrategy(); got != "balanced" {
+		t.Fatalf("cost_strategy: %q (should be preserved)", got)
+	}
+	if got := d.MarkupRatio(); got != 2.0 {
+		t.Fatalf("markup: %v (should be preserved)", got)
+	}
+	if got := d.BreakerMaxFailures(); got != 20 {
+		t.Fatalf("breaker max: %d (should be preserved)", got)
+	}
+	if got := d.BreakerResetTimeoutMs(); got != 45000 {
+		t.Fatalf("breaker reset: %d (should be preserved)", got)
+	}
+	// 0 is a real value here, not a sentinel — applied.
+	if got := d.AlertCooldownSec(); got != 0 {
+		t.Fatalf("alert cooldown: %d (should be 0)", got)
+	}
+	if got := d.LogRetentionDays(); got != 0 {
+		t.Fatalf("retention: %d (should be 0)", got)
+	}
+}
+
 // TestRuntimeConcurrent exercises every field with N concurrent
 // readers and writers. The race detector (go test -race) is the
 // real assertion; this test just keeps the workload running long
@@ -164,94 +274,4 @@ func TestRuntimeConcurrent(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-}
-
-func TestSnapshotRoundtrip(t *testing.T) {
-	d := New()
-	d.SetCostStrategy("balanced")
-	d.SetMarkupRatio(2.5)
-	d.SetBreakerMaxFailures(7)
-	d.SetBreakerResetTimeoutMs(45000)
-	d.SetAlertCooldownSec(600)
-	d.SetLogRetentionDays(14)
-
-	raw, err := d.Marshal()
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var snap Snapshot
-	if err := json.Unmarshal(raw, &snap); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	want := Snapshot{
-		CostStrategy:       "balanced",
-		MarkupRatio:        2.5,
-		BreakerMaxFailures: 7,
-		BreakerResetMs:     45000,
-		AlertCooldownSec:   600,
-		LogRetentionDays:   14,
-	}
-	if snap != want {
-		t.Fatalf("snapshot roundtrip:\n got %+v\nwant %+v", snap, want)
-	}
-
-	// Apply to a fresh Defaults and confirm every field is restored.
-	d2 := New()
-	d2.Apply(snap)
-	if d2.CostStrategy() != "balanced" {
-		t.Fatalf("cost_strategy: got %q", d2.CostStrategy())
-	}
-	if got := d2.MarkupRatio(); got != 2.5 {
-		t.Fatalf("markup: %v", got)
-	}
-	if got := d2.BreakerMaxFailures(); got != 7 {
-		t.Fatalf("breaker max: %d", got)
-	}
-	if got := d2.BreakerResetTimeoutMs(); got != 45000 {
-		t.Fatalf("breaker reset: %d", got)
-	}
-	if got := d2.AlertCooldownSec(); got != 600 {
-		t.Fatalf("alert cooldown: %d", got)
-	}
-	if got := d2.LogRetentionDays(); got != 14 {
-		t.Fatalf("retention: %d", got)
-	}
-}
-
-func TestApplyIgnoresZero(t *testing.T) {
-	// Apply with all zero / empty values should not clobber
-	// fields where zero means "unset" (CostStrategy, MarkupRatio,
-	// BreakerMax, BreakerResetMs). For fields where 0 is a
-	// legitimate value (AlertCooldownSec=0 disables cooldown,
-	// LogRetentionDays=0 disables retention), zero IS applied.
-	d := New()
-	d.SetCostStrategy("balanced")
-	d.SetMarkupRatio(2.0)
-	d.SetBreakerMaxFailures(20)
-	d.SetBreakerResetTimeoutMs(45000)
-	d.SetAlertCooldownSec(600)
-	d.SetLogRetentionDays(14)
-
-	d.Apply(Snapshot{}) // all zero / empty
-
-	if got := d.CostStrategy(); got != "balanced" {
-		t.Fatalf("cost_strategy: %q (should be preserved)", got)
-	}
-	if got := d.MarkupRatio(); got != 2.0 {
-		t.Fatalf("markup: %v (should be preserved)", got)
-	}
-	if got := d.BreakerMaxFailures(); got != 20 {
-		t.Fatalf("breaker max: %d (should be preserved)", got)
-	}
-	if got := d.BreakerResetTimeoutMs(); got != 45000 {
-		t.Fatalf("breaker reset: %d (should be preserved)", got)
-	}
-	// 0 is a real value here, not a sentinel — applied.
-	if got := d.AlertCooldownSec(); got != 0 {
-		t.Fatalf("alert cooldown: %d (should be 0)", got)
-	}
-	if got := d.LogRetentionDays(); got != 0 {
-		t.Fatalf("retention: %d (should be 0)", got)
-	}
 }

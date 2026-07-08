@@ -12,6 +12,7 @@ import (
 	"errors"
 	"log"
 	"sync"
+	"sync/atomic"
 )
 
 // BufferSize is the per-subscriber channel capacity. Slow consumers
@@ -28,7 +29,7 @@ type Broker[T any] struct {
 	mu             sync.RWMutex
 	subs           map[chan T]struct{}
 	closed         bool
-	maxSubscribers int // 0 = unlimited
+	maxSubscribers int64 // 0 = unlimited; atomic via sync/atomic
 }
 
 // New returns an empty broker. A non-zero maxSubscribers caps the
@@ -36,14 +37,26 @@ type Broker[T any] struct {
 // ErrTooManySubscribers until existing subscribers Unsubscribe.
 // A value of 0 disables the cap.
 func New[T any](maxSubscribers int) *Broker[T] {
-	return &Broker[T]{
-		subs:           make(map[chan T]struct{}),
-		maxSubscribers: maxSubscribers,
-	}
+	b := &Broker[T]{subs: make(map[chan T]struct{})}
+	b.SetMaxSubscribers(int64(maxSubscribers))
+	return b
 }
 
 // MaxSubscribers returns the configured hard cap (0 = unlimited).
-func (b *Broker[T]) MaxSubscribers() int { return b.maxSubscribers }
+func (b *Broker[T]) MaxSubscribers() int {
+	return int(b.maxSubscribers)
+}
+
+// SetMaxSubscribers replaces the cap without disrupting in-flight
+// subscribers. Callers in the middle of Subscribe() observe the
+// new value via atomic load on the next entry. A new value of 0
+// disables the cap; a value < 0 is treated as 0.
+func (b *Broker[T]) SetMaxSubscribers(n int64) {
+	if n < 0 {
+		n = 0
+	}
+	atomic.StoreInt64(&b.maxSubscribers, n)
+}
 
 // Subscribe registers a new consumer and returns its channel plus
 // an unsubscribe function. The channel is closed when the broker
@@ -60,10 +73,11 @@ func (b *Broker[T]) Subscribe() (<-chan T, func(), error) {
 		close(ch)
 		return ch, func() {}, nil
 	}
-	if b.maxSubscribers > 0 && len(b.subs) >= b.maxSubscribers {
+	cap := atomic.LoadInt64(&b.maxSubscribers)
+	if cap > 0 && int64(len(b.subs)) >= cap {
 		cur := len(b.subs)
 		b.mu.Unlock()
-		log.Printf("warn: broker subscriber cap reached (%d/%d)", cur, b.maxSubscribers)
+		log.Printf("warn: broker subscriber cap reached (%d/%d)", cur, cap)
 		return nil, func() {}, ErrTooManySubscribers
 	}
 	ch := make(chan T, BufferSize)
@@ -71,7 +85,7 @@ func (b *Broker[T]) Subscribe() (<-chan T, func(), error) {
 	count := len(b.subs)
 	b.mu.Unlock()
 	if count > 1 && count%64 == 0 {
-		log.Printf("info: broker has %d live subscribers (cap=%d)", count, b.maxSubscribers)
+		log.Printf("info: broker has %d live subscribers (cap=%d)", count, cap)
 	}
 	return ch, func() { b.unsubscribe(ch) }, nil
 }

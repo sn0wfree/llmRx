@@ -93,17 +93,6 @@ func (h *Handler) SetMarkup(m float64) { h.rt.SetMarkupRatio(m) }
 // per-protocol clients.
 func (h *Handler) SetProvider(p provider.Provider) { h.provider = p }
 
-// SetStreamCaps overrides the server stream timeout (seconds) and
-// per-stream body cap (bytes) without touching the on-disk config.
-// Zero values are treated as "use the configured default".
-func (h *Handler) SetStreamCaps(timeoutSec, maxBodyBytes int) {
-	if h.cfg == nil {
-		h.cfg = &config.Config{}
-	}
-	h.cfg.Server.StreamTimeoutSec = timeoutSec
-	h.cfg.Server.StreamMaxBodyBytes = maxBodyBytes
-}
-
 // SetProviders replaces the per-protocol provider map. Used by
 // tests to inject mocks for every protocol. Pass a nil-valued
 // entry to skip a protocol (fall through to the default).
@@ -528,29 +517,30 @@ done:
 		time.Since(start).Milliseconds(), http.StatusOK, false, clientIP(r))
 }
 
-// streamTimeout returns the per-stream wall-clock cap. Defaults to
-// 5 minutes when the server config is unset or zero.
+// streamTimeout returns the per-stream wall-clock cap. Reads the
+// current value from runtime.Defaults so admin updates take effect
+// without a restart. Defaults to 5 minutes when rt is unset or zero.
 func (h *Handler) streamTimeout() time.Duration {
-	if h.cfg == nil {
+	if h.rt == nil {
 		return 5 * time.Minute
 	}
-	if h.cfg.Server.StreamTimeoutSec <= 0 {
-		return 5 * time.Minute
+	if sec := h.rt.StreamTimeoutSec(); sec > 0 {
+		return time.Duration(sec) * time.Second
 	}
-	return time.Duration(h.cfg.Server.StreamTimeoutSec) * time.Second
+	return 5 * time.Minute
 }
 
 // streamMaxBodyBytes returns the soft cap on bytes the gateway will
-// emit to the streaming client. 0 = unlimited. The default of 32 MiB
-// guards against malformed upstreams that emit an unbounded stream.
+// emit to the streaming client. 0 = unlimited. Reads from rt so
+// admin updates are live.
 func (h *Handler) streamMaxBodyBytes() int {
-	if h.cfg == nil {
+	if h.rt == nil {
 		return 32 << 20
 	}
-	if h.cfg.Server.StreamMaxBodyBytes <= 0 {
-		return 32 << 20
+	if n := h.rt.StreamMaxBodyBytes(); n >= 0 {
+		return int(n)
 	}
-	return h.cfg.Server.StreamMaxBodyBytes
+	return 32 << 20
 }
 
 // lastUserText returns the last user-role message in the conversation

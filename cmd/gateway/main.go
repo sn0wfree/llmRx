@@ -102,6 +102,9 @@ func main() {
 	rt.SetBreakerResetTimeoutMs(int64(cfg.Server.BreakerResetMs))
 	rt.SetAlertCooldownSec(int64(cfg.Server.AlertCooldownSec))
 	rt.SetLogRetentionDays(int64(cfg.Server.LogRetentionDays))
+	rt.SetStreamTimeoutSec(int64(cfg.Server.StreamTimeoutSec))
+	rt.SetStreamMaxBodyBytes(int64(cfg.Server.StreamMaxBodyBytes))
+	rt.SetMaxLogSubscribers(int64(cfg.Server.MaxLogSubscribers))
 	if s := cfg.Strategy.CostStrategy; s != "" {
 		// B4: cost strategy must seed BOTH the router engine and
 		// the runtime snapshot so the API/UI return the same
@@ -125,12 +128,24 @@ func main() {
 			log.Printf("runtime: applied persisted settings on top of YAML seeds")
 		}
 	}
+	// 3) Propagate values to subsystems that need them at startup:
+	//    the SSE broker must use the final cap (YAML or DB), and
+	//    the standard log package must be routed through the
+	//    level filter so admin log_level changes take effect.
+	logBroker.SetMaxSubscribers(rt.MaxLogSubscribers())
+	runtime.InstallLogFilter(rt, os.Stderr)
+	log.Printf("runtime: log level = %s", runtime.LogLevelName(rt.LogLevel()))
 
 	alertMgr := alert.NewManager(st, []alert.Channel{
 		channels.NewBuiltin(),
 		channels.NewWebhook(),
 	}, alert.Config{
+		// B2: DefaultCooldown is the fallback when defaults is
+		// nil. With Defaults set, the manager reads the live
+		// AlertCooldownSec() on every evaluation so admin updates
+		// take effect without a restart.
 		DefaultCooldown: time.Duration(cfg.Server.AlertCooldownSec) * time.Second,
+		Defaults:        rt,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -172,11 +187,25 @@ func cleanupLoop(ctx context.Context, st store.Store) {
 // logRetentionLoop deletes log rows older than retentionDays once a
 // day. retentionDays <= 0 disables the loop. Reads the current
 // retention window from rt on every tick so admin updates take
-// effect without a restart.
+// effect without a restart; runs once immediately on startup so
+// admin changes don't have to wait 24h to see effect.
 func logRetentionLoop(ctx context.Context, st store.Store, rt *runtime.Defaults) {
 	if rt.LogRetentionDays() <= 0 {
 		return
 	}
+	sweep := func() {
+		retentionDays := int(rt.LogRetentionDays())
+		if retentionDays <= 0 {
+			return
+		}
+		cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour).Unix()
+		if n, err := st.DeleteLogsBefore(cutoff); err != nil {
+			log.Printf("log retention: %v", err)
+		} else if n > 0 {
+			log.Printf("log retention: deleted %d rows older than %d days", n, retentionDays)
+		}
+	}
+	sweep() // B3: run on startup so admin changes don't need 24h wait
 	t := time.NewTicker(24 * time.Hour)
 	defer t.Stop()
 	for {
@@ -184,16 +213,7 @@ func logRetentionLoop(ctx context.Context, st store.Store, rt *runtime.Defaults)
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			retentionDays := int(rt.LogRetentionDays())
-			if retentionDays <= 0 {
-				return
-			}
-			cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour).Unix()
-			if n, err := st.DeleteLogsBefore(cutoff); err != nil {
-				log.Printf("log retention: %v", err)
-			} else if n > 0 {
-				log.Printf("log retention: deleted %d rows older than %d days", n, retentionDays)
-			}
+			sweep()
 		}
 	}
 }

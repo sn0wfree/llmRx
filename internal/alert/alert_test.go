@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
 	"github.com/sn0wfree/llmRx/internal/testhelper"
 )
@@ -242,5 +243,59 @@ func TestEvaluateP95(t *testing.T) {
 	}
 	if !fired {
 		t.Fatal("expected fire (worst 5% avg = 10000ms >= 5000)")
+	}
+}
+
+// TestManagerCooldownFollowsRuntimeDefaults covers B2: when
+// Config.Defaults is wired, the manager reads AlertCooldownSec() on
+// every evaluate() call. Mutating rt between calls changes the
+// effective cooldown without restarting the manager.
+func TestManagerCooldownFollowsRuntimeDefaults(t *testing.T) {
+	st := newStore(t)
+	rt := runtime.New()
+	rt.SetAlertCooldownSec(60) // initial: 1 minute
+
+	a := &model.Alert{
+		Name: "default-cooldown", Type: model.AlertErrorRate, Threshold: 0,
+		WindowSec: 60, CooldownSec: 0, // 0 = use default
+		Enabled:   true,
+	}
+	if err := st.CreateAlert(a); err != nil {
+		t.Fatalf("create alert: %v", err)
+	}
+
+	now := time.Now()
+	for i := 0; i < 10; i++ {
+		_ = st.CreateLog(&model.Log{Model: "m", StatusCode: 500, CreatedAt: now.Add(-time.Duration(i) * time.Second)})
+	}
+
+	m := NewManager(st, []Channel{&recordingChannel{name: "builtin"}}, Config{
+		Defaults: rt,
+	})
+	if err := m.Reload(); err != nil {
+		t.Fatal(err)
+	}
+
+	// First eval: fires and records LastFiredAt = now.
+	m.evaluate(context.Background())
+	evs, _ := st.GetAlertEvents(10)
+	if len(evs) != 1 {
+		t.Fatalf("first eval: expected 1 event, got %d", len(evs))
+	}
+
+	// Immediate re-eval: cooldown=60s gates the second fire.
+	m.evaluate(context.Background())
+	evs, _ = st.GetAlertEvents(10)
+	if len(evs) != 1 {
+		t.Fatalf("within 60s cooldown: expected still 1, got %d", len(evs))
+	}
+
+	// Bypass the cooldown by zeroing it via the runtime. The next
+	// eval must observe the new value (proving B2 fix).
+	rt.SetAlertCooldownSec(0)
+	m.evaluate(context.Background())
+	evs, _ = st.GetAlertEvents(10)
+	if len(evs) != 2 {
+		t.Fatalf("after rt.SetAlertCooldownSec(0): expected 2 events, got %d", len(evs))
 	}
 }

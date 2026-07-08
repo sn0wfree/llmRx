@@ -1031,17 +1031,25 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 		"alert_cooldown_sec":       h.rt.AlertCooldownSec(),
 		"log_retention_days":       h.rt.LogRetentionDays(),
 		"markup_ratio":             h.rt.MarkupRatio(),
+		"stream_timeout_sec":       h.rt.StreamTimeoutSec(),
+		"stream_max_body_bytes":    h.rt.StreamMaxBodyBytes(),
+		"max_log_subscribers":      h.rt.MaxLogSubscribers(),
+		"log_level":                h.rt.LogLevel(),
 	})
 }
 
 func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		CostStrategy         *string  `json:"cost_strategy,omitempty"`
-		BreakerMaxFailures   *int64   `json:"breaker_max_failures,omitempty"`
-		BreakerResetTimeoutMs *int64  `json:"breaker_reset_timeout_ms,omitempty"`
-		AlertCooldownSec     *int64   `json:"alert_cooldown_sec,omitempty"`
-		LogRetentionDays     *int64   `json:"log_retention_days,omitempty"`
-		MarkupRatio          *float64 `json:"markup_ratio,omitempty"`
+		CostStrategy          *string  `json:"cost_strategy,omitempty"`
+		BreakerMaxFailures    *int64   `json:"breaker_max_failures,omitempty"`
+		BreakerResetTimeoutMs *int64   `json:"breaker_reset_timeout_ms,omitempty"`
+		AlertCooldownSec      *int64   `json:"alert_cooldown_sec,omitempty"`
+		LogRetentionDays      *int64   `json:"log_retention_days,omitempty"`
+		MarkupRatio           *float64 `json:"markup_ratio,omitempty"`
+		StreamTimeoutSec      *int64   `json:"stream_timeout_sec,omitempty"`
+		StreamMaxBodyBytes    *int64   `json:"stream_max_body_bytes,omitempty"`
+		MaxLogSubscribers     *int64   `json:"max_log_subscribers,omitempty"`
+		LogLevel              *int64   `json:"log_level,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
@@ -1094,6 +1102,43 @@ func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.rt.SetMarkupRatio(*body.MarkupRatio)
+	}
+	if body.StreamTimeoutSec != nil {
+		if *body.StreamTimeoutSec < 0 || *body.StreamTimeoutSec > 3600 {
+			writeErr(w, http.StatusBadRequest, "stream_timeout_sec must be 0..3600")
+			return
+		}
+		h.rt.SetStreamTimeoutSec(*body.StreamTimeoutSec)
+	}
+	if body.StreamMaxBodyBytes != nil {
+		if *body.StreamMaxBodyBytes < 0 || *body.StreamMaxBodyBytes > (1<<30) {
+			writeErr(w, http.StatusBadRequest, "stream_max_body_bytes must be 0..1073741824")
+			return
+		}
+		h.rt.SetStreamMaxBodyBytes(*body.StreamMaxBodyBytes)
+	}
+	if body.MaxLogSubscribers != nil {
+		if *body.MaxLogSubscribers < 0 || *body.MaxLogSubscribers > 100000 {
+			writeErr(w, http.StatusBadRequest, "max_log_subscribers must be 0..100000")
+			return
+		}
+		h.rt.SetMaxLogSubscribers(*body.MaxLogSubscribers)
+		// Live-reload: push the new cap into the broker so SSE
+		// subscription requests see it on the next call.
+		if h.logBroker != nil {
+			h.logBroker.SetMaxSubscribers(*body.MaxLogSubscribers)
+		}
+	}
+	if body.LogLevel != nil {
+		if *body.LogLevel < 0 || *body.LogLevel > 3 {
+			writeErr(w, http.StatusBadRequest, "log_level must be 0..3 (debug|info|warn|error)")
+			return
+		}
+		h.rt.SetLogLevel(*body.LogLevel)
+		// Hook for actual log filtering — see PR #2 commit 5
+		// (log_level runtime filter). For now the value is
+		// persisted; integration with the logger is the next
+		// step.
 	}
 	// Persist the resulting snapshot to the runtime_settings table
 	// so the changes survive restarts. Failure to persist is
