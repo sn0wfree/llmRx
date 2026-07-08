@@ -64,6 +64,30 @@ func (h *Handler) Routes() http.Handler {
 		r.Delete("/channels/{id}", h.ChannelDelete)
 		r.Post("/channels/{id}/keys", h.ChannelKeyCreate)
 		r.Delete("/channels/{id}/keys/{keyId}", h.ChannelKeyDelete)
+
+		// Tokens
+		r.Get("/tokens", h.TokensPage)
+		r.Get("/tokens/partial/list", h.TokensListPartial)
+		r.Get("/tokens/new", h.TokenNewForm)
+		r.Get("/tokens/{id}/edit", h.TokenEditForm)
+		r.Post("/tokens", h.TokenCreate)
+		r.Post("/tokens/{id}", h.TokenAction)
+		r.Delete("/tokens/{id}", h.TokenDelete)
+
+		// Plans
+		r.Get("/plans", h.PlansPage)
+		r.Get("/plans/new", h.PlanNewForm)
+		r.Get("/plans/{id}/edit", h.PlanEditForm)
+		r.Post("/plans", h.PlanCreate)
+		r.Post("/plans/{id}", h.PlanAction)
+
+		// Users
+		r.Get("/users", h.UsersPage)
+		r.Get("/users/new", h.UserNewForm)
+		r.Get("/users/{id}/password", h.UserPasswordForm)
+		r.Post("/users", h.UserCreate)
+		r.Post("/users/{id}/password", h.UserPasswordSubmit)
+		r.Delete("/users/{id}", h.UserDelete)
 	})
 
 	return r
