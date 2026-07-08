@@ -91,6 +91,15 @@ type Store interface {
 	ReencryptAllKeys(oldMgr, newMgr *secrets.Manager) (int, error)
 	SetSecrets(m *secrets.Manager)
 	RotateMasterKey(newKeyHex string) (int, error)
+
+	// BYOK (Phase 1.5 reserved — see docs/BYOK.md). Implementations
+	// should return ErrNotImplemented until the BYOK feature ships.
+	// The interface is in place so the router and admin pages can
+	// reference BYOK paths without future refactoring.
+	CreateBYOKChannel(ctx context.Context, ch *model.BYOKChannel) (int64, error)
+	ListBYOKChannels(ctx context.Context) ([]*model.BYOKChannel, error)
+	GetBYOKChannel(ctx context.Context, id int64) (*model.BYOKChannel, error)
+	DeleteBYOKChannel(ctx context.Context, id int64) error
 }
 
 type LogStats struct {

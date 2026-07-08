@@ -20,6 +20,10 @@ import (
 var (
 	ErrNotFound      = errors.New("not found")
 	ErrAlreadyExists = errors.New("already exists")
+	// errNotImplemented is returned by Phase 1.5 reserved BYOK
+	// store methods until the feature ships. Keeping it unexported
+	// so callers don't depend on the wire format.
+	errNotImplemented = errors.New("not implemented (Phase 1.5 reserved)")
 )
 
 type SQLite struct {
@@ -1271,4 +1275,27 @@ func (s *SQLite) SetRuntimeSettings(payload []byte) error {
 		ON CONFLICT(id) DO UPDATE SET settings_json = excluded.settings_json, updated_at = excluded.updated_at
 	`, string(payload), now)
 	return err
+}
+
+// ---------- BYOK (Phase 1.5 reserved) ----------
+//
+// The four methods below are interface stubs. They return
+// ErrNotImplemented until the BYOK feature ships, keeping the
+// Store contract stable so router and admin code can reference
+// the BYOK path without future refactoring. See docs/BYOK.md.
+
+func (s *SQLite) CreateBYOKChannel(ctx context.Context, ch *model.BYOKChannel) (int64, error) {
+	return 0, errNotImplemented
+}
+
+func (s *SQLite) ListBYOKChannels(ctx context.Context) ([]*model.BYOKChannel, error) {
+	return nil, errNotImplemented
+}
+
+func (s *SQLite) GetBYOKChannel(ctx context.Context, id int64) (*model.BYOKChannel, error) {
+	return nil, errNotImplemented
+}
+
+func (s *SQLite) DeleteBYOKChannel(ctx context.Context, id int64) error {
+	return errNotImplemented
 }

@@ -7,6 +7,11 @@ database:
   driver: sqlite
   dsn: data/llmrx.db
 
+# BYOK (Bring Your Own Key) is reserved for future use. Must
+# remain false until the Phase 1.5 feature ships.
+byok:
+  enabled: false
+
 # Secrets: at-rest encryption of channel API keys (AES-256-GCM).
 # In production, set LLMRX_KEY_MASTER in the environment (32-byte
 # hex, generate with `openssl rand -hex 32`). For local dev only,

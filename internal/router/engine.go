@@ -13,13 +13,14 @@ import (
 )
 
 type RouterEngine struct {
-	static   *StaticRouter
-	breaker  *CircuitBreaker
-	cost     *CostRouter
-	thompson *thompson.Sampler
-	intent   intent.Classifier
-	pool     *pool.ChannelPool
-	store    store.Store
+	static         *StaticRouter
+	breaker        *CircuitBreaker
+	cost           *CostRouter
+	thompson       *thompson.Sampler
+	intent         intent.Classifier
+	pool           *pool.ChannelPool
+	store          store.Store
+	extraChannels  []func() []*model.Channel // BYOK hook (Phase 1.5 reserved)
 }
 
 type RouteResult struct {
@@ -77,6 +78,18 @@ func (e *RouterEngine) SetStrategy(s model.CostStrategy) {
 	e.cost.SetStrategy(s)
 }
 
+// RegisterExtraChannels installs a callback that returns additional
+// channels to consider during L1. Used by the (Phase 1.5 reserved)
+// BYOK path to inject consumer-supplied upstream keys into the
+// routing pool without writing them to the main channels table.
+// nil callbacks are ignored. Safe to call before engine start.
+func (e *RouterEngine) RegisterExtraChannels(src func() []*model.Channel) {
+	if src == nil {
+		return
+	}
+	e.extraChannels = append(e.extraChannels, src)
+}
+
 // CostStrategy returns the currently active strategy.
 func (e *RouterEngine) CostStrategy() model.CostStrategy {
 	return e.cost.Strategy()
@@ -102,6 +115,11 @@ func (e *RouterEngine) RouteWith(ctx context.Context, modelName string, opts Rou
 
 	candidates := e.static.Match(modelName)
 	logParts = append(logParts, "L1(static)")
+	// Hook for Phase 1.5 BYOK: extra channel sources. Currently
+	// no callbacks are registered so this is a no-op.
+	for _, src := range e.extraChannels {
+		candidates = append(candidates, src()...)
+	}
 	if len(candidates) == 0 {
 		return nil, ErrNoChannel
 	}

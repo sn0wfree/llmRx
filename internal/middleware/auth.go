@@ -86,10 +86,26 @@ func (t TokenInfo) HasIPAccess(ip string) bool {
 // ok=false yields a 403 response.
 type TokenLookup func(key string) (TokenInfo, bool)
 
+// UnknownTokenHook is invoked when a request presents a bearer
+// token that the TokenLookup didn't recognise. The Phase 1.5 BYOK
+// path uses this hook to (a) detect an upstream-provider key by
+// prefix, (b) verify it via the upstream's test endpoint, (c)
+// auto-create a (BYOK) channel row, and (d) proceed with the
+// request using the consumer's key. When the hook is nil the
+// default 403 response is returned. The hook must be safe for
+// concurrent use.
+type UnknownTokenHook func(w http.ResponseWriter, r *http.Request, rawKey string)
+
 // Token returns a middleware that resolves tokens through the given
 // lookup function (typically backed by an in-memory cache plus the
 // store on miss).
 func Token(lookup TokenLookup) func(http.Handler) http.Handler {
+	return TokenWithOptions(lookup, nil)
+}
+
+// TokenWithOptions is the same as Token but lets the caller install
+// an UnknownTokenHook for future BYOK use. Phase 1.5 reserved.
+func TokenWithOptions(lookup TokenLookup, onUnknown UnknownTokenHook) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			auth := r.Header.Get("Authorization")
@@ -106,6 +122,10 @@ func Token(lookup TokenLookup) func(http.Handler) http.Handler {
 
 			info, ok := lookup(token)
 			if !ok {
+				if onUnknown != nil {
+					onUnknown(w, r, token)
+					return
+				}
 				writeAuthError(w, http.StatusForbidden, "invalid token", "invalid_token")
 				return
 			}
@@ -128,7 +148,15 @@ type LimitEnforcer interface {
 // WithLimits wraps Token() with RPM/TPM enforcement. Enforcer may be
 // nil (limits ignored).
 func WithLimits(lookup TokenLookup, enforcer LimitEnforcer) func(http.Handler) http.Handler {
-	base := Token(lookup)
+	return WithLimitsAndOptions(lookup, enforcer, nil)
+}
+
+// WithLimitsAndOptions is the same as WithLimits but also accepts
+// an UnknownTokenHook for Phase 1.5 BYOK. The hook is invoked when
+// the token is not in the cache; the default 403 path is taken if
+// hook is nil.
+func WithLimitsAndOptions(lookup TokenLookup, enforcer LimitEnforcer, onUnknown UnknownTokenHook) func(http.Handler) http.Handler {
+	base := TokenWithOptions(lookup, onUnknown)
 	if enforcer == nil {
 		return base
 	}
