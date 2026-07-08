@@ -120,8 +120,9 @@ func escapeHTML(s string) string {
 // toward a unified admin API. Currently the bridge only exposes
 // store access; future phases can grow it with typed wrappers.
 type webAPIBridge struct {
-	store    store.Store
-	reloader func() error
+	store     store.Store
+	reloader  func() error
+	logBroker func() interface{} // not used yet
 }
 
 // WebAPIBridge is the exported alias used by server.go to construct

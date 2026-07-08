@@ -25,19 +25,21 @@ import (
 )
 
 type Server struct {
-	cfg     *config.Config
-	keyFile string
-	router  *router.RouterEngine
-	pool    *pool.ChannelPool
-	store   store.Store
-	tokens  *tokencache.Cache
-	admin   *admin.Handler
-	engine  *chi.Mux
+	cfg        *config.Config
+	cfgPath    string
+	keyFile    string
+	router     *router.RouterEngine
+	pool       *pool.ChannelPool
+	store      store.Store
+	tokens     *tokencache.Cache
+	admin      *admin.Handler
+	engine     *chi.Mux
 }
 
-func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults, keyFile string) *Server {
+func New(cfg *config.Config, cfgPath string, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults, keyFile string) *Server {
 	s := &Server{
 		cfg:     cfg,
+		cfgPath: cfgPath,
 		keyFile: keyFile,
 		router:  eng,
 		pool:    cp,
@@ -87,7 +89,7 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 		}
 		return s.pool.LoadFromStore(s.store)
 	})
-	webUI, err := webui.New(s.store, webAPIBridge)
+	webUI, err := webui.New(s.store, webAPIBridge, s.cfgPath)
 	if err != nil {
 		log.Fatalf("webui: %v", err)
 	}
