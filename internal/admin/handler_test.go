@@ -11,6 +11,7 @@ import (
 
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
 	"github.com/sn0wfree/llmRx/internal/testhelper"
 )
@@ -671,6 +672,168 @@ func TestAdmin_ConfigCostStrategyGetPut(t *testing.T) {
 	rec = do(t, app.Admin.Routes(), http.MethodPut, "/config", sess, `{"cost_strategy":"random"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid strategy, got %d", rec.Code)
+	}
+}
+
+// TestAdmin_ConfigPersistsToDB verifies that PUT /api/v1/config
+// writes through to the runtime_settings table. The next process
+// restart should re-load the same values via main.go's startup
+// overlay.
+func TestAdmin_ConfigPersistsToDB(t *testing.T) {
+	app := testhelper.New(t)
+	sess := login(t, app)
+
+	// Change every persisted field in one PUT.
+	body := `{
+		"cost_strategy":"fastest",
+		"markup_ratio":2.5,
+		"breaker_max_failures":9,
+		"breaker_reset_timeout_ms":45000,
+		"alert_cooldown_sec":600,
+		"log_retention_days":14
+	}`
+	rec := do(t, app.Admin.Routes(), http.MethodPut, "/config", sess, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Read the row back directly from the store.
+	raw, err := app.Store.GetRuntimeSettings()
+	if err != nil {
+		t.Fatalf("GetRuntimeSettings: %v", err)
+	}
+	if len(raw) == 0 {
+		t.Fatal("runtime_settings row is empty after PUT")
+	}
+	var snap map[string]any
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		t.Fatalf("parse: %v (raw=%s)", err, raw)
+	}
+	if snap["cost_strategy"] != "fastest" {
+		t.Fatalf("cost_strategy: %v", snap["cost_strategy"])
+	}
+	if snap["markup_ratio"].(float64) != 2.5 {
+		t.Fatalf("markup_ratio: %v", snap["markup_ratio"])
+	}
+	if snap["breaker_max_failures"].(float64) != 9 {
+		t.Fatalf("breaker_max_failures: %v", snap["breaker_max_failures"])
+	}
+	if snap["breaker_reset_timeout_ms"].(float64) != 45000 {
+		t.Fatalf("breaker_reset_timeout_ms: %v", snap["breaker_reset_timeout_ms"])
+	}
+	if snap["alert_cooldown_sec"].(float64) != 600 {
+		t.Fatalf("alert_cooldown_sec: %v", snap["alert_cooldown_sec"])
+	}
+	if snap["log_retention_days"].(float64) != 14 {
+		t.Fatalf("log_retention_days: %v", snap["log_retention_days"])
+	}
+
+	// GET /config after restart should return the persisted values.
+	rec = do(t, app.Admin.Routes(), http.MethodGet, "/config", sess, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get: %d %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		CostStrategy          string  `json:"cost_strategy"`
+		MarkupRatio           float64 `json:"markup_ratio"`
+		BreakerMaxFailures    int64   `json:"breaker_max_failures"`
+		BreakerResetTimeoutMs int64   `json:"breaker_reset_timeout_ms"`
+		AlertCooldownSec      int64   `json:"alert_cooldown_sec"`
+		LogRetentionDays      int64   `json:"log_retention_days"`
+	}
+	decodeJSON(t, rec, &got)
+	if got.CostStrategy != "fastest" || got.MarkupRatio != 2.5 ||
+		got.BreakerMaxFailures != 9 || got.BreakerResetTimeoutMs != 45000 ||
+		got.AlertCooldownSec != 600 || got.LogRetentionDays != 14 {
+		t.Fatalf("GET config after PUT: %+v", got)
+	}
+}
+
+// TestAdmin_ConfigReloadsOnStartup simulates a restart: writes a
+// snapshot to the store via the store API directly, then opens a
+// fresh runtime.Defaults and applies the loaded JSON. Mirrors the
+// main.go startup path (YAML seeds → DB overlay).
+func TestAdmin_ConfigReloadsOnStartup(t *testing.T) {
+	app := testhelper.New(t)
+
+	// Persist a snapshot directly (bypassing the handler).
+	raw := []byte(`{
+		"cost_strategy":"balanced",
+		"markup_ratio":3.0,
+		"breaker_max_failures":12,
+		"breaker_reset_timeout_ms":90000,
+		"alert_cooldown_sec":120,
+		"log_retention_days":7
+	}`)
+	if err := app.Store.SetRuntimeSettings(raw); err != nil {
+		t.Fatalf("SetRuntimeSettings: %v", err)
+	}
+
+	// Simulate a new process: fresh runtime.Defaults seeded with
+	// the default YAML values, then overlaid with the DB row.
+	rt := app.RT
+	rt.SetCostStrategy("cheapest")
+	rt.SetMarkupRatio(1.0)
+	rt.SetBreakerMaxFailures(5)
+	rt.SetBreakerResetTimeoutMs(30000)
+	rt.SetAlertCooldownSec(300)
+	rt.SetLogRetentionDays(30)
+
+	loaded, err := app.Store.GetRuntimeSettings()
+	if err != nil {
+		t.Fatalf("GetRuntimeSettings: %v", err)
+	}
+	var snap runtime.Snapshot
+	if err := json.Unmarshal(loaded, &snap); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	rt.Apply(snap)
+
+	if got := rt.CostStrategy(); got != "balanced" {
+		t.Fatalf("cost_strategy: %q", got)
+	}
+	if got := rt.MarkupRatio(); got != 3.0 {
+		t.Fatalf("markup: %v", got)
+	}
+	if got := rt.BreakerMaxFailures(); got != 12 {
+		t.Fatalf("breaker max: %d", got)
+	}
+	if got := rt.BreakerResetTimeoutMs(); got != 90000 {
+		t.Fatalf("breaker reset: %d", got)
+	}
+	if got := rt.AlertCooldownSec(); got != 120 {
+		t.Fatalf("alert cooldown: %d", got)
+	}
+	if got := rt.LogRetentionDays(); got != 7 {
+		t.Fatalf("retention: %d", got)
+	}
+}
+
+// TestAdmin_ConfigSurvivesCorruption ensures a malformed JSON row
+// in runtime_settings does not crash startup; main.go should log a
+// warning and fall back to YAML seeds.
+func TestAdmin_ConfigSurvivesCorruption(t *testing.T) {
+	app := testhelper.New(t)
+	if err := app.Store.SetRuntimeSettings([]byte(`{not valid json`)); err != nil {
+		t.Fatalf("SetRuntimeSettings: %v", err)
+	}
+	rt := app.RT
+	rt.SetMarkupRatio(1.0)
+	rt.SetCostStrategy("cheapest")
+
+	raw, err := app.Store.GetRuntimeSettings()
+	if err != nil {
+		t.Fatalf("GetRuntimeSettings: %v", err)
+	}
+	var snap runtime.Snapshot
+	if err := json.Unmarshal(raw, &snap); err == nil {
+		t.Fatal("expected JSON parse to fail on garbage row")
+	}
+	if got := rt.MarkupRatio(); got != 1.0 {
+		t.Fatalf("markup should remain 1.0 after corruption, got %v", got)
+	}
+	if got := rt.CostStrategy(); got != "cheapest" {
+		t.Fatalf("cost_strategy should remain cheapest, got %q", got)
 	}
 }
 

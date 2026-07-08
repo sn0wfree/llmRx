@@ -170,6 +170,11 @@ func (s *SQLite) migrate() error {
 			FOREIGN KEY (alert_id) REFERENCES alerts(id) ON DELETE CASCADE
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_alert_events_fired ON alert_events(fired_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS runtime_settings (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			settings_json TEXT NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
@@ -1138,4 +1143,31 @@ func (s *SQLite) RawQueryRow(query string, args ...any) *sql.Row {
 
 func (s *SQLite) RawQuery(query string, args ...any) (*sql.Rows, error) {
 	return s.db.Query(query, args...)
+}
+
+// ---------------- runtime settings ----------------
+
+// GetRuntimeSettings returns the persisted JSON snapshot written by
+// SetRuntimeSettings, or (nil, nil) when no row exists yet.
+func (s *SQLite) GetRuntimeSettings() ([]byte, error) {
+	var raw []byte
+	err := s.db.QueryRow(`SELECT settings_json FROM runtime_settings WHERE id = 1`).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+// SetRuntimeSettings upserts the single row. payload must be valid
+// JSON; callers should validate before persisting.
+func (s *SQLite) SetRuntimeSettings(payload []byte) error {
+	now := time.Now().Unix()
+	_, err := s.db.Exec(`
+		INSERT INTO runtime_settings(id, settings_json, updated_at) VALUES (1, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET settings_json = excluded.settings_json, updated_at = excluded.updated_at
+	`, string(payload), now)
+	return err
 }

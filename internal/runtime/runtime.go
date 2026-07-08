@@ -8,6 +8,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"math"
 	"sync/atomic"
 )
@@ -152,4 +153,66 @@ func (d *Defaults) SetLogRetentionDays(days int64) {
 		days = 3650
 	}
 	atomic.StoreInt64(&d.logRetentionDays, days)
+}
+
+// ---- Snapshot (DB persistence) ----
+
+// Snapshot is the JSON-serialisable view of every tunable. Used to
+// persist admin changes across restarts. The JSON field names are
+// the authoritative API contract; do not rename without bumping the
+// admin API version. The Go field name and the JSON name may
+// differ (e.g. BreakerResetMs → "breaker_reset_timeout_ms") for
+// legacy compatibility.
+type Snapshot struct {
+	CostStrategy       string  `json:"cost_strategy"`
+	MarkupRatio        float64 `json:"markup_ratio"`
+	BreakerMaxFailures int64   `json:"breaker_max_failures"`
+	BreakerResetMs     int64   `json:"breaker_reset_timeout_ms"`
+	AlertCooldownSec   int64   `json:"alert_cooldown_sec"`
+	LogRetentionDays   int64   `json:"log_retention_days"`
+}
+
+// Snapshot returns the current effective values. Safe to call
+// concurrently; every read is atomic.
+func (d *Defaults) Snapshot() Snapshot {
+	return Snapshot{
+		CostStrategy:       d.CostStrategy(),
+		MarkupRatio:        d.MarkupRatio(),
+		BreakerMaxFailures: d.BreakerMaxFailures(),
+		BreakerResetMs:     d.BreakerResetTimeoutMs(),
+		AlertCooldownSec:   d.AlertCooldownSec(),
+		LogRetentionDays:   d.LogRetentionDays(),
+	}
+}
+
+// Apply replaces every tunable with the values from s. Used at
+// startup to overlay DB-persisted changes on top of the YAML seed
+// values. Unset / zero fields in s are NOT applied — the caller is
+// responsible for ensuring s is well-formed.
+func (d *Defaults) Apply(s Snapshot) {
+	if s.CostStrategy != "" {
+		d.SetCostStrategy(s.CostStrategy)
+	}
+	if s.MarkupRatio > 0 {
+		d.SetMarkupRatio(s.MarkupRatio)
+	}
+	if s.BreakerMaxFailures > 0 {
+		d.SetBreakerMaxFailures(s.BreakerMaxFailures)
+	}
+	if s.BreakerResetMs > 0 {
+		d.SetBreakerResetTimeoutMs(s.BreakerResetMs)
+	}
+	if s.AlertCooldownSec >= 0 {
+		d.SetAlertCooldownSec(s.AlertCooldownSec)
+	}
+	if s.LogRetentionDays >= 0 {
+		d.SetLogRetentionDays(s.LogRetentionDays)
+	}
+}
+
+// Marshal returns the JSON representation of the current snapshot.
+// Persisted verbatim by the store; admin handler should not post-
+// process it.
+func (d *Defaults) Marshal() ([]byte, error) {
+	return json.Marshal(d.Snapshot())
 }

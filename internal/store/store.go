@@ -76,6 +76,13 @@ type Store interface {
 	// retention jobs). The caller is responsible for the query.
 	RawQueryRow(query string, args ...any) *sql.Row
 	RawQuery(query string, args ...any) (*sql.Rows, error)
+
+	// RuntimeSettings persists the runtime.Defaults snapshot as a
+	// single JSON row so admin changes survive restarts. Get
+	// returns (nil, nil) when the table is empty (no overrides
+	// recorded yet — caller should fall back to YAML seeds).
+	GetRuntimeSettings() ([]byte, error)
+	SetRuntimeSettings(payload []byte) error
 }
 
 type LogStats struct {
