@@ -65,7 +65,7 @@ func (s *Server) registerMiddleware() {
 
 func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defaults) {
 	handler := api.New(s.cfg, s.router, s.pool, s.store, lb, rt)
-	adminHandler := admin.New(s.store, s.pool, s.router, s.tokens, lb, rt)
+	adminHandler := admin.New(s.store, s.pool, s.router, s.tokens, lb, rt, s.cfg)
 	s.admin = adminHandler
 
 	s.engine.With(authmw.WithLimits(s.tokens.Lookup, handler.Limits())).
