@@ -46,17 +46,56 @@ func OpenSQLite(dsn string) (*SQLite, error) {
 	if dir := filepath.Dir(dsn); dir != "" && dir != "." {
 		_ = os.MkdirAll(dir, 0o755)
 	}
-	db, err := sql.Open("sqlite3", dsn+"?_journal=WAL&_busy_timeout=5000&_foreign_keys=on")
+	// DSN-level pragmas: WAL + busy_timeout + foreign keys + sync mode.
+	// Per-connection pragmas (cache, mmap, wal_autocheckpoint) are
+	// applied in applyPragmas() after Open.
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	fullDSN := dsn + sep +
+		"_journal=WAL" +
+		"&_busy_timeout=5000" +
+		"&_foreign_keys=on" +
+		"&_synchronous=NORMAL"
+	db, err := sql.Open("sqlite3", fullDSN)
 	if err != nil {
 		return nil, fmt.Errorf("open: %w", err)
 	}
-	db.SetMaxOpenConns(1)
+	// Allow concurrent reads + 1 writer. SQLite serialises writers
+	// internally; 8 connections is enough headroom for admin reads
+	// while the LLM hot path is a single goroutine.
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(4)
+	db.SetConnMaxLifetime(0)
 	s := &SQLite{db: db}
+	if err := s.applyPragmas(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("pragma: %w", err)
+	}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return s, nil
+}
+
+// applyPragmas sets SQLite pragmas that can't be passed via DSN.
+// Note: pragmas are per-connection; Go's database/sql reuses
+// connections so subsequent queries inherit these settings.
+func (s *SQLite) applyPragmas() error {
+	pragmas := []string{
+		"PRAGMA cache_size=-20000",        // 20MB page cache
+		"PRAGMA temp_store=MEMORY",        // temp tables in RAM
+		"PRAGMA mmap_size=268435456",      // 256MB mmap for large reads
+		"PRAGMA wal_autocheckpoint=2000",  // 2000-page WAL threshold
+	}
+	for _, p := range pragmas {
+		if _, err := s.db.Exec(p); err != nil {
+			return fmt.Errorf("%s: %w", p, err)
+		}
+	}
+	return nil
 }
 
 func (s *SQLite) Close() error { return s.db.Close() }
@@ -313,9 +352,6 @@ func (s *SQLite) UpdateChannel(ch *model.Channel) error {
 	ch.UpdatedAt = time.Now().UTC()
 	if ch.Protocol == "" {
 		ch.Protocol = "openai"
-	}
-	if ch.CachedInputDiscount == 0 {
-		ch.CachedInputDiscount = 0.1
 	}
 	_, err := s.db.Exec(
 		`UPDATE channels SET name=?, provider=?, protocol=?, base_url=?, models=?, intents=?, priority=?, input_price=?, output_price=?, cached_input_discount=?, circuit_breaker=?, status=?, updated_at=? WHERE id=?`,
