@@ -175,3 +175,49 @@ func TestMaxSubscribersUnlimited(t *testing.T) {
 	}
 }
 
+// TestSetMaxSubscribersRuntime verifies that the cap can be raised
+// and lowered at runtime without disrupting already-subscribed
+// consumers. In-flight channels continue to receive publishes.
+func TestSetMaxSubscribersRuntime(t *testing.T) {
+	b := New[int](1)
+	defer b.Close()
+
+	c1, _, err := b.Subscribe()
+	if err != nil {
+		t.Fatalf("first sub: %v", err)
+	}
+
+	// 2nd blocked at cap=1.
+	if _, _, err := b.Subscribe(); !errors.Is(err, ErrTooManySubscribers) {
+		t.Fatalf("expected rejection at cap=1, got %v", err)
+	}
+
+	// Raise the cap → 2nd can now subscribe.
+	b.SetMaxSubscribers(5)
+	c2, _, err := b.Subscribe()
+	if err != nil {
+		t.Fatalf("after raise: %v", err)
+	}
+
+	// Both still receive publishes.
+	b.Publish(1)
+	if v := <-c1; v != 1 {
+		t.Fatalf("c1 after raise: %d", v)
+	}
+	if v := <-c2; v != 1 {
+		t.Fatalf("c2 after raise: %d", v)
+	}
+
+	// Lower the cap below the live subscriber count. Existing
+	// subscribers are NOT kicked; only NEW subscribers see the new
+	// cap. This is the documented contract.
+	b.SetMaxSubscribers(0)
+	b.Publish(2)
+	if v := <-c1; v != 2 {
+		t.Fatalf("c1 after disable: %d", v)
+	}
+	if v := <-c2; v != 2 {
+		t.Fatalf("c2 after disable: %d", v)
+	}
+}
+

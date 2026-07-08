@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
 )
 
@@ -30,10 +31,15 @@ type Channel interface {
 
 // Manager owns the scheduler loop and the registry of rules.
 type Manager struct {
-	st            store.Store
-	channels      []Channel
-	tickInterval  time.Duration
-	defaultCooldown time.Duration
+	st           store.Store
+	channels     []Channel
+	tickInterval time.Duration
+	// defaults is the live runtime.Defaults handle; when set, the
+	// manager reads AlertCooldownSec() on every evaluation so admin
+	// changes take effect without a restart. When nil, falls back
+	// to the static fallbackCooldown captured at construction.
+	defaults       *runtime.Defaults
+	fallbackCooldown time.Duration
 
 	mu    sync.RWMutex
 	rules []model.Alert
@@ -43,6 +49,11 @@ type Manager struct {
 type Config struct {
 	TickInterval    time.Duration // default 30s
 	DefaultCooldown time.Duration // default 5m
+	// Defaults, when set, overrides DefaultCooldown at evaluation
+	// time. Wire this in main.go to make the admin
+	// PUT /api/v1/config {alert_cooldown_sec: ...} path effective
+	// for alert firings.
+	Defaults *runtime.Defaults
 }
 
 // NewManager wires up a manager. TickInterval <= 0 falls back to 30s
@@ -58,7 +69,8 @@ func NewManager(st store.Store, chans []Channel, cfg Config) *Manager {
 		st:               st,
 		channels:         chans,
 		tickInterval:     cfg.TickInterval,
-		defaultCooldown:  cfg.DefaultCooldown,
+		defaults:         cfg.Defaults,
+		fallbackCooldown: cfg.DefaultCooldown,
 	}
 }
 
@@ -88,6 +100,16 @@ func (m *Manager) Start(ctx context.Context) {
 // and the admin "test" path.
 func (m *Manager) Reload() error { return m.reload() }
 
+// cooldown returns the active default cooldown. When defaults is
+// wired, the value comes from runtime.Defaults (admin-editable);
+// otherwise the construction-time fallback is used.
+func (m *Manager) cooldown() time.Duration {
+	if m.defaults != nil {
+		return time.Duration(m.defaults.AlertCooldownSec()) * time.Second
+	}
+	return m.fallbackCooldown
+}
+
 func (m *Manager) reload() error {
 	rules, err := m.st.GetAlerts()
 	if err != nil {
@@ -112,7 +134,7 @@ func (m *Manager) evaluate(ctx context.Context) {
 		// fire() but reading the rule here avoids the SQL roundtrip).
 		cd := time.Duration(r.CooldownSec) * time.Second
 		if cd <= 0 {
-			cd = m.defaultCooldown
+			cd = m.cooldown()
 		}
 		if r.LastFiredAt > 0 && now.Sub(time.Unix(r.LastFiredAt, 0)) < cd {
 			continue

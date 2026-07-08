@@ -690,7 +690,11 @@ func TestAdmin_ConfigPersistsToDB(t *testing.T) {
 		"breaker_max_failures":9,
 		"breaker_reset_timeout_ms":45000,
 		"alert_cooldown_sec":600,
-		"log_retention_days":14
+		"log_retention_days":14,
+		"stream_timeout_sec":120,
+		"stream_max_body_bytes":16777216,
+		"max_log_subscribers":42,
+		"log_level":2
 	}`
 	rec := do(t, app.Admin.Routes(), http.MethodPut, "/config", sess, body)
 	if rec.Code != http.StatusOK {
@@ -709,26 +713,31 @@ func TestAdmin_ConfigPersistsToDB(t *testing.T) {
 	if err := json.Unmarshal(raw, &snap); err != nil {
 		t.Fatalf("parse: %v (raw=%s)", err, raw)
 	}
+	want := map[string]float64{
+		"markup_ratio":             2.5,
+		"breaker_max_failures":     9,
+		"breaker_reset_timeout_ms": 45000,
+		"alert_cooldown_sec":       600,
+		"log_retention_days":       14,
+		"stream_timeout_sec":       120,
+		"stream_max_body_bytes":    16777216,
+		"max_log_subscribers":      42,
+		"log_level":                2,
+	}
+	for k, v := range want {
+		if got := snap[k].(float64); got != v {
+			t.Fatalf("%s: got %v, want %v", k, got, v)
+		}
+	}
 	if snap["cost_strategy"] != "fastest" {
 		t.Fatalf("cost_strategy: %v", snap["cost_strategy"])
 	}
-	if snap["markup_ratio"].(float64) != 2.5 {
-		t.Fatalf("markup_ratio: %v", snap["markup_ratio"])
-	}
-	if snap["breaker_max_failures"].(float64) != 9 {
-		t.Fatalf("breaker_max_failures: %v", snap["breaker_max_failures"])
-	}
-	if snap["breaker_reset_timeout_ms"].(float64) != 45000 {
-		t.Fatalf("breaker_reset_timeout_ms: %v", snap["breaker_reset_timeout_ms"])
-	}
-	if snap["alert_cooldown_sec"].(float64) != 600 {
-		t.Fatalf("alert_cooldown_sec: %v", snap["alert_cooldown_sec"])
-	}
-	if snap["log_retention_days"].(float64) != 14 {
-		t.Fatalf("log_retention_days: %v", snap["log_retention_days"])
-	}
 
 	// GET /config after restart should return the persisted values.
+	// (Same process here; verifies the in-memory store is
+	// consistent with what's persisted, not that restart logic
+	// runs — the startup overlay path is covered in
+	// TestAdmin_ConfigReloadsOnStartup.)
 	rec = do(t, app.Admin.Routes(), http.MethodGet, "/config", sess, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("get: %d %s", rec.Code, rec.Body.String())
@@ -740,12 +749,71 @@ func TestAdmin_ConfigPersistsToDB(t *testing.T) {
 		BreakerResetTimeoutMs int64   `json:"breaker_reset_timeout_ms"`
 		AlertCooldownSec      int64   `json:"alert_cooldown_sec"`
 		LogRetentionDays      int64   `json:"log_retention_days"`
+		StreamTimeoutSec      int64   `json:"stream_timeout_sec"`
+		StreamMaxBodyBytes    int64   `json:"stream_max_body_bytes"`
+		MaxLogSubscribers     int64   `json:"max_log_subscribers"`
+		LogLevel              int64   `json:"log_level"`
 	}
 	decodeJSON(t, rec, &got)
 	if got.CostStrategy != "fastest" || got.MarkupRatio != 2.5 ||
 		got.BreakerMaxFailures != 9 || got.BreakerResetTimeoutMs != 45000 ||
-		got.AlertCooldownSec != 600 || got.LogRetentionDays != 14 {
+		got.AlertCooldownSec != 600 || got.LogRetentionDays != 14 ||
+		got.StreamTimeoutSec != 120 || got.StreamMaxBodyBytes != 16777216 ||
+		got.MaxLogSubscribers != 42 || got.LogLevel != 2 {
 		t.Fatalf("GET config after PUT: %+v", got)
+	}
+}
+
+// TestAdmin_ConfigMaxLogSubscribersLiveUpdates covers the side
+// effect: PUT max_log_subscribers must immediately call
+// broker.SetMaxSubscribers, not just stash the value in rt.
+func TestAdmin_ConfigMaxLogSubscribersLiveUpdates(t *testing.T) {
+	app := testhelper.New(t)
+	sess := login(t, app)
+
+	// Tighten the cap to 1 — first SSE subscribe succeeds, second
+	// is rejected.
+	rec := do(t, app.Admin.Routes(), http.MethodPut, "/config", sess, `{"max_log_subscribers":1}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := app.LogBroker.MaxSubscribers(); got != 1 {
+		t.Fatalf("broker cap not propagated: got %d", got)
+	}
+
+	// Relax back to 0 (unlimited).
+	rec = do(t, app.Admin.Routes(), http.MethodPut, "/config", sess, `{"max_log_subscribers":0}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put 0: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := app.LogBroker.MaxSubscribers(); got != 0 {
+		t.Fatalf("broker cap not relaxed: got %d", got)
+	}
+}
+
+// TestAdmin_ConfigRejectsOutOfRange covers the validation guards.
+func TestAdmin_ConfigRejectsOutOfRange(t *testing.T) {
+	app := testhelper.New(t)
+	sess := login(t, app)
+
+	cases := []struct {
+		field string
+		body  string
+	}{
+		{"stream_timeout_sec negative", `{"stream_timeout_sec":-1}`},
+		{"stream_timeout_sec too big", `{"stream_timeout_sec":99999}`},
+		{"stream_max_body_bytes negative", `{"stream_max_body_bytes":-1}`},
+		{"stream_max_body_bytes too big", `{"stream_max_body_bytes":99999999999}`},
+		{"max_log_subscribers negative", `{"max_log_subscribers":-5}`},
+		{"max_log_subscribers too big", `{"max_log_subscribers":99999999}`},
+		{"log_level out of range", `{"log_level":7}`},
+		{"log_level negative", `{"log_level":-1}`},
+	}
+	for _, tc := range cases {
+		rec := do(t, app.Admin.Routes(), http.MethodPut, "/config", sess, tc.body)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400, got %d %s", tc.field, rec.Code, rec.Body.String())
+		}
 	}
 }
 
@@ -772,7 +840,7 @@ func TestAdmin_ConfigReloadsOnStartup(t *testing.T) {
 	// Simulate a new process: fresh runtime.Defaults seeded with
 	// the default YAML values, then overlaid with the DB row.
 	rt := app.RT
-	rt.SetCostStrategy("cheapest")
+	rt.SetCostStrategy("cheapest")  // default YAML seed
 	rt.SetMarkupRatio(1.0)
 	rt.SetBreakerMaxFailures(5)
 	rt.SetBreakerResetTimeoutMs(30000)
@@ -829,6 +897,8 @@ func TestAdmin_ConfigSurvivesCorruption(t *testing.T) {
 	if err := json.Unmarshal(raw, &snap); err == nil {
 		t.Fatal("expected JSON parse to fail on garbage row")
 	}
+	// Caller (main.go) is expected to log a warning and continue
+	// with the YAML seed; rt must remain unchanged.
 	if got := rt.MarkupRatio(); got != 1.0 {
 		t.Fatalf("markup should remain 1.0 after corruption, got %v", got)
 	}
