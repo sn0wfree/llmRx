@@ -12,7 +12,6 @@ func TestLoad_ValidYAML(t *testing.T) {
 	yaml := `
 server:
   port: 9000
-  rate_limit: 100
   log_level: debug
 
 database:

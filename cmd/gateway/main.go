@@ -265,9 +265,10 @@ func seedTokens(st store.Store, cfg *config.Config) error {
 	}
 	for _, t := range cfg.Tokens {
 		nt := &model.Token{
-			Key:    t.Key,
-			Name:   t.Name,
-			Status: model.TokenActive,
+			Key:             t.Key,
+			Name:            t.Name,
+			Status:          model.TokenActive,
+			ModelsWhitelist: t.Models,
 		}
 		if err := st.CreateToken(nt); err != nil {
 			return err

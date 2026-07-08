@@ -191,7 +191,6 @@ func maybeWriteStarterConfig(dataDir, configPath string) error {
 	tmp := configPath + ".tmp"
 	body := `server:
   port: 8787
-  rate_limit: 1000
   log_level: info
 
 database:
