@@ -1,0 +1,103 @@
+{{define "channels_form_body"}}<div class="mb-6">
+  <a href="/admin/channels" class="text-sm text-gray-500 hover:text-gray-700">← 返回列表</a>
+  <h1 class="text-2xl font-bold text-gray-900 mt-2">
+    {{if .Channel}}编辑通道{{else}}新建通道{{end}}
+  </h1>
+</div>
+
+{{if .FormError}}
+<div class="mb-4 p-3 rounded bg-red-100 text-red-800 border border-red-200 text-sm">{{.FormError}}</div>
+{{end}}
+
+<form method="POST"
+      action="{{if .Channel}}/admin/channels/{{.Channel.ID}}{{else}}/admin/channels{{end}}"
+      class="bg-white shadow rounded-lg p-6 space-y-6 max-w-3xl">
+  {{if .Channel}}<input type="hidden" name="_method" value="PUT">{{end}}
+
+  <div>
+    <h2 class="text-lg font-medium text-gray-900 mb-4">基本信息</h2>
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700">名称 *</label>
+        <input type="text" name="name" required value="{{or .FormData.Name .Channel.Name}}"
+               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700">Provider *</label>
+        <select name="provider" required
+                class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+          {{$p := or .FormData.Provider .Channel.Provider}}
+          <option value="openai" {{if eq $p "openai"}}selected{{end}}>OpenAI</option>
+          <option value="anthropic" {{if eq $p "anthropic"}}selected{{end}}>Anthropic</option>
+          <option value="gemini" {{if eq $p "gemini"}}selected{{end}}>Google Gemini</option>
+          <option value="deepseek" {{if eq $p "deepseek"}}selected{{end}}>DeepSeek</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <h2 class="text-lg font-medium text-gray-900 mb-4">端点配置</h2>
+    <div>
+      <label class="block text-sm font-medium text-gray-700">Base URL *</label>
+      <input type="url" name="base_url" required
+             value="{{or .FormData.BaseURL .Channel.BaseURL}}"
+             placeholder="https://api.openai.com/v1"
+             class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+    </div>
+  </div>
+
+  <div>
+    <h2 class="text-lg font-medium text-gray-900 mb-4">支持的模型</h2>
+    <div>
+      <label class="block text-sm font-medium text-gray-700">模型列表（每行一个）</label>
+      <textarea name="models" rows="4" required
+                placeholder="gpt-4&#10;gpt-3.5-turbo"
+                class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm">{{or .FormData.ModelsStr (joinStrings .Channel.Models)}}</textarea>
+    </div>
+    <div class="mt-3">
+      <label class="block text-sm font-medium text-gray-700">意图标签（可选，每行一个）</label>
+      <textarea name="intents" rows="3"
+                placeholder="code&#10;summary&#10;translate"
+                class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm">{{or .FormData.IntentsStr (joinStrings .Channel.Intents)}}</textarea>
+    </div>
+  </div>
+
+  <div>
+    <h2 class="text-lg font-medium text-gray-900 mb-4">路由参数</h2>
+    <div class="grid grid-cols-3 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700">优先级</label>
+        <input type="number" name="priority" value="{{or .FormData.PriorityStr (printf "%d" .Channel.Priority)}}"
+               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700">输入价格 ($/1M)</label>
+        <input type="number" step="0.0001" name="input_price" value="{{or .FormData.InputPriceStr (printf "%.4f" .Channel.InputPrice)}}"
+               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700">输出价格 ($/1M)</label>
+        <input type="number" step="0.0001" name="output_price" value="{{or .FormData.OutputPriceStr (printf "%.4f" .Channel.OutputPrice)}}"
+               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <label class="flex items-center">
+      <input type="checkbox" name="status" value="1"
+             {{if or (eq .FormData.Status "1") (eq .Channel.Status 1) (and (not .FormData) (not .Channel))}}checked{{end}}
+             class="rounded border-gray-300">
+      <span class="ml-2 text-sm text-gray-700">启用</span>
+    </label>
+  </div>
+
+  <div class="flex justify-end gap-3 pt-4 border-t">
+    <a href="/admin/channels" class="px-4 py-2 text-gray-700 hover:text-gray-900 text-sm">取消</a>
+    <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+      {{if .Channel}}保存{{else}}创建{{end}}
+    </button>
+  </div>
+</form>
+<div id="flash"></div>{{end}}

@@ -1,0 +1,11 @@
+{{define "key_row"}}<div id="key-row-{{.ID}}" class="flex items-center justify-between p-4 border-b last:border-b-0">
+  <div>
+    <code class="text-sm bg-gray-50 px-2 py-1 rounded font-mono">{{.KeyMasked}}</code>
+    <span class="ml-3 text-xs text-gray-500">创建于 {{formatTime .CreatedAt}}</span>
+  </div>
+  <button hx-delete="/admin/channels/{{.ChannelID}}/keys/{{.ID}}"
+          hx-target="#key-row-{{.ID}}"
+          hx-swap="outerHTML"
+          hx-confirm="确定删除此 Key？"
+          class="text-red-600 hover:text-red-900 text-sm">删除</button>
+</div>{{end}}
