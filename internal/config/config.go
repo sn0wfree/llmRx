@@ -17,18 +17,19 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Host                string  `yaml:"host"`
-	Port                int     `yaml:"port"`
-	LogLevel            string  `yaml:"log_level"`
-	AdminPassword       string  `yaml:"admin_password"`
-	LogRetentionDays    int     `yaml:"log_retention_days"`
-	MarkupRatio         float64 `yaml:"markup_ratio"`
-	BreakerMax          int     `yaml:"breaker_max_failures"`
-	BreakerResetMs      int     `yaml:"breaker_reset_timeout_ms"`
-	AlertCooldownSec    int     `yaml:"alert_cooldown_sec"`
-	MaxLogSubscribers   int     `yaml:"max_log_subscribers"`     // 0 = unlimited
-	StreamTimeoutSec    int     `yaml:"stream_timeout_sec"`      // 0 = disable streaming timeout
-	StreamMaxBodyBytes  int     `yaml:"stream_max_body_bytes"`   // soft cap on bytes sent to client
+	Host               string  `yaml:"host"`
+	Port               int     `yaml:"port"`
+	LogLevel           string  `yaml:"log_level"`
+	AdminPassword      string  `yaml:"admin_password"`
+	LogRetentionDays   int     `yaml:"log_retention_days"`
+	LogDir             string  `yaml:"log_dir"` // default "data/logs"
+	MarkupRatio        float64 `yaml:"markup_ratio"`
+	BreakerMax         int     `yaml:"breaker_max_failures"`
+	BreakerResetMs     int     `yaml:"breaker_reset_timeout_ms"`
+	AlertCooldownSec   int     `yaml:"alert_cooldown_sec"`
+	MaxLogSubscribers  int     `yaml:"max_log_subscribers"`   // 0 = unlimited
+	StreamTimeoutSec   int     `yaml:"stream_timeout_sec"`    // 0 = disable streaming timeout
+	StreamMaxBodyBytes int     `yaml:"stream_max_body_bytes"` // soft cap on bytes sent to client
 }
 
 type StrategyConfig struct {
@@ -68,8 +69,8 @@ type DatabaseConfig struct {
 // DEV_ALLOW_PLAINTEXT_KEYS=true to skip the requirement (not
 // recommended for any non-localhost deployment).
 type SecretsConfig struct {
-	KeyMasterEnv string `yaml:"key_master_env"`
-	DevAllowPlaintext bool `yaml:"dev_allow_plaintext_keys"`
+	KeyMasterEnv      string `yaml:"key_master_env"`
+	DevAllowPlaintext bool   `yaml:"dev_allow_plaintext_keys"`
 }
 
 // BYOKConfig is the (Phase 1.5 reserved) BYOK configuration. The
@@ -77,11 +78,11 @@ type SecretsConfig struct {
 // feature ships, WhitelistIPs and WhitelistEmails will gate which
 // callers may present their own upstream key.
 type BYOKConfig struct {
-	Enabled          bool     `yaml:"enabled"`
-	WhitelistIPs     []string `yaml:"whitelist_ips"`
-	WhitelistEmails  []string `yaml:"whitelist_emails"`
-	MaxKeysPerIP     int      `yaml:"max_keys_per_ip"`
-	TTLDays           int      `yaml:"ttl_days"`
+	Enabled         bool     `yaml:"enabled"`
+	WhitelistIPs    []string `yaml:"whitelist_ips"`
+	WhitelistEmails []string `yaml:"whitelist_emails"`
+	MaxKeysPerIP    int      `yaml:"max_keys_per_ip"`
+	TTLDays         int      `yaml:"ttl_days"`
 }
 
 func Load(path string) (*Config, error) {

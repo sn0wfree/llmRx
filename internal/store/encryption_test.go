@@ -125,7 +125,9 @@ func TestKeys_WrongMasterKeyFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	plain := "sk-rotated-key-AAA"
-	if err := s.CreateKey(&model.Key{ChannelID: ch.ID, Key: plain, KeyMasked: secrets.Mask(plain), Status: model.KeyActive}); err != nil { t.Fatal(err) }
+	if err := s.CreateKey(&model.Key{ChannelID: ch.ID, Key: plain, KeyMasked: secrets.Mask(plain), Status: model.KeyActive}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Swap the manager to a different master key.
 	mgrB, err := secrets.FromBytes(bytesRepeat(0xAB, 32))

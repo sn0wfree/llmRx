@@ -13,6 +13,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/auth"
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/config"
+	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/router"
@@ -79,6 +80,22 @@ func main() {
 	} else {
 		log.Printf("secrets: DEV_ALLOW_PLAINTEXT_KEYS=true — channel API keys will be stored in plaintext. Do NOT use this in production.")
 	}
+
+	// Initialize per-date log store. LogDir defaults to "data/logs".
+	logDir := cfg.Server.LogDir
+	if logDir == "" {
+		logDir = "data/logs"
+	}
+	if err := logstore.EnsureDir(logDir); err != nil {
+		log.Fatalf("logstore: %v", err)
+	}
+	logStore, err := logstore.New(logDir, nil)
+	if err != nil {
+		log.Fatalf("logstore: %v", err)
+	}
+	defer logStore.Close()
+	st.SetLogStore(logStore)
+	log.Printf("logstore: initialized at %s", logDir)
 
 	if err := seed(st, cfg); err != nil {
 		log.Fatalf("seed: %v", err)
@@ -151,7 +168,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go cleanupLoop(ctx, st)
-	go logRetentionLoop(ctx, st, rt)
+	go logStore.RunRetention(ctx, cfg.Server.LogRetentionDays)
 	go alertMgr.Start(ctx)
 
 	srv := server.New(cfg, *cfgPath, eng, cp, st, tokCache, logBroker, rt, "/data/llmrx.key")
@@ -180,40 +197,6 @@ func cleanupLoop(ctx context.Context, st store.Store) {
 			} else if n > 0 {
 				log.Printf("cleanup: cleared %d expired admin sessions", n)
 			}
-		}
-	}
-}
-
-// logRetentionLoop deletes log rows older than retentionDays once a
-// day. retentionDays <= 0 disables the loop. Reads the current
-// retention window from rt on every tick so admin updates take
-// effect without a restart; runs once immediately on startup so
-// admin changes don't have to wait 24h to see effect.
-func logRetentionLoop(ctx context.Context, st store.Store, rt *runtime.Defaults) {
-	if rt.LogRetentionDays() <= 0 {
-		return
-	}
-	sweep := func() {
-		retentionDays := int(rt.LogRetentionDays())
-		if retentionDays <= 0 {
-			return
-		}
-		cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour).Unix()
-		if n, err := st.DeleteLogsBefore(cutoff); err != nil {
-			log.Printf("log retention: %v", err)
-		} else if n > 0 {
-			log.Printf("log retention: deleted %d rows older than %d days", n, retentionDays)
-		}
-	}
-	sweep() // B3: run on startup so admin changes don't need 24h wait
-	t := time.NewTicker(24 * time.Hour)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			sweep()
 		}
 	}
 }

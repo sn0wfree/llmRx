@@ -18,6 +18,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/auth"
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/config"
+	"github.com/sn0wfree/llmRx/internal/logstore"
 	authmw "github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
@@ -29,18 +30,18 @@ import (
 )
 
 type App struct {
-	T        *testing.T
-	Store    store.Store
-	Pool     *pool.ChannelPool
-	Cache    *tokencache.Cache
-	Engine   *router.RouterEngine
-	Admin    *admin.Handler
-	Chat     *api.Handler
-	Provider *MockProvider
+	T         *testing.T
+	Store     store.Store
+	Pool      *pool.ChannelPool
+	Cache     *tokencache.Cache
+	Engine    *router.RouterEngine
+	Admin     *admin.Handler
+	Chat      *api.Handler
+	Provider  *MockProvider
 	LogBroker *broker.Broker[*model.Log]
-	RT       *runtime.Defaults
-	Cfg      *config.Config
-	Mux      http.Handler // fully wired mux: /v1/chat/completions, /v1/models, /api/v1, /health
+	RT        *runtime.Defaults
+	Cfg       *config.Config
+	Mux       http.Handler // fully wired mux: /v1/chat/completions, /v1/models, /api/v1, /health
 }
 
 // New constructs an App backed by a fresh temp-dir SQLite database
@@ -54,6 +55,18 @@ func New(t *testing.T) *App {
 		t.Fatalf("OpenSQLite: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+
+	// Initialize logstore for tests
+	logDir := filepath.Join(dir, "logs")
+	if err := logstore.EnsureDir(logDir); err != nil {
+		t.Fatalf("logstore.EnsureDir: %v", err)
+	}
+	logStore, err := logstore.New(logDir, nil)
+	if err != nil {
+		t.Fatalf("logstore.New: %v", err)
+	}
+	st.SetLogStore(logStore)
+	t.Cleanup(func() { _ = logStore.Close() })
 
 	if err := st.CreateUser(&model.User{
 		Username: "admin", PasswordHash: hashForAdminSeed(t), Role: model.RoleRoot, Status: 1,
@@ -79,10 +92,10 @@ func New(t *testing.T) *App {
 	// Also override the per-protocol map so the chat handler picks
 	// the mock regardless of the channel's Protocol field.
 	chatH.SetProviders(map[string]provider.Provider{
-		"":                 mp,
-		"openai":           mp,
-		"anthropic":        mp,
-		"gemini":           mp,
+		"":          mp,
+		"openai":    mp,
+		"anthropic": mp,
+		"gemini":    mp,
 	})
 
 	mux := chi.NewRouter()
