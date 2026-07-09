@@ -313,29 +313,39 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "channel not found")
 		return
 	}
-	var patch model.Channel
+	var patch struct {
+		Name                *string  `json:"name"`
+		Provider            *string  `json:"provider"`
+		BaseURL             *string  `json:"base_url"`
+		Protocol            *string  `json:"protocol"`
+		Models              []string `json:"models"`
+		Intents             []string `json:"intents"`
+		Priority            *int     `json:"priority"`
+		InputPrice          *float64 `json:"input_price_per_1m"`
+		OutputPrice         *float64 `json:"output_price_per_1m"`
+		CachedInputDiscount *float64 `json:"cached_input_discount"`
+		MaxFailures         *int     `json:"max_failures"`
+		ResetTimeoutMs      *int     `json:"reset_timeout_ms"`
+		Status              *int     `json:"status"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if patch.Name != "" {
-		cur.Name = patch.Name
+	if patch.Name != nil {
+		cur.Name = *patch.Name
 	}
-	if patch.Provider != "" {
-		cur.Provider = patch.Provider
+	if patch.Provider != nil {
+		cur.Provider = *patch.Provider
 	}
-	if patch.BaseURL != "" {
-		cur.BaseURL = patch.BaseURL
+	if patch.BaseURL != nil {
+		cur.BaseURL = *patch.BaseURL
 	}
-	// Protocol is the only field that uses empty-string as a
-	// valid value (defaulting to "openai" in seed). To allow
-	// explicit setting via PUT, we accept any non-empty value and
-	// fall through to the default when not provided.
-	if patch.Protocol != "" {
-		switch patch.Protocol {
+	if patch.Protocol != nil {
+		switch *patch.Protocol {
 		case "openai", "anthropic", "gemini",
 			"openai-compatible", "anthropic-messages", "google-gemini":
-			cur.Protocol = patch.Protocol
+			cur.Protocol = *patch.Protocol
 		default:
 			writeErr(w, http.StatusBadRequest, "protocol must be openai|anthropic|gemini")
 			return
@@ -344,28 +354,29 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 	if patch.Models != nil {
 		cur.Models = patch.Models
 	}
-	if patch.Priority != 0 || r.URL.Query().Get("priority") == "0" {
-		cur.Priority = patch.Priority
+	if patch.Intents != nil {
+		cur.Intents = patch.Intents
 	}
-	if patch.InputPrice != 0 {
-		cur.InputPrice = patch.InputPrice
+	if patch.Priority != nil {
+		cur.Priority = *patch.Priority
 	}
-	if patch.OutputPrice != 0 {
-		cur.OutputPrice = patch.OutputPrice
+	if patch.InputPrice != nil {
+		cur.InputPrice = *patch.InputPrice
 	}
-	// CachedInputDiscount can legitimately be 0 ("no discount"), so
-	// detect whether the client included it in the JSON body.
-	if patch.CachedInputDiscount >= 0 {
-		cur.CachedInputDiscount = patch.CachedInputDiscount
+	if patch.OutputPrice != nil {
+		cur.OutputPrice = *patch.OutputPrice
 	}
-	if patch.Status != 0 {
-		cur.Status = patch.Status
+	if patch.CachedInputDiscount != nil {
+		cur.CachedInputDiscount = *patch.CachedInputDiscount
 	}
-	if patch.CircuitBreaker.MaxFailures != 0 {
-		cur.CircuitBreaker.MaxFailures = patch.CircuitBreaker.MaxFailures
+	if patch.MaxFailures != nil {
+		cur.CircuitBreaker.MaxFailures = *patch.MaxFailures
 	}
-	if patch.CircuitBreaker.ResetTimeout != 0 {
-		cur.CircuitBreaker.ResetTimeout = patch.CircuitBreaker.ResetTimeout
+	if patch.ResetTimeoutMs != nil {
+		cur.CircuitBreaker.ResetTimeout = time.Duration(*patch.ResetTimeoutMs) * time.Millisecond
+	}
+	if patch.Status != nil {
+		cur.Status = model.ChannelStatus(*patch.Status)
 	}
 	if err := h.store.UpdateChannel(cur); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())

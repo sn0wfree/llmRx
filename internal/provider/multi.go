@@ -13,12 +13,17 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 // Factory returns a provider suitable for the given protocol tag.
 // Unknown values fall back to OpenAIProvider.
 func Factory(protocol string) Provider {
+	if override := factoryOverride(); override != nil {
+		return override
+	}
 	switch strings.ToLower(protocol) {
 	case "", "openai", "openai-compatible":
 		return NewOpenAIProvider()
@@ -30,6 +35,31 @@ func Factory(protocol string) Provider {
 		return NewOpenAIProvider()
 	}
 }
+
+// SetFactoryOverride replaces the factory result for all subsequent
+// calls. Pass nil to restore the default. Test-only.
+func SetFactoryOverride(p Provider) {
+	if p == nil {
+		atomic.StorePointer(&factoryOverridePtr, nil)
+		return
+	}
+	atomic.StorePointer(&factoryOverridePtr, unsafePtr(p))
+}
+
+func factoryOverride() Provider {
+	p := atomic.LoadPointer(&factoryOverridePtr)
+	if p == nil {
+		return nil
+	}
+	return *(*Provider)(unsafe.Pointer(p))
+}
+
+var factoryOverridePtr unsafe.Pointer
+
+// unsafePtr returns a pointer as unsafe.Pointer for atomic
+// operations. It exists to keep the unsafe import out of the
+// hot path.
+func unsafePtr(p Provider) unsafe.Pointer { return unsafe.Pointer(&p) }
 
 // ---------------- Anthropic ----------------
 

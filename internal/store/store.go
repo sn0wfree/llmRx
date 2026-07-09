@@ -10,6 +10,7 @@ import (
 
 type Store interface {
 	Ping(ctx context.Context) error
+	Close() error
 
 	// Channels
 	GetChannels() ([]model.Channel, error)
