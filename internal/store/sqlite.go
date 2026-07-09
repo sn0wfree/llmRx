@@ -13,6 +13,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
+	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/secrets"
 )
@@ -27,8 +28,9 @@ var (
 )
 
 type SQLite struct {
-	db      *sql.DB
-	Secrets *secrets.Manager // nil ⇒ plaintext only (legacy mode); set by SetSecrets
+	db       *sql.DB
+	logStore *logstore.Manager // nil until SetLogStore is called
+	Secrets  *secrets.Manager  // nil ⇒ plaintext only (legacy mode); set by SetSecrets
 }
 
 // SetSecrets attaches a secrets manager used to encrypt new key rows
@@ -38,6 +40,13 @@ type SQLite struct {
 //     legacy plaintext Key column for rows written before the
 //     migration landed.
 func (s *SQLite) SetSecrets(m *secrets.Manager) { s.Secrets = m }
+
+// SetLogStore wires the per-date file log store. After this call
+// the legacy CreateLog/QueryLogs/LogStats/DeleteLogsBefore methods
+// delegate into the logstore package; the logs table is no longer
+// present in the main DB. Required at startup; the call is
+// idempotent (a second call replaces the manager).
+func (s *SQLite) SetLogStore(m *logstore.Manager) { s.logStore = m }
 
 // Ping verifies the underlying database connection is responsive.
 // Returns nil when the connection is healthy.
@@ -89,10 +98,10 @@ func OpenSQLite(dsn string) (*SQLite, error) {
 // connections so subsequent queries inherit these settings.
 func (s *SQLite) applyPragmas() error {
 	pragmas := []string{
-		"PRAGMA cache_size=-20000",        // 20MB page cache
-		"PRAGMA temp_store=MEMORY",        // temp tables in RAM
-		"PRAGMA mmap_size=268435456",      // 256MB mmap for large reads
-		"PRAGMA wal_autocheckpoint=2000",  // 2000-page WAL threshold
+		"PRAGMA cache_size=-20000",       // 20MB page cache
+		"PRAGMA temp_store=MEMORY",       // temp tables in RAM
+		"PRAGMA mmap_size=268435456",     // 256MB mmap for large reads
+		"PRAGMA wal_autocheckpoint=2000", // 2000-page WAL threshold
 	}
 	for _, p := range pragmas {
 		if _, err := s.db.Exec(p); err != nil {
@@ -116,7 +125,7 @@ func (s *SQLite) migrate() error {
 			session_exp INTEGER NOT NULL DEFAULT 0,
 			created_at INTEGER NOT NULL
 		)`,
-`CREATE TABLE IF NOT EXISTS channels (
+		`CREATE TABLE IF NOT EXISTS channels (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT UNIQUE NOT NULL,
 			provider TEXT NOT NULL,
@@ -168,24 +177,10 @@ func (s *SQLite) migrate() error {
 			last_used_at INTEGER NOT NULL DEFAULT 0,
 			created_at INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS logs (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			token_id INTEGER NOT NULL DEFAULT 0,
-			channel_id INTEGER NOT NULL DEFAULT 0,
-			key_id INTEGER NOT NULL DEFAULT 0,
-			model TEXT NOT NULL DEFAULT '',
-			prompt_tokens INTEGER NOT NULL DEFAULT 0,
-			completion_tokens INTEGER NOT NULL DEFAULT 0,
-			cached_tokens INTEGER NOT NULL DEFAULT 0,
-			real_cost_usd REAL NOT NULL DEFAULT 0,
-			billed_cost_usd REAL NOT NULL DEFAULT 0,
-			duration_ms INTEGER NOT NULL DEFAULT 0,
-			status_code INTEGER NOT NULL DEFAULT 0,
-			router_path TEXT NOT NULL DEFAULT '',
-			request_ip TEXT NOT NULL DEFAULT '',
-			created_at INTEGER NOT NULL
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_logs_created ON logs(created_at DESC)`,
+		// Note: the logs table is intentionally absent. Logs now live
+		// in per-date files under data/logs/YYYY-MM-DD.db via the
+		// logstore package. CreateLog/QueryLogs/etc. on this Store
+		// delegate there (see SetLogStore).
 		`CREATE INDEX IF NOT EXISTS idx_keys_channel ON keys(channel_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_tokens_plan ON tokens(plan_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_users_session_exp ON users(session_exp) WHERE session_exp > 0`,
@@ -236,9 +231,6 @@ func (s *SQLite) migrate() error {
 	if err := s.addColumnIfMissing("channels", "cached_input_discount", "REAL NOT NULL DEFAULT 0.1"); err != nil {
 		return err
 	}
-	if err := s.addColumnIfMissing("logs", "cached_tokens", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
 	if err := s.addColumnIfMissing("tokens", "used_usd", "REAL NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
@@ -268,7 +260,7 @@ func (s *SQLite) addColumnIfMissing(table, column, decl string) error {
 	return err
 }
 
-func toUnix(t time.Time) int64  { return t.Unix() }
+func toUnix(t time.Time) int64   { return t.Unix() }
 func fromUnix(s int64) time.Time { return time.Unix(s, 0).UTC() }
 
 func encodeStrings(xs []string) string {
@@ -865,252 +857,182 @@ func scanUser(r interface {
 }
 
 // ---------------- Logs ----------------
+// Logs now live in per-date SQLite files under data/logs/. Every
+// method below delegates to the logstore Manager wired in via
+// SetLogStore. The methods on this Store still exist so admin and
+// api call sites don't change.
 
 func (s *SQLite) CreateLog(l *model.Log) error {
-	if l.CreatedAt.IsZero() {
-		l.CreatedAt = time.Now().UTC()
+	if s.logStore == nil {
+		return errors.New("logstore not initialized")
 	}
-	res, err := s.db.Exec(
-		`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		l.TokenID, l.ChannelID, l.KeyID, l.Model, l.PromptTokens, l.CompletionTokens, l.CachedTokens,
-		l.RealCostUSD, l.BilledCostUSD, l.DurationMs, l.StatusCode, l.RouterPath, l.RequestIP, toUnix(l.CreatedAt),
-	)
-	if err != nil {
-		return err
-	}
-	id, _ := res.LastInsertId()
-	l.ID = id
-	return nil
+	return s.logStore.Insert(l)
 }
 
 func (s *SQLite) GetLogs(limit, offset int) ([]model.Log, error) {
-	if limit <= 0 {
-		limit = 50
+	if s.logStore == nil {
+		return []model.Log{}, nil
 	}
-	if limit > 500 {
-		limit = 500
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	rows, err := s.db.Query(`SELECT id, token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, created_at FROM logs ORDER BY id DESC LIMIT ? OFFSET ?`, limit, offset)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []model.Log
-	for rows.Next() {
-		var l model.Log
-		var created int64
-		if err := rows.Scan(&l.ID, &l.TokenID, &l.ChannelID, &l.KeyID, &l.Model,
-			&l.PromptTokens, &l.CompletionTokens, &l.CachedTokens, &l.RealCostUSD, &l.BilledCostUSD,
-			&l.DurationMs, &l.StatusCode, &l.RouterPath, &l.RequestIP, &created); err != nil {
-			return nil, err
-		}
-		l.CreatedAt = fromUnix(created)
-		out = append(out, l)
-	}
-	return out, rows.Err()
+	out, _, err := s.logStore.Query(logstore.QueryFilter{Limit: limit, Offset: offset}, nil)
+	return out, err
 }
 
 func (s *SQLite) CountLogs() (int64, error) {
-	var n int64
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM logs`).Scan(&n)
-	return n, err
+	if s.logStore == nil {
+		return 0, nil
+	}
+	_, total, err := s.logStore.Query(logstore.QueryFilter{Limit: 1}, nil)
+	return total, err
 }
 
+// DeleteLogsBefore deletes every day file whose date is strictly
+// before the cutoff. Returns the number of files removed. The
+// unixSec argument is interpreted as a UTC timestamp; the file
+// date is derived from it.
 func (s *SQLite) DeleteLogsBefore(unixSec int64) (int64, error) {
-	res, err := s.db.Exec(`DELETE FROM logs WHERE created_at < ?`, unixSec)
+	if s.logStore == nil {
+		return 0, nil
+	}
+	cutoff := time.Unix(unixSec, 0).UTC().Format("2006-01-02")
+	files, err := s.logStore.ListFiles()
 	if err != nil {
 		return 0, err
 	}
-	return res.RowsAffected()
+	var toDelete []string
+	for _, f := range files {
+		if extractDateForStore(f) < cutoff {
+			toDelete = append(toDelete, f)
+		}
+	}
+	if len(toDelete) == 0 {
+		return 0, nil
+	}
+	if err := s.logStore.DeleteFiles(toDelete); err != nil {
+		return 0, err
+	}
+	return int64(len(toDelete)), nil
 }
 
 func (s *SQLite) LogStats() (LogStats, error) {
-	var st LogStats
-	row := s.db.QueryRow(`SELECT
-		COALESCE(SUM(prompt_tokens),0),
-		COALESCE(SUM(completion_tokens),0),
-		COALESCE(SUM(real_cost_usd),0),
-		COALESCE(SUM(billed_cost_usd),0),
-		COUNT(*),
-		COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END),0)
-	FROM logs`)
-	if err := row.Scan(&st.PromptTokens, &st.CompletionTokens, &st.RealCostUSD, &st.BilledCostUSD, &st.Total, &st.Errors); err != nil {
-		return st, err
+	if s.logStore == nil {
+		return LogStats{}, nil
 	}
-	return st, nil
+	r, err := s.logStore.Stats(nil)
+	if err != nil {
+		return LogStats{}, err
+	}
+	return LogStats{
+		PromptTokens:     r.PromptTokens,
+		CompletionTokens: r.CompletionTokens,
+		RealCostUSD:      r.RealCostUSD,
+		BilledCostUSD:    r.BilledCostUSD,
+		Total:            r.Total,
+		Errors:           r.Errors,
+	}, nil
 }
 
 func (s *SQLite) QueryLogs(f LogFilter) ([]model.Log, int64, error) {
-	if f.Limit <= 0 {
-		f.Limit = 50
+	if s.logStore == nil {
+		return []model.Log{}, 0, nil
 	}
-	if f.Limit > 500 {
-		f.Limit = 500
-	}
-	if f.Offset < 0 {
-		f.Offset = 0
-	}
-
-	where, args := buildLogWhere(f)
-
-	var total int64
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM logs "+where, args...).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-
-	q := "SELECT id, token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, created_at FROM logs " +
-		where + " ORDER BY id DESC LIMIT ? OFFSET ?"
-	qargs := append(append([]any{}, args...), f.Limit, f.Offset)
-	rows, err := s.db.Query(q, qargs...)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-	var out []model.Log
-	for rows.Next() {
-		var l model.Log
-		var created int64
-		if err := rows.Scan(&l.ID, &l.TokenID, &l.ChannelID, &l.KeyID, &l.Model,
-			&l.PromptTokens, &l.CompletionTokens, &l.CachedTokens, &l.RealCostUSD, &l.BilledCostUSD,
-			&l.DurationMs, &l.StatusCode, &l.RouterPath, &l.RequestIP, &created); err != nil {
-			return nil, 0, err
-		}
-		l.CreatedAt = fromUnix(created)
-		out = append(out, l)
-	}
-	return nonNilLogs(out), total, rows.Err()
-}
-
-func nonNilLogs(xs []model.Log) []model.Log {
-	if xs == nil {
-		return []model.Log{}
-	}
-	return xs
+	return s.logStore.Query(toLogstoreFilter(f), nil)
 }
 
 // ---------------- Analytics ----------------
 
-// buildLogWhere returns the WHERE clause + args for log analytics.
-// CreatedFrom/To are unix seconds; the resulting filter is applied
-// to logs.created_at (also unix seconds). Empty result means no filter.
-func buildLogWhere(f LogFilter) (string, []any) {
-	var (
-		conds []string
-		args  []any
-	)
-	if f.TokenID > 0 {
-		conds = append(conds, "token_id = ?")
-		args = append(args, f.TokenID)
-	}
-	if f.ChannelID > 0 {
-		conds = append(conds, "channel_id = ?")
-		args = append(args, f.ChannelID)
-	}
-	if f.Model != "" {
-		conds = append(conds, "model = ?")
-		args = append(args, f.Model)
-	}
-	if f.StatusCode > 0 {
-		conds = append(conds, "status_code = ?")
-		args = append(args, f.StatusCode)
-	}
-	if f.CreatedFrom > 0 {
-		conds = append(conds, "created_at >= ?")
-		args = append(args, f.CreatedFrom)
-	}
-	if f.CreatedTo > 0 {
-		conds = append(conds, "created_at <= ?")
-		args = append(args, f.CreatedTo)
-	}
-	if len(conds) == 0 {
-		return "", nil
-	}
-	return "WHERE " + strings.Join(conds, " AND "), args
-}
-
 func (s *SQLite) TimeSeries(f LogFilter, bucketSec int64) ([]SeriesPoint, error) {
-	if bucketSec <= 0 {
-		bucketSec = 3600
+	if s.logStore == nil {
+		return []SeriesPoint{}, nil
 	}
-	where, args := buildLogWhere(f)
-	q := `SELECT
-		(created_at / ?) * ? AS bucket,
-		COUNT(*),
-		COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(prompt_tokens), 0),
-		COALESCE(SUM(completion_tokens), 0),
-		COALESCE(SUM(real_cost_usd), 0),
-		COALESCE(SUM(billed_cost_usd), 0)
-		FROM logs ` + where + ` GROUP BY bucket ORDER BY bucket`
-	qargs := append([]any{bucketSec, bucketSec}, args...)
-	rows, err := s.db.Query(q, qargs...)
+	buckets, err := s.logStore.TimeSeries(toLogstoreFilter(f), bucketSec, nil)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []SeriesPoint
-	for rows.Next() {
-		var p SeriesPoint
-		if err := rows.Scan(&p.Bucket, &p.Requests, &p.Errors,
-			&p.PromptTokens, &p.CompletionTokens,
-			&p.RealCostUSD, &p.BilledCostUSD); err != nil {
-			return nil, err
-		}
-		out = append(out, p)
+	out := make([]SeriesPoint, 0, len(buckets))
+	for _, b := range buckets {
+		out = append(out, SeriesPoint{
+			Bucket:           b.Bucket,
+			Requests:         b.Requests,
+			Errors:           b.Errors,
+			PromptTokens:     b.PromptTokens,
+			CompletionTokens: b.CompletionTokens,
+			RealCostUSD:      b.RealCostUSD,
+			BilledCostUSD:    b.BilledCostUSD,
+		})
 	}
-	if out == nil {
-		out = []SeriesPoint{}
-	}
-	return out, rows.Err()
-}
-
-func (s *SQLite) topByField(field string, f LogFilter, limit int) ([]NamedMetric, error) {
-	if limit <= 0 {
-		limit = 10
-	}
-	where, args := buildLogWhere(f)
-	q := `SELECT ` + field + `, COUNT(*), COALESCE(SUM(prompt_tokens+completion_tokens),0), COALESCE(SUM(billed_cost_usd),0)
-		FROM logs ` + where + ` GROUP BY ` + field + ` ORDER BY 2 DESC LIMIT ?`
-	qargs := append(append([]any{}, args...), limit)
-	rows, err := s.db.Query(q, qargs...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []NamedMetric
-	for rows.Next() {
-		var m NamedMetric
-		var label sql.NullString
-		if err := rows.Scan(&label, &m.Count, &m.Tokens, &m.Cost); err != nil {
-			return nil, err
-		}
-		m.Label = label.String
-		if m.Label == "" {
-			m.Label = "(none)"
-		}
-		out = append(out, m)
-	}
-	if out == nil {
-		out = []NamedMetric{}
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *SQLite) TopByModel(f LogFilter, limit int) ([]NamedMetric, error) {
-	return s.topByField("model", f, limit)
+	return s.topByFieldViaStore("model", f, limit)
 }
 
 func (s *SQLite) TopByChannel(f LogFilter, limit int) ([]NamedMetric, error) {
-	return s.topByField("channel_id", f, limit)
+	return s.topByFieldViaStore("channel_id", f, limit)
 }
 
 func (s *SQLite) TopByToken(f LogFilter, limit int) ([]NamedMetric, error) {
-	return s.topByField("token_id", f, limit)
+	return s.topByFieldViaStore("token_id", f, limit)
 }
+
+func (s *SQLite) topByFieldViaStore(field string, f LogFilter, limit int) ([]NamedMetric, error) {
+	if s.logStore == nil {
+		return []NamedMetric{}, nil
+	}
+	out, err := s.logStore.TopByField(toLogstoreFilter(f), field, limit, nil)
+	if err != nil {
+		return nil, err
+	}
+	res := make([]NamedMetric, 0, len(out))
+	for _, m := range out {
+		res = append(res, NamedMetric{
+			Label:  m.Label,
+			Count:  m.Count,
+			Tokens: m.Tokens,
+			Cost:   m.Cost,
+		})
+	}
+	return res, nil
+}
+
+// toLogstoreFilter converts the public LogFilter (which admin
+// handlers use) into the logstore-internal QueryFilter.
+func toLogstoreFilter(f LogFilter) logstore.QueryFilter {
+	return logstore.QueryFilter{
+		TokenID:     f.TokenID,
+		ChannelID:   f.ChannelID,
+		Model:       f.Model,
+		StatusCode:  f.StatusCode,
+		CreatedFrom: f.CreatedFrom,
+		CreatedTo:   f.CreatedTo,
+		Limit:       f.Limit,
+		Offset:      f.Offset,
+	}
+}
+
+// extractDateForStore pulls the YYYY-MM-DD prefix from a day file
+// basename. For "2026-07-09" (base file) it returns "2026-07-09".
+// For "2026-07-09-2" (rollover file) it returns "2026-07-09".
+// It uses a date-format check rather than a numeric suffix check
+// to avoid confusing the day number with a seq suffix.
+func extractDateForStore(key string) string {
+	// Try the longest known date prefix (YYYY-MM-DD-N).
+	if len(key) >= len("2006-01-02-1") {
+		candidate := key[:len("2006-01-02-1")-1]
+		if _, err := time.Parse("2006-01-02", candidate); err == nil {
+			return candidate
+		}
+	}
+	// Try base YYYY-MM-DD.
+	if len(key) >= len("2006-01-02") {
+		candidate := key[:len("2006-01-02")]
+		if _, err := time.Parse("2006-01-02", candidate); err == nil {
+			return candidate
+		}
+	}
+	return key
+}
+
 // ---------------- alerts ----------------
 
 func (s *SQLite) GetAlerts() ([]model.Alert, error) {

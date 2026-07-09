@@ -115,10 +115,10 @@ type LogStats struct {
 // LogFilter narrows a logs query. Zero values mean "no filter".
 // CreatedFrom/To are unix seconds; Limit/Offset paginate.
 type LogFilter struct {
-	TokenID    int64
-	ChannelID  int64
-	Model      string
-	StatusCode int
+	TokenID     int64
+	ChannelID   int64
+	Model       string
+	StatusCode  int
 	CreatedFrom int64
 	CreatedTo   int64
 	Limit       int
@@ -127,9 +127,9 @@ type LogFilter struct {
 
 // SeriesPoint is one bucket of a time-series.
 type SeriesPoint struct {
-	Bucket   int64   `json:"bucket"`             // unix seconds at bucket start
-	Requests int64   `json:"requests"`
-	Errors   int64   `json:"errors"`
+	Bucket           int64   `json:"bucket"` // unix seconds at bucket start
+	Requests         int64   `json:"requests"`
+	Errors           int64   `json:"errors"`
 	PromptTokens     int64   `json:"prompt_tokens"`
 	CompletionTokens int64   `json:"completion_tokens"`
 	RealCostUSD      float64 `json:"real_cost_usd"`

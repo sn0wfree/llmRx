@@ -43,10 +43,17 @@ func Evaluate(r *model.Alert, now time.Time, st store.Store) (bool, map[string]a
 
 func evalErrorRate(r *model.Alert, now time.Time, st store.Store) (bool, map[string]any, error) {
 	from := now.Add(-time.Duration(r.WindowSec) * time.Second).Unix()
-	var total, errs int64
-	row := st.RawQueryRow(`SELECT COUNT(*), COALESCE(SUM(CASE WHEN status_code>=400 THEN 1 ELSE 0 END),0) FROM logs WHERE created_at >= ?`, from)
-	if err := row.Scan(&total, &errs); err != nil {
+	f := store.LogFilter{CreatedFrom: from, Limit: 10000}
+	logs, _, err := st.QueryLogs(f)
+	if err != nil {
 		return false, nil, err
+	}
+	total := int64(len(logs))
+	var errs int64
+	for _, l := range logs {
+		if l.StatusCode >= 400 {
+			errs++
+		}
 	}
 	if total < 5 {
 		return false, nil, nil
@@ -54,11 +61,11 @@ func evalErrorRate(r *model.Alert, now time.Time, st store.Store) (bool, map[str
 	ratio := float64(errs) / float64(total)
 	if ratio >= r.Threshold {
 		return true, map[string]any{
-			"window_sec":   r.WindowSec,
-			"requests":     total,
-			"errors":       errs,
-			"error_ratio":  ratio,
-			"threshold":    r.Threshold,
+			"window_sec":  r.WindowSec,
+			"requests":    total,
+			"errors":      errs,
+			"error_ratio": ratio,
+			"threshold":   r.Threshold,
 		}, nil
 	}
 	return false, nil, nil
@@ -66,14 +73,12 @@ func evalErrorRate(r *model.Alert, now time.Time, st store.Store) (bool, map[str
 
 func evalP95(r *model.Alert, now time.Time, st store.Store) (bool, map[string]any, error) {
 	from := now.Add(-time.Duration(r.WindowSec) * time.Second).Unix()
-	// Approximate p95: take the worst 5% (rounded up to at least 1) of
-	// request durations in the window, average them. A more precise
-	// method would use NTILE(20), but SQLite has no NTILE; this is a
-	// pragmatic compromise for low-volume gateways.
-	var total int64
-	if err := st.RawQueryRow(`SELECT COUNT(*) FROM logs WHERE created_at >= ?`, from).Scan(&total); err != nil {
+	f := store.LogFilter{CreatedFrom: from, Limit: 10000}
+	logs, _, err := st.QueryLogs(f)
+	if err != nil {
 		return false, nil, err
 	}
+	total := int64(len(logs))
 	if total < 5 {
 		return false, nil, nil
 	}
@@ -81,11 +86,24 @@ func evalP95(r *model.Alert, now time.Time, st store.Store) (bool, map[string]an
 	if n < 1 {
 		n = 1
 	}
-	var avgMS float64
-	row := st.RawQueryRow(`SELECT COALESCE(AVG(duration_ms),0) FROM (SELECT duration_ms FROM logs WHERE created_at >= ? ORDER BY duration_ms DESC LIMIT ?)`, from, n)
-	if err := row.Scan(&avgMS); err != nil {
-		return false, nil, err
+	// Sort by duration_ms descending and take the top n
+	var durations []int64
+	for _, l := range logs {
+		durations = append(durations, l.DurationMs)
 	}
+	// Simple sort for small arrays
+	for i := 0; i < len(durations); i++ {
+		for j := i + 1; j < len(durations); j++ {
+			if durations[i] < durations[j] {
+				durations[i], durations[j] = durations[j], durations[i]
+			}
+		}
+	}
+	var sum int64
+	for i := 0; i < int(n) && i < len(durations); i++ {
+		sum += durations[i]
+	}
+	avgMS := float64(sum) / float64(n)
 	if avgMS >= r.Threshold {
 		return true, map[string]any{
 			"window_sec":   r.WindowSec,
@@ -101,24 +119,40 @@ func evalCostSpike(r *model.Alert, now time.Time, st store.Store) (bool, map[str
 	w := time.Duration(r.WindowSec) * time.Second
 	curFrom := now.Add(-w).Unix()
 	prevFrom := now.Add(-2 * w).Unix()
-	var cur, prev float64
-	if err := st.RawQueryRow(`SELECT COALESCE(SUM(real_cost_usd),0) FROM logs WHERE created_at >= ?`, curFrom).Scan(&cur); err != nil {
+
+	// Get current window logs
+	curFilter := store.LogFilter{CreatedFrom: curFrom, Limit: 10000}
+	curLogs, _, err := st.QueryLogs(curFilter)
+	if err != nil {
 		return false, nil, err
 	}
-	if err := st.RawQueryRow(`SELECT COALESCE(SUM(real_cost_usd),0) FROM logs WHERE created_at >= ? AND created_at < ?`, prevFrom, curFrom).Scan(&prev); err != nil {
+	var cur float64
+	for _, l := range curLogs {
+		cur += l.RealCostUSD
+	}
+
+	// Get previous window logs
+	prevFilter := store.LogFilter{CreatedFrom: prevFrom, CreatedTo: curFrom, Limit: 10000}
+	prevLogs, _, err := st.QueryLogs(prevFilter)
+	if err != nil {
 		return false, nil, err
 	}
+	var prev float64
+	for _, l := range prevLogs {
+		prev += l.RealCostUSD
+	}
+
 	if prev <= 0 || cur <= 0 {
 		return false, nil, nil
 	}
 	ratio := cur / prev
 	if ratio >= r.Threshold {
 		return true, map[string]any{
-			"window_sec":         r.WindowSec,
-			"current_cost_usd":   cur,
-			"previous_cost_usd":  prev,
-			"spike_ratio":        ratio,
-			"threshold_ratio":    r.Threshold,
+			"window_sec":        r.WindowSec,
+			"current_cost_usd":  cur,
+			"previous_cost_usd": prev,
+			"spike_ratio":       ratio,
+			"threshold_ratio":   r.Threshold,
 		}, nil
 	}
 	return false, nil, nil
