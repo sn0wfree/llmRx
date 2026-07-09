@@ -40,3 +40,11 @@ config.local.yml
 # Docker master-key material (P0). The shipped docker-compose
 # mounts ./secrets/llmrx_key_master for production deployments.
 /secrets/
+
+# Performance test artifacts
+data/llmrx.db
+data/llmrx.db-shm
+data/llmrx.db-wal
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
