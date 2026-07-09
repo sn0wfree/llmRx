@@ -188,3 +188,142 @@ func TestProviderFactory(t *testing.T) {
 		}
 	}
 }
+
+// ---------- Helper functions ----------
+
+func TestFloatPtr(t *testing.T) {
+	p := FloatPtr(3.14)
+	if p == nil {
+		t.Fatal("expected non-nil pointer")
+	}
+	if *p != 3.14 {
+		t.Fatalf("expected 3.14, got %f", *p)
+	}
+}
+
+func TestIntPtr(t *testing.T) {
+	p := IntPtr(42)
+	if p == nil {
+		t.Fatal("expected non-nil pointer")
+	}
+	if *p != 42 {
+		t.Fatalf("expected 42, got %d", *p)
+	}
+}
+
+func TestBoolPtr(t *testing.T) {
+	p := BoolPtr(true)
+	if p == nil {
+		t.Fatal("expected non-nil pointer")
+	}
+	if *p != true {
+		t.Fatalf("expected true, got %v", *p)
+	}
+}
+
+func TestFloatOr(t *testing.T) {
+	def := 1.0
+	if got := FloatOr(nil, def); got != def {
+		t.Fatalf("nil: expected %f, got %f", def, got)
+	}
+	val := 2.5
+	if got := FloatOr(&val, def); got != 2.5 {
+		t.Fatalf("non-nil: expected 2.5, got %f", got)
+	}
+}
+
+func TestIntOr(t *testing.T) {
+	def := 10
+	if got := IntOr(nil, def); got != def {
+		t.Fatalf("nil: expected %d, got %d", def, got)
+	}
+	val := 20
+	if got := IntOr(&val, def); got != 20 {
+		t.Fatalf("non-nil: expected 20, got %d", got)
+	}
+}
+
+// ---------- SetFactoryOverride ----------
+
+func TestSetFactoryOverride(t *testing.T) {
+	// Save and restore
+	original := Factory("openai")
+	defer SetFactoryOverride(original)
+
+	custom := &OpenAIProvider{}
+	SetFactoryOverride(custom)
+	got := Factory("openai")
+	if got != custom {
+		t.Fatal("expected custom provider to be returned")
+	}
+	// Reset
+	SetFactoryOverride(nil)
+	if Factory("openai").Name() != "openai-compatible" {
+		t.Fatal("after reset, should return default")
+	}
+}
+
+// ---------- OpenAI Chat ----------
+
+func TestOpenAIProvider_Chat(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			t.Error("missing Authorization header")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"chatcmpl-1","model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"hello back"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`)
+	}))
+	defer srv.Close()
+	p := NewOpenAIProvider()
+	resp, code, err := p.Chat(&ChatRequest{
+		Model:    "gpt-4",
+		Messages: []Message{{Role: "user", Content: "hello"}},
+	}, "sk-test", srv.URL)
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if code != 200 {
+		t.Fatalf("code: %d", code)
+	}
+	if resp.Choices[0].Message.Content != "hello back" {
+		t.Fatalf("content: %q", resp.Choices[0].Message.Content)
+	}
+	if resp.Usage.PromptTokens != 5 || resp.Usage.CompletionTokens != 3 {
+		t.Fatalf("usage: %+v", resp.Usage)
+	}
+}
+
+func TestOpenAIProvider_Chat_UpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", 500)
+	}))
+	defer srv.Close()
+	p := NewOpenAIProvider()
+	_, code, err := p.Chat(&ChatRequest{Model: "gpt-4", Messages: []Message{{Role: "user", Content: "hi"}}}, "sk", srv.URL)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if code != 500 {
+		t.Fatalf("expected 500, got %d", code)
+	}
+}
+
+// ---------- ContentString ----------
+
+func TestContentString(t *testing.T) {
+	// String content
+	m := Message{Content: "hello"}
+	if m.ContentString() != "hello" {
+		t.Fatalf("string: got %q", m.ContentString())
+	}
+	// Empty
+	empty := Message{}
+	if empty.ContentString() != "" {
+		t.Fatalf("empty: got %q", empty.ContentString())
+	}
+	// Nil content
+	nilMsg := Message{Content: nil}
+	if nilMsg.ContentString() != "" {
+		t.Fatalf("nil: got %q", nilMsg.ContentString())
+	}
+}

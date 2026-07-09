@@ -275,3 +275,80 @@ func TestRuntimeConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// ---------- FormatLevel ----------
+
+func TestFormatLevel(t *testing.T) {
+	tests := []struct {
+		level int64
+		want  string
+	}{
+		{0, "debug: "},
+		{1, ""},
+		{2, "warn: "},
+		{3, "error: "},
+		{99, ""}, // unknown
+		{-1, ""}, // unknown
+	}
+	for _, tt := range tests {
+		t.Run("", func(t *testing.T) {
+			if got := FormatLevel(tt.level); got != tt.want {
+				t.Fatalf("FormatLevel(%d) = %q, want %q", tt.level, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------- Stream/MaxLogSubscribers defaults ----------
+
+func TestStreamTimeoutDefaults(t *testing.T) {
+	d := New()
+	// Default is 300s per New().
+	if got := d.StreamTimeoutSec(); got != 300 {
+		t.Fatalf("default: %d (want 300)", got)
+	}
+	d.SetStreamTimeoutSec(120)
+	if got := d.StreamTimeoutSec(); got != 120 {
+		t.Fatalf("after set: %d", got)
+	}
+}
+
+func TestStreamMaxBodyBytesDefaults(t *testing.T) {
+	d := New()
+	// Default is 32 MiB per New().
+	if got := d.StreamMaxBodyBytes(); got != 32*1024*1024 {
+		t.Fatalf("default: %d (want %d)", got, 32*1024*1024)
+	}
+	d.SetStreamMaxBodyBytes(1024)
+	if got := d.StreamMaxBodyBytes(); got != 1024 {
+		t.Fatalf("after set: %d", got)
+	}
+}
+
+func TestMaxLogSubscribersDefaults(t *testing.T) {
+	d := New()
+	if got := d.MaxLogSubscribers(); got != 0 {
+		t.Fatalf("default: %d (want 0)", got)
+	}
+	d.SetMaxLogSubscribers(64)
+	if got := d.MaxLogSubscribers(); got != 64 {
+		t.Fatalf("after set: %d", got)
+	}
+}
+
+func TestLogLevelDefaults(t *testing.T) {
+	d := New()
+	// Default is 0 (slog.LevelInfo per New() comment).
+	if got := d.LogLevel(); got != 0 {
+		t.Fatalf("default: %d (want 0)", got)
+	}
+	d.SetLogLevel(3)
+	if got := d.LogLevel(); got != 3 {
+		t.Fatalf("after set: %d", got)
+	}
+	// Negative clamps to 0
+	d.SetLogLevel(-5)
+	if got := d.LogLevel(); got != 0 {
+		t.Fatalf("negative: %d (want 0)", got)
+	}
+}
