@@ -118,7 +118,10 @@ func TestKeys_LegacyPlaintextMigration(t *testing.T) {
 }
 
 func TestKeys_WrongMasterKeyFails(t *testing.T) {
-	// Write with one key, read with another — must fail loudly.
+	// Write with one key, read with another. GetKeys no longer
+	// returns an error (it can't, otherwise the gateway can't
+	// even reach the admin UI to recover). Instead the bad key
+	// comes back disabled and the caller is told to re-enter.
 	s, mgrA := openTempWithSecrets(t)
 	ch := &model.Channel{Name: "c", Provider: "x", BaseURL: "x", Status: model.ChannelEnabled}
 	if err := s.CreateChannel(ch); err != nil {
@@ -136,12 +139,18 @@ func TestKeys_WrongMasterKeyFails(t *testing.T) {
 	}
 	s.SetSecrets(mgrB)
 
-	_, err = s.GetKeys(ch.ID)
-	if err == nil {
-		t.Fatal("GetKeys must fail when master key has changed")
+	ks, err := s.GetKeys(ch.ID)
+	if err != nil {
+		t.Fatalf("GetKeys should tolerate per-key decrypt failure, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "decrypt") {
-		t.Errorf("error should mention decrypt: %v", err)
+	if len(ks) != 1 {
+		t.Fatalf("expected 1 key row, got %d", len(ks))
+	}
+	if ks[0].Key != "" {
+		t.Errorf("bad key must have empty plaintext, got %q", ks[0].Key)
+	}
+	if ks[0].Status != model.KeyDisabled {
+		t.Errorf("bad key must be KeyDisabled, got %d", ks[0].Status)
 	}
 	_ = mgrA // silence unused
 }
@@ -228,9 +237,10 @@ func TestKeys_NoManager_LegacyPlaintext(t *testing.T) {
 
 func TestKeys_NoManager_CiphertextFails(t *testing.T) {
 	// When no manager is configured but a row has ciphertext (an
-	// operator error), GetKeys must refuse rather than return
-	// empty plaintext — silently returning "" would let the
-	// provider send "Authorization: Bearer " to the upstream.
+	// operator error), GetKeys must NOT return empty plaintext
+	// (that would let the provider send "Authorization: Bearer "
+	// upstream). Instead it returns the row with KeyDisabled so
+	// the pool skips it cleanly.
 	s, _ := openTempWithSecrets(t)
 	ch := &model.Channel{Name: "c", Provider: "x", BaseURL: "x", Status: model.ChannelEnabled}
 	if err := s.CreateChannel(ch); err != nil {
@@ -242,9 +252,59 @@ func TestKeys_NoManager_CiphertextFails(t *testing.T) {
 	// Now drop the manager.
 	s.SetSecrets(nil)
 
-	_, err := s.GetKeys(ch.ID)
-	if err == nil {
-		t.Fatal("expected error when ciphertext row is read without a manager")
+	ks, err := s.GetKeys(ch.ID)
+	if err != nil {
+		t.Fatalf("GetKeys should tolerate missing manager on ciphertext row, got: %v", err)
+	}
+	if len(ks) != 1 || ks[0].Status != model.KeyDisabled || ks[0].Key != "" {
+		t.Errorf("ciphertext row without manager should come back KeyDisabled+empty, got %+v", ks)
+	}
+}
+
+func TestWipeKeys_ClearsMaterial(t *testing.T) {
+	s, _ := openTempWithSecrets(t)
+	ch := &model.Channel{Name: "c", Provider: "x", BaseURL: "x", Status: model.ChannelEnabled}
+	if err := s.CreateChannel(ch); err != nil {
+		t.Fatal(err)
+	}
+	for i, plain := range []string{"sk-aaa", "sk-bbb", "sk-ccc"} {
+		if err := s.CreateKey(&model.Key{
+			ChannelID: ch.ID, Key: plain,
+			KeyMasked: secrets.Mask(plain), Status: model.KeyActive,
+		}); err != nil {
+			t.Fatalf("CreateKey %d: %v", i, err)
+		}
+	}
+
+	n, err := s.WipeKeys()
+	if err != nil {
+		t.Fatalf("WipeKeys: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("expected 3 rows wiped, got %d", n)
+	}
+
+	// Row shells should still exist, but the key material is gone.
+	ks, err := s.GetKeys(ch.ID)
+	if err != nil {
+		t.Fatalf("GetKeys after wipe: %v", err)
+	}
+	if len(ks) != 3 {
+		t.Errorf("row count should be preserved, got %d", len(ks))
+	}
+	for i, k := range ks {
+		if k.Key != "" {
+			t.Errorf("key %d: expected empty plaintext, got %q", i, k.Key)
+		}
+	}
+
+	// Idempotent: a second wipe should be a no-op.
+	n2, err := s.WipeKeys()
+	if err != nil {
+		t.Fatalf("WipeKeys (2nd): %v", err)
+	}
+	if n2 != 0 {
+		t.Errorf("second wipe should affect 0 rows, got %d", n2)
 	}
 }
 

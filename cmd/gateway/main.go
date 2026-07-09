@@ -27,6 +27,7 @@ import (
 func main() {
 	cfgPath := flag.String("config", "config.yml", "config file path")
 	hcAddr := flag.String("healthcheck", "", "if set (e.g. 127.0.0.1:8787), probe /health and exit; used by docker HEALTHCHECK")
+	wipeKeys := flag.Bool("wipe-keys", false, "clear all encrypted key material in the keys table, then exit. Used to recover from a master-key rotation that left stored ciphertext undecryptable.")
 	flag.Parse()
 
 	// `-healthcheck addr` short-circuits before any side-effects: no
@@ -34,6 +35,30 @@ func main() {
 	// dials addr, sends GET /health, and returns 0 on HTTP 200.
 	if *hcAddr != "" {
 		os.Exit(runHealthcheck(*hcAddr, 5*time.Second))
+	}
+
+	// `-wipe-keys` short-circuits BEFORE bootstrapMasterKey and
+	// privilege drop: it's a single SQL UPDATE that doesn't read
+	// any ciphertext, so it must work even when the master key
+	// has rotated and the rest of the gateway can't decrypt
+	// anything. Config + DB are still required (we need the DSN
+	// and an open handle to run the UPDATE).
+	if *wipeKeys {
+		cfg, err := config.Load(*cfgPath)
+		if err != nil {
+			log.Fatalf("wipe-keys: load config: %v", err)
+		}
+		st, err := store.OpenSQLite(cfg.Database.DSN)
+		if err != nil {
+			log.Fatalf("wipe-keys: open store: %v", err)
+		}
+		n, werr := st.WipeKeys()
+		_ = st.Close()
+		if werr != nil {
+			log.Fatalf("wipe-keys: %v", werr)
+		}
+		log.Printf("wipe-keys: cleared %d key row(s). Re-enter API keys via the admin UI or by editing config.yml + restarting.", n)
+		return
 	}
 
 	// Resolve LLMRX_KEY_MASTER (env → /data/llmrx.key → generate).
@@ -103,6 +128,7 @@ func main() {
 
 	cp := pool.NewChannelPool()
 	if err := cp.LoadFromStore(st); err != nil {
+		log.Printf("hint: if this mentions 'cipher: message authentication failed', the stored keys can't be decrypted with the current LLMRX_KEY_MASTER. Run `./start.sh wipe-keys` to clear them, then re-enter API keys via the admin UI.")
 		log.Fatalf("load pool: %v", err)
 	}
 
