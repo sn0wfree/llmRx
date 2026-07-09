@@ -23,6 +23,12 @@ type Store interface {
 	GetKeys(channelID int64) ([]model.Key, error)
 	CreateKey(k *model.Key) error
 	DeleteKey(id int64) error
+	// WipeKeys clears all key material (plaintext + ciphertext) in
+	// the keys table, leaving the row shells intact so channel IDs
+	// and masked hints survive. Used by the `-wipe-keys` recovery
+	// command when the master key has rotated and the old ciphertext
+	// can no longer be decrypted. Returns rows affected.
+	WipeKeys() (int64, error)
 
 	// Tokens
 	GetToken(key string) (*model.Token, error)

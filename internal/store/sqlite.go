@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -426,15 +427,24 @@ func (s *SQLite) GetKeys(channelID int64) ([]model.Key, error) {
 	// means a nested Exec would deadlock while the read connection
 	// is still pinned. We do all writes in a second pass.
 	out := make([]model.Key, 0, len(raws))
+	badKeyIDs := make([]int64, 0)
 	for _, rr := range raws {
 		if s.Secrets != nil {
 			if rr.cipher != "" {
 				pt, derr := s.Secrets.Decrypt(rr.cipher)
 				if derr != nil {
-					// Corrupt ciphertext: refuse rather than return
-					// empty plaintext — sending "Authorization:
-					// Bearer " upstream is worse than failing.
-					return nil, fmt.Errorf("decrypt key id=%d: %w", rr.k.ID, derr)
+					// Master-key mismatch or tampered ciphertext:
+					// mark this key as disabled and skip — the row
+					// stays so the admin UI can prompt the user
+					// to re-enter the API key. Returning an error
+					// here would take the whole gateway down and
+					// block the recovery path (no admin UI access).
+					log.Printf("store: key id=%d decrypt failed (%v) — marking disabled, re-enter via admin UI", rr.k.ID, derr)
+					rr.k.Status = model.KeyDisabled
+					rr.k.Key = ""
+					badKeyIDs = append(badKeyIDs, rr.k.ID)
+					out = append(out, rr.k)
+					continue
 				}
 				rr.k.Key = string(pt)
 			} else if rr.plain != "" {
@@ -447,15 +457,23 @@ func (s *SQLite) GetKeys(channelID int64) ([]model.Key, error) {
 				}
 			}
 		} else {
-			// No secrets manager configured (legacy mode): serve
-			// plaintext. If a row carries ciphertext we cannot
-			// decode it, so refuse rather than return "".
+			// No secrets manager configured (legacy mode). If a row
+			// carries ciphertext we cannot decode it, so disable
+			// that key in-place rather than failing the whole load.
 			if rr.cipher != "" {
-				return nil, fmt.Errorf("decrypt key id=%d (no manager): ciphertext present but no secrets manager configured", rr.k.ID)
+				log.Printf("store: key id=%d has ciphertext but no secrets manager — marking disabled", rr.k.ID)
+				rr.k.Status = model.KeyDisabled
+				rr.k.Key = ""
+				badKeyIDs = append(badKeyIDs, rr.k.ID)
+				out = append(out, rr.k)
+				continue
 			}
 			rr.k.Key = rr.plain
 		}
 		out = append(out, rr.k)
+	}
+	if len(badKeyIDs) > 0 {
+		log.Printf("store: %d key(s) failed decrypt — run './start.sh wipe-keys' to clear, then re-enter API keys via the admin UI", len(badKeyIDs))
 	}
 	return out, nil
 }
@@ -493,6 +511,21 @@ func (s *SQLite) CreateKey(k *model.Key) error {
 func (s *SQLite) DeleteKey(id int64) error {
 	_, err := s.db.Exec(`DELETE FROM keys WHERE id = ?`, id)
 	return err
+}
+
+// WipeKeys clears all key material in the keys table. The row
+// shells (id, channel_id, key_masked, status, timestamps) are
+// preserved so the admin UI can show "0 active keys" instead of
+// orphan channels. Status is left untouched — callers that want
+// to invalidate should set KeyDisabled explicitly. Used by the
+// `-wipe-keys` recovery command after a master-key rotation
+// renders existing ciphertext undecryptable.
+func (s *SQLite) WipeKeys() (int64, error) {
+	res, err := s.db.Exec(`UPDATE keys SET key='', key_ciphertext='' WHERE key != '' OR key_ciphertext != ''`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func (s *SQLite) ReencryptAllKeys(oldMgr, newMgr *secrets.Manager) (int, error) {

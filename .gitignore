@@ -45,6 +45,10 @@ config.local.yml
 data/llmrx.db
 data/llmrx.db-shm
 data/llmrx.db-wal
+# Master key, pidfile, gateway log (start.sh lifecycle)
+data/llmrx.key
+data/llmRx.pid
+data/llmRx.log
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
