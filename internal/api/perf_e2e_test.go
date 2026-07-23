@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -269,12 +270,13 @@ func TestE2E_LoadReport(t *testing.T) {
 	const requests = 500
 
 	var (
-		total      time.Duration
-		minLatency = time.Hour
-		maxLatency time.Duration
+		totalNs    int64 // atomic nanoseconds accumulator
+		minNs      int64 // atomic min latency in ns (init to math.MaxInt64)
+		maxNs      int64 // atomic max latency in ns
 		statuses   sync.Map
 		failures   int64
 	)
+	atomic.StoreInt64(&minNs, math.MaxInt64)
 
 	jobs := make(chan int, requests)
 	for i := 0; i < requests; i++ {
@@ -294,12 +296,18 @@ func TestE2E_LoadReport(t *testing.T) {
 				t0 := time.Now()
 				env.srv.ServeHTTP(rec, req)
 				d := time.Since(t0)
-				total += d
-				if d < minLatency {
-					minLatency = d
+				atomic.AddInt64(&totalNs, int64(d))
+				for {
+					cur := atomic.LoadInt64(&minNs)
+					if int64(d) >= cur || atomic.CompareAndSwapInt64(&minNs, cur, int64(d)) {
+						break
+					}
 				}
-				if d > maxLatency {
-					maxLatency = d
+				for {
+					cur := atomic.LoadInt64(&maxNs)
+					if int64(d) <= cur || atomic.CompareAndSwapInt64(&maxNs, cur, int64(d)) {
+						break
+					}
 				}
 				if rec.Code != 200 {
 					atomic.AddInt64(&failures, 1)
@@ -316,9 +324,9 @@ func TestE2E_LoadReport(t *testing.T) {
 	t.Logf("  concurrency: %d   total requests: %d", concurrency, requests)
 	t.Logf("  wall time:    %s", elapsed)
 	t.Logf("  throughput:   %.1f req/s", float64(requests)/elapsed.Seconds())
-	t.Logf("  avg latency:  %s", total/time.Duration(requests))
-	t.Logf("  min latency:  %s", minLatency)
-	t.Logf("  max latency:  %s", maxLatency)
+	t.Logf("  avg latency:  %s", time.Duration(atomic.LoadInt64(&totalNs)/int64(requests)))
+	t.Logf("  min latency:  %s", time.Duration(atomic.LoadInt64(&minNs)))
+	t.Logf("  max latency:  %s", time.Duration(atomic.LoadInt64(&maxNs)))
 	statuses.Range(func(k, v any) bool {
 		t.Logf("  status %d:   %d responses", k, atomic.LoadInt64(v.(*int64)))
 		return true
