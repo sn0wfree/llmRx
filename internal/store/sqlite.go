@@ -244,6 +244,9 @@ func (s *SQLite) migrate() error {
 	if err := s.addColumnIfMissing("keys", "key_ciphertext", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := s.addColumnIfMissing("tokens", "key_ciphertext", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	return s.addColumnIfMissing("alerts", "disabled_reason", "TEXT NOT NULL DEFAULT ''")
 }
 
@@ -588,31 +591,92 @@ func (s *SQLite) RotateMasterKey(newKeyHex string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	tn, err := s.reencryptAllTokens(s.Secrets, m)
+	if err != nil {
+		return n, err
+	}
 	s.Secrets = m
-	return n, nil
+	log.Printf("secrets: rotated master key (%d channel keys, %d tokens)", n, tn)
+	return n + tn, nil
+}
+
+// reencryptAllTokens re-encrypts every tokens.key_ciphertext row
+// from oldMgr to newMgr. Returns the count of tokens rotated.
+// Mirror of ReencryptAllKeys but on the tokens table.
+func (s *SQLite) reencryptAllTokens(oldMgr, newMgr *secrets.Manager) (int, error) {
+	rows, err := s.db.Query(`SELECT id, key_ciphertext FROM tokens WHERE key_ciphertext != ''`)
+	if err != nil {
+		return 0, err
+	}
+	type tr struct {
+		id     int64
+		cipher string
+	}
+	var toks []tr
+	for rows.Next() {
+		var r tr
+		if err := rows.Scan(&r.id, &r.cipher); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		toks = append(toks, r)
+	}
+	rows.Close()
+	for _, r := range toks {
+		pt, err := oldMgr.Decrypt(r.cipher)
+		if err != nil {
+			return 0, fmt.Errorf("decrypt token %d: %w", r.id, err)
+		}
+		newCT, err := newMgr.Encrypt(pt)
+		if err != nil {
+			return 0, fmt.Errorf("encrypt token %d: %w", r.id, err)
+		}
+		if _, err := s.db.Exec(`UPDATE tokens SET key_ciphertext=? WHERE id=?`, newCT, r.id); err != nil {
+			return 0, fmt.Errorf("update token %d: %w", r.id, err)
+		}
+	}
+	return len(toks), nil
 }
 
 // ---------------- Tokens ----------------
 
 func (s *SQLite) GetToken(key string) (*model.Token, error) {
-	row := s.db.QueryRow(`SELECT id, plan_id, key, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens WHERE key = ?`, key)
-	return scanToken(row)
+	// With ciphertext-only mode, the SQL `key = ?` lookup can't
+	// match an encrypted bearer directly. Fall back to scanning
+	// all rows and comparing in plaintext — production callers
+	// go through tokencache (in-memory), so this path is for
+	// tests / recovery tools only.
+	rows, err := s.db.Query(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		t, err := scanTokenRow(s, rows)
+		if err != nil {
+			return nil, err
+		}
+		if t.Key == key {
+			return t, nil
+		}
+	}
+	return nil, ErrNotFound
 }
 
 func (s *SQLite) GetTokenByID(id int64) (*model.Token, error) {
-	row := s.db.QueryRow(`SELECT id, plan_id, key, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens WHERE id = ?`, id)
-	return scanToken(row)
+	row := s.db.QueryRow(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens WHERE id = ?`, id)
+	return scanTokenRow(s, row)
 }
 
 func (s *SQLite) GetTokens() ([]model.Token, error) {
-	rows, err := s.db.Query(`SELECT id, plan_id, key, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []model.Token
 	for rows.Next() {
-		t, err := scanToken(rows)
+		t, err := scanTokenRow(s, rows)
 		if err != nil {
 			return nil, err
 		}
@@ -623,10 +687,24 @@ func (s *SQLite) GetTokens() ([]model.Token, error) {
 
 func (s *SQLite) CreateToken(t *model.Token) error {
 	t.CreatedAt = time.Now().UTC()
+	plain := t.Key
+	if plain == "" {
+		return errors.New("token key is empty")
+	}
+	cipher := ""
+	storedPlain := plain
+	if s.Secrets != nil {
+		ct, err := s.Secrets.Encrypt([]byte(plain))
+		if err != nil {
+			return fmt.Errorf("encrypt token: %w", err)
+		}
+		cipher = ct
+		storedPlain = ""
+	}
 	res, err := s.db.Exec(
-		`INSERT INTO tokens(plan_id, key, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.PlanID, t.Key, t.Name, int(t.Status), t.RPM, t.TPM, t.UsedUSD,
+		`INSERT INTO tokens(plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.PlanID, storedPlain, cipher, t.Name, int(t.Status), t.RPM, t.TPM, t.UsedUSD,
 		encodeStrings(t.ModelsWhitelist), encodeStrings(t.IPWhitelist),
 		toUnix(t.ExpiresAt), toUnix(t.LastUsedAt), toUnix(t.CreatedAt),
 	)
@@ -640,9 +718,20 @@ func (s *SQLite) CreateToken(t *model.Token) error {
 
 func (s *SQLite) UpdateToken(t *model.Token) error {
 	t.LastUsedAt = time.Now().UTC()
+	plain := t.Key
+	cipher := ""
+	storedPlain := plain
+	if plain != "" && s.Secrets != nil {
+		ct, err := s.Secrets.Encrypt([]byte(plain))
+		if err != nil {
+			return fmt.Errorf("encrypt token: %w", err)
+		}
+		cipher = ct
+		storedPlain = ""
+	}
 	res, err := s.db.Exec(
-		`UPDATE tokens SET plan_id=?, name=?, status=?, rpm=?, tpm=?, used_usd=?, models_whitelist=?, ip_whitelist=?, expires_at=? WHERE id=?`,
-		t.PlanID, t.Name, int(t.Status), t.RPM, t.TPM, t.UsedUSD,
+		`UPDATE tokens SET plan_id=?, key=?, key_ciphertext=?, name=?, status=?, rpm=?, tpm=?, used_usd=?, models_whitelist=?, ip_whitelist=?, expires_at=? WHERE id=?`,
+		t.PlanID, storedPlain, cipher, t.Name, int(t.Status), t.RPM, t.TPM, t.UsedUSD,
 		encodeStrings(t.ModelsWhitelist), encodeStrings(t.IPWhitelist),
 		toUnix(t.ExpiresAt), t.ID,
 	)
@@ -795,14 +884,15 @@ func (s *SQLite) DeleteToken(id int64) error {
 	return err
 }
 
-func scanToken(r interface {
+func scanTokenRow(s *SQLite, r interface {
 	Scan(dest ...any) error
 }) (*model.Token, error) {
 	var t model.Token
 	var status int
 	var mwJSON, ipwJSON string
 	var expires, lastUsed, created int64
-	if err := r.Scan(&t.ID, &t.PlanID, &t.Key, &t.Name, &status, &t.RPM, &t.TPM,
+	var plain, cipher string
+	if err := r.Scan(&t.ID, &t.PlanID, &plain, &cipher, &t.Name, &status, &t.RPM, &t.TPM,
 		&t.UsedUSD, &mwJSON, &ipwJSON, &expires, &lastUsed, &created); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
@@ -815,6 +905,30 @@ func scanToken(r interface {
 	t.ExpiresAt = fromUnix(expires)
 	t.LastUsedAt = fromUnix(lastUsed)
 	t.CreatedAt = fromUnix(created)
+
+	// Resolve plaintext key from ciphertext when a manager is
+	// attached. If the row has only legacy plaintext, best-effort
+	// upgrade to ciphertext form so subsequent reads go through
+	// the manager.
+	switch {
+	case s.Secrets != nil && cipher != "":
+		pt, derr := s.Secrets.Decrypt(cipher)
+		if derr != nil {
+			// Master-key mismatch or tampered ciphertext: leave
+			// the token empty and let cache reload skip it.
+			log.Printf("store: token id=%d decrypt failed (%v)", t.ID, derr)
+			t.Key = ""
+		} else {
+			t.Key = string(pt)
+		}
+	case s.Secrets != nil && plain != "":
+		t.Key = plain
+		if ct, eerr := s.Secrets.Encrypt([]byte(plain)); eerr == nil {
+			_, _ = s.db.Exec(`UPDATE tokens SET key='', key_ciphertext=? WHERE id=?`, ct, t.ID)
+		}
+	default:
+		t.Key = plain
+	}
 	return &t, nil
 }
 

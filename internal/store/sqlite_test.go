@@ -8,6 +8,7 @@ import (
 
 	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/secrets"
 )
 
 func openTemp(t *testing.T) *SQLite {
@@ -391,5 +392,120 @@ func TestRecordRequestSpend_NotFoundOnUnknownToken(t *testing.T) {
 	got, _ := s.GetPlan(plan.ID)
 	if got.UsedUSD != 1.0 {
 		t.Fatalf("plan ledger must not change, got %v", got.UsedUSD)
+	}
+}
+
+// TestTokens_EncryptedAtRest mirrors the keys encryption test:
+// when a secrets manager is attached, the bearer token plaintext
+// must never appear in the row, and must round-trip through
+// GetToken / GetTokens / GetTokenByID.
+func TestTokens_EncryptedAtRest(t *testing.T) {
+	s, _ := openTempWithSecrets(t)
+	plain := "sk-cipher-bearer-token-abcdef123456"
+	if err := s.CreateToken(&model.Token{Key: plain, Name: "ct", Status: model.TokenActive}); err != nil {
+		t.Fatal(err)
+	}
+
+	var storedPlain, storedCipher string
+	if err := s.db.QueryRow(`SELECT key, key_ciphertext FROM tokens WHERE key=?`, "").Scan(&storedPlain, &storedCipher); err != nil {
+		// token row exists but plaintext column was cleared,
+		// so SELECT WHERE key='' should match it.
+		t.Fatalf("scan: %v", err)
+	}
+	if storedPlain != "" {
+		t.Errorf("plaintext column should be empty after encryption, got %q", storedPlain)
+	}
+	if storedCipher == "" {
+		t.Fatal("ciphertext column should be populated")
+	}
+
+	// GetToken must decrypt back to the original.
+	got, err := s.GetToken(plain)
+	if err != nil {
+		t.Fatalf("GetToken: %v", err)
+	}
+	if got.Key != plain {
+		t.Errorf("GetToken after encrypt: got %q want %q", got.Key, plain)
+	}
+
+	// GetTokens must also decrypt.
+	all, err := s.GetTokens()
+	if err != nil || len(all) != 1 {
+		t.Fatalf("GetTokens: %v %v", all, err)
+	}
+	if all[0].Key != plain {
+		t.Errorf("GetTokens after encrypt: got %q want %q", all[0].Key, plain)
+	}
+}
+
+// TestTokens_LegacyPlaintextMigration: a row inserted before
+// encryption shipped carries plaintext in the `key` column. The
+// next read must serve the value and best-effort upgrade to
+// ciphertext form.
+func TestTokens_LegacyPlaintextMigration(t *testing.T) {
+	s, mgr := openTempWithSecrets(t)
+	plain := "sk-legacy-bearer-token-9876543210"
+	res, err := s.db.Exec(
+		`INSERT INTO tokens(plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at)
+		 VALUES (0, ?, '', 'legacy', 0, 0, 0, 0, '[]', '[]', 0, 0, ?)`,
+		plain, nowUnix(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+
+	got, err := s.GetToken(plain)
+	if err != nil || got == nil {
+		t.Fatalf("GetToken: %v %v", got, err)
+	}
+	if got.Key != plain {
+		t.Errorf("legacy plaintext should still serve: got %q want %q", got.Key, plain)
+	}
+
+	var newPlain, newCipher string
+	if err := s.db.QueryRow(`SELECT key, key_ciphertext FROM tokens WHERE id=?`, id).Scan(&newPlain, &newCipher); err != nil {
+		t.Fatal(err)
+	}
+	if newPlain != "" {
+		t.Errorf("plaintext should be cleared after migration, got %q", newPlain)
+	}
+	if newCipher == "" {
+		t.Error("ciphertext should be populated after migration")
+	}
+	pt, err := mgr.Decrypt(newCipher)
+	if err != nil {
+		t.Fatalf("migrated ciphertext should decrypt: %v", err)
+	}
+	if string(pt) != plain {
+		t.Errorf("migrated ciphertext mismatch: got %q want %q", pt, plain)
+	}
+}
+
+// TestTokens_WrongMasterKeyFails: tokens written under one
+// master key can't be decrypted after a rotation. The lookup
+// returns an empty Key so the tokencache skips the row.
+func TestTokens_WrongMasterKeyFails(t *testing.T) {
+	s, _ := openTempWithSecrets(t)
+	plain := "sk-rotated-bearer-token"
+	if err := s.CreateToken(&model.Token{Key: plain, Name: "r", Status: model.TokenActive}); err != nil {
+		t.Fatal(err)
+	}
+
+	mgrB, err := secrets.FromBytes(bytesRepeat(0xAB, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetSecrets(mgrB)
+
+	all, err := s.GetTokens()
+	if err != nil {
+		t.Fatalf("GetTokens should tolerate decrypt failure: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("expected 1 token row, got %d", len(all))
+	}
+	if all[0].Key != "" {
+		t.Errorf("bad token key must be empty, got %q", all[0].Key)
 	}
 }
