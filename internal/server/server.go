@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -34,6 +36,7 @@ type Server struct {
 	tokens     *tokencache.Cache
 	admin      *admin.Handler
 	engine     *chi.Mux
+	httpServer *http.Server
 }
 
 func New(cfg *config.Config, cfgPath string, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults, keyFile string) *Server {
@@ -97,14 +100,55 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	s.engine.Mount("/admin/api/v1", adminHandler.Routes())
 }
 
-func (s *Server) Start() error {
+// Start blocks running the HTTP listener until ctx is cancelled.
+// On cancellation it shuts the server down with a graceful
+// timeout so in-flight requests (chat completions, log writes,
+// plan spend transactions) get a chance to finish before the
+// process exits. K8s sends SIGTERM with a default 30s
+// terminationGracePeriod; the timeout below matches that
+// comfortably so the kubelet doesn't have to SIGKILL.
+func (s *Server) Start(ctx context.Context) error {
 	host := s.cfg.Server.Host
 	if host == "" {
 		host = "0.0.0.0"
 	}
 	addr := fmt.Sprintf("%s:%d", host, s.cfg.Server.Port)
-	log.Printf("listening on %s (tokens=%d)", addr, s.tokens.Size())
-	return http.ListenAndServe(addr, s.engine)
+	s.httpServer = &http.Server{
+		Addr:              addr,
+		Handler:           s.engine,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       0, // unbounded body read; chi middleware applies timeouts per route
+		WriteTimeout:      0,
+		IdleTimeout:       120 * time.Second,
+	}
+	if s.tokens != nil {
+		log.Printf("listening on %s (tokens=%d)", addr, s.tokens.Size())
+	} else {
+		log.Printf("listening on %s", addr)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		err := s.httpServer.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+		close(errCh)
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		log.Printf("server: shutdown signal received, draining (timeout=25s)...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+		if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("graceful shutdown: %w", err)
+		}
+		log.Printf("server: stopped cleanly")
+		return nil
+	}
 }
 
 // SetAlertManager injects the alert manager into the admin handler

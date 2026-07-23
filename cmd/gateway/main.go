@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/alert"
@@ -223,9 +225,22 @@ func main() {
 	srv := server.New(cfg, *cfgPath, eng, cp, st, tokCache, logBroker, rt, "/data/llmrx.key")
 	srv.SetAlertManager(alertMgr)
 
+	// Hook SIGINT/SIGTERM into ctx so server.Start drains in-flight
+	// requests instead of hard-cutting active chat completions
+	// mid-stream. The kubelet / docker stop sequence uses SIGTERM
+	// with a default 30s grace period; srv.Start matches that with
+	// a 25s shutdown timeout (see server.Start).
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		log.Printf("signal received: %s — initiating graceful shutdown", sig)
+		cancel()
+	}()
+
 	log.Printf("starting llmRx gateway on :%d (channels=%d tokens=%d db=%s)",
 		cfg.Server.Port, len(cp.GetAllChannels()), tokCache.Size(), cfg.Database.DSN)
-	if err := srv.Start(); err != nil {
+	if err := srv.Start(ctx); err != nil {
 		log.Fatalf("server: %v", err)
 	}
 }
