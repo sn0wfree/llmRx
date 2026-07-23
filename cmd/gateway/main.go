@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"time"
@@ -261,6 +262,16 @@ func seed(st store.Store, cfg *config.Config) error {
 	return seedChannels(st, cfg)
 }
 
+// seedAdmin bootstraps the root user on a fresh database.
+//
+// Security: refusing to create the well-known admin/admin
+// credential unless the operator explicitly opts in
+// (cfg.Server.AllowDefaultAdminPassword == true). Without this
+// gate, every fresh install ships with a publicly known root
+// password. The default "admin" password is logged at info
+// level (length + first/last char) so the operator can still
+// verify what was seeded, but the plaintext itself never
+// appears in the log.
 func seedAdmin(st store.Store, cfg *config.Config) error {
 	if u, _ := st.GetUserByUsername("admin"); u != nil {
 		return nil
@@ -268,6 +279,9 @@ func seedAdmin(st store.Store, cfg *config.Config) error {
 	pw := cfg.Server.AdminPassword
 	if pw == "" {
 		pw = "admin"
+		if !cfg.Server.AllowDefaultAdminPassword {
+			return fmt.Errorf("refusing to seed default admin/admin — set server.admin_password in config or set server.allow_default_admin_password: true (NOT for production)")
+		}
 	}
 	hashed, err := auth.Hash(pw)
 	if err != nil {
@@ -282,8 +296,27 @@ func seedAdmin(st store.Store, cfg *config.Config) error {
 	if err := st.CreateUser(u); err != nil {
 		return err
 	}
-	log.Printf("seed: created default admin user (username=admin password=%s)", pw)
+	log.Printf("seed: created default admin user (username=admin password_len=%d first=%q last=%q)",
+		len(pw), firstRune(pw), lastRune(pw))
 	return nil
+}
+
+func firstRune(s string) string {
+	if s == "" {
+		return ""
+	}
+	for _, r := range s {
+		return string(r)
+	}
+	return ""
+}
+
+func lastRune(s string) string {
+	if s == "" {
+		return ""
+	}
+	runes := []rune(s)
+	return string(runes[len(runes)-1])
 }
 
 func seedTokens(st store.Store, cfg *config.Config) error {

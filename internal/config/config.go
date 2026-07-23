@@ -30,6 +30,27 @@ type ServerConfig struct {
 	MaxLogSubscribers  int     `yaml:"max_log_subscribers"`   // 0 = unlimited
 	StreamTimeoutSec   int     `yaml:"stream_timeout_sec"`    // 0 = disable streaming timeout
 	StreamMaxBodyBytes int     `yaml:"stream_max_body_bytes"` // soft cap on bytes sent to client
+
+	// AllowDefaultAdminPassword, when true, lets the gateway
+	// start with the well-known admin/admin credential. Off by
+	// default so production deployments refuse to bootstrap
+	// with a publicly known root password. The flag exists for
+	// fresh-install smoke tests and CI.
+	AllowDefaultAdminPassword bool `yaml:"allow_default_admin_password"`
+
+	// TrustProxyHeaders makes clientIP() honour X-Forwarded-For
+	// and X-Real-IP. Off by default so a direct-internet
+	// deployment can't be spoofed into bypassing the per-token
+	// IP whitelist. Set this when fronting llmRx with a known
+	// reverse proxy (nginx, traefik, ELB, ...).
+	TrustProxyHeaders bool `yaml:"trust_proxy_headers"`
+
+	// TrustedProxyCIDRs, when TrustProxyHeaders is true, narrows
+	// the set of source IPs allowed to set proxy headers. An
+	// empty list with TrustProxyHeaders=true means "trust
+	// every source" — keep that opt-in so misconfiguration
+	// can't silently widen the trust boundary.
+	TrustedProxyCIDRs []string `yaml:"trusted_proxy_cidrs"`
 }
 
 type StrategyConfig struct {

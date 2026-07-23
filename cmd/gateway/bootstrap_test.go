@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sn0wfree/llmRx/internal/auth"
 	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/intent"
 	"github.com/sn0wfree/llmRx/internal/model"
@@ -219,6 +220,75 @@ func TestSeedTokens_WiresModelsWhitelist(t *testing.T) {
 	}
 	if len(bar.ModelsWhitelist) != 0 {
 		t.Errorf("bar.ModelsWhitelist = %v, want []", bar.ModelsWhitelist)
+	}
+}
+
+// TestSeedAdmin_DefaultPasswordRefused: fresh installs must NOT
+// silently ship with admin/admin. The seed step returns an
+// error unless the operator explicitly opts in.
+func TestSeedAdmin_DefaultPasswordRefused(t *testing.T) {
+	st, err := store.OpenSQLite(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	cfg := &config.Config{} // empty AdminPassword → defaults to "admin"
+	if err := seedAdmin(st, cfg); err == nil {
+		t.Fatal("expected seedAdmin to refuse default admin/admin without opt-in")
+	}
+	if u, _ := st.GetUserByUsername("admin"); u != nil {
+		t.Fatal("admin user must not have been created")
+	}
+}
+
+// TestSeedAdmin_DefaultPasswordAllowedWithOptIn: setting
+// AllowDefaultAdminPassword=true restores the dev-friendly path
+// for CI / smoke tests.
+func TestSeedAdmin_DefaultPasswordAllowedWithOptIn(t *testing.T) {
+	st, err := store.OpenSQLite(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	cfg := &config.Config{Server: config.ServerConfig{AllowDefaultAdminPassword: true}}
+	if err := seedAdmin(st, cfg); err != nil {
+		t.Fatalf("seedAdmin with opt-in: %v", err)
+	}
+	u, err := st.GetUserByUsername("admin")
+	if err != nil || u == nil {
+		t.Fatalf("GetUserByUsername: %v %v", u, err)
+	}
+	if u.Role != model.RoleRoot {
+		t.Fatalf("admin role = %v, want RoleRoot", u.Role)
+	}
+}
+
+// TestSeedAdmin_CustomPasswordHonoured: when the operator
+// supplies their own password (length ≥ 6), the default gate
+// is bypassed and the password is used verbatim.
+func TestSeedAdmin_CustomPasswordHonoured(t *testing.T) {
+	st, err := store.OpenSQLite(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	cfg := &config.Config{Server: config.ServerConfig{AdminPassword: "correct-horse-battery-staple"}}
+	if err := seedAdmin(st, cfg); err != nil {
+		t.Fatalf("seedAdmin with custom password: %v", err)
+	}
+	u, _ := st.GetUserByUsername("admin")
+	if u == nil {
+		t.Fatal("admin user not created")
+	}
+	// argon2id hash should verify against the custom password.
+	if !auth.Verify(u.PasswordHash, "correct-horse-battery-staple").OK {
+		t.Fatal("admin hash does not verify against the supplied password")
+	}
+	if auth.Verify(u.PasswordHash, "admin").OK {
+		t.Fatal("admin hash verifies against 'admin' — wrong password was hashed")
 	}
 }
 
