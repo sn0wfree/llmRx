@@ -934,7 +934,7 @@ func TestRunRetentionDisabled(t *testing.T) {
 	// Should return immediately when retentionDays <= 0
 	done := make(chan struct{})
 	go func() {
-		m.RunRetention(ctx, 0)
+		m.RunRetention(ctx, func() int { return 0 })
 		close(done)
 	}()
 	select {
@@ -956,7 +956,7 @@ func TestRunRetentionDeletesOldFiles(t *testing.T) {
 	go func() {
 		// Give sweep time to run
 		time.Sleep(50 * time.Millisecond)
-		m.RunRetention(ctx, 5)
+		m.RunRetention(ctx, func() int { return 5 })
 	}()
 
 	// Wait for sweep to complete
@@ -980,7 +980,7 @@ func TestRunRetentionKeepsRecentFiles(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go m.RunRetention(ctx, 30)
+	go m.RunRetention(ctx, func() int { return 30 })
 	time.Sleep(100 * time.Millisecond)
 	cancel()
 

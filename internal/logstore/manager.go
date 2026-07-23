@@ -90,18 +90,28 @@ func (m *Manager) Close() error {
 	return err
 }
 
-// RunRetention periodically deletes log files older than
-// retentionDays. retentionDays <= 0 disables the sweep entirely.
-// The sweep runs once on entry (so admin changes don't have to
-// wait 24h) and then every 24h. Exits when ctx is cancelled.
-func (m *Manager) RunRetention(ctx context.Context, retentionDays int) {
-	if retentionDays <= 0 {
+// RunRetention periodically deletes log files older than the
+// number of days reported by retentionDays() on each tick. The
+// caller passes a function so admin updates to the retention
+// window take effect on the next sweep instead of being frozen
+// at goroutine start.
+//
+// retentionDays() <= 0 disables the sweep entirely. The sweep
+// runs once on entry (so admin changes don't have to wait 24h)
+// and then every 24h. Exits when ctx is cancelled.
+func (m *Manager) RunRetention(ctx context.Context, retentionDays func() int) {
+	cur := retentionDays()
+	if cur <= 0 {
 		log.Printf("logstore: retention disabled (retention_days <= 0)")
 		return
 	}
 
 	sweep := func() {
-		cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
+		days := retentionDays()
+		if days <= 0 {
+			return
+		}
+		cutoff := time.Now().UTC().AddDate(0, 0, -days)
 		cutoffDay := cutoff.Format("2006-01-02")
 
 		files, err := m.driver.ListFiles()
@@ -125,7 +135,7 @@ func (m *Manager) RunRetention(ctx context.Context, retentionDays int) {
 			return
 		}
 		log.Printf("logstore: retention deleted %d files older than %d days",
-			len(toDelete), retentionDays)
+			len(toDelete), days)
 	}
 
 	sweep()

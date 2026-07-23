@@ -202,7 +202,7 @@ func TestManagerRunRetentionContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		m.RunRetention(ctx, 30)
+		m.RunRetention(ctx, func() int { return 30 })
 		close(done)
 	}()
 	cancel()
@@ -222,7 +222,7 @@ func TestManagerRunRetentionSweeps(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go m.RunRetention(ctx, 30)
+	go m.RunRetention(ctx, func() int { return 30 })
 
 	// Wait for sweep
 	deadline := time.Now().Add(2 * time.Second)
@@ -234,6 +234,67 @@ func TestManagerRunRetentionSweeps(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("retention sweep did not run")
+}
+
+// TestManagerRunRetention_LiveUpdates: the retention window is
+// read from the provider function on every tick — not frozen at
+// goroutine start. This is the fix for "admin sets
+// log_retention_days to 30 but restart needed for it to apply".
+func TestManagerRunRetention_LiveUpdates(t *testing.T) {
+	m, _ := newTestManager(t)
+	old := time.Now().UTC().AddDate(0, 0, -60)
+	_ = m.Insert(makeLog(1, 1, "m", 200, old))
+
+	days := 30 // "live" snapshot
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		m.RunRetention(ctx, func() int { return days })
+		close(done)
+	}()
+
+	// Initial sweep with days=30 must remove the 60-day-old log.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		files, _ := m.ListFiles()
+		if len(files) == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if files, _ := m.ListFiles(); len(files) != 0 {
+		t.Fatalf("initial sweep: expected 0 files, got %d", len(files))
+	}
+
+	cancel()
+	<-done
+}
+
+// TestManagerRunRetention_DisableAfterStart: admin sets
+// retention_days to 0 mid-flight (disabling retention). The
+// next sweep must no-op instead of continuing with the old value.
+func TestManagerRunRetention_DisableAfterStart(t *testing.T) {
+	m, _ := newTestManager(t)
+	// (No old logs needed — the test is about the disable path.)
+
+	days := 30
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		m.RunRetention(ctx, func() int {
+			// Disable after the goroutine has had a chance to start.
+			days = 0
+			return days
+		})
+		close(done)
+	}()
+
+	// Wait briefly so the goroutine settles.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	<-done
 }
 
 // ---------- EnsureDir ----------

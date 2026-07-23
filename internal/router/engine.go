@@ -56,6 +56,14 @@ func (e *RouterEngine) SetIntentClassifier(c intent.Classifier) {
 	e.intent = c
 }
 
+// SetBreakerDefaults wires the runtime.Defaults snapshot into
+// the circuit breaker so admin /runtime config writes take
+// effect on the next request instead of needing a restart.
+// nil disables the live-source path.
+func (e *RouterEngine) SetBreakerDefaults(d BreakerDefaults) {
+	e.breaker.SetDefaults(d)
+}
+
 // IntentBackend returns the active classifier's backend name
 // (e.g. "disabled" for Nop, "rust" for the native .so). Used by
 // the /health endpoint so operators can tell whether L4 is live

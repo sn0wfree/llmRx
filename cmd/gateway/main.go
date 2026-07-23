@@ -204,6 +204,11 @@ func main() {
 	runtime.InstallLogFilter(rt, os.Stderr)
 	log.Printf("runtime: log level = %s", runtime.LogLevelName(rt.LogLevel()))
 
+	// Wire rt into the circuit breaker so admin /runtime config
+	// writes (breaker_max_failures, breaker_reset_timeout_ms)
+	// take effect on the next request, not on restart.
+	eng.SetBreakerDefaults(rt)
+
 	alertMgr := alert.NewManager(st, []alert.Channel{
 		channels.NewBuiltin(),
 		channels.NewWebhook(),
@@ -219,7 +224,10 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go cleanupLoop(ctx, st)
-	go logStore.RunRetention(ctx, cfg.Server.LogRetentionDays)
+	// Pass a provider function so admin updates to
+	// log_retention_days take effect on the next sweep instead
+	// of being frozen at goroutine start.
+	go logStore.RunRetention(ctx, func() int { return int(rt.LogRetentionDays()) })
 	go alertMgr.Start(ctx)
 
 	srv := server.New(cfg, *cfgPath, eng, cp, st, tokCache, logBroker, rt, "/data/llmrx.key")

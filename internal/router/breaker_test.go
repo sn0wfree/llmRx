@@ -131,3 +131,54 @@ func TestBreaker_DefaultsWhenChannelMissing(t *testing.T) {
 		t.Fatalf("defaults: expected open after 5 failures, got %d", len(got))
 	}
 }
+
+// TestBreaker_LiveDefaultsTakeEffect verifies that admin /runtime
+// config writes to BreakerMaxFailures / BreakerResetTimeoutMs
+// flow into the breaker on the next failure, without needing a
+// restart. Before the SetDefaults wiring, cfgFor only consulted
+// channel.CircuitBreaker and the runtime snapshot was ignored.
+func TestBreaker_LiveDefaultsTakeEffect(t *testing.T) {
+	live := &liveDefaults{maxFailures: 2, resetMs: 30}
+	b := &CircuitBreaker{
+		store:    &stubStore{channels: map[int64]*model.Channel{}},
+		defaults: live,
+		entries:  make(map[int64]*breakerEntry),
+	}
+
+	// Trip the breaker at the live-defaults threshold (2).
+	b.RecordFailure(99)
+	b.RecordFailure(99)
+	if got := b.Filter(mkChannels(99)); len(got) != 0 {
+		t.Fatalf("expected open after 2 failures, got %d", len(got))
+	}
+
+	// Admin tightens the threshold to 1 — next failure should
+	// re-trip immediately even though we already cleared state.
+	live.maxFailures = 1
+	b.reload(99)
+	b.RecordFailure(99)
+	if got := b.Filter(mkChannels(99)); len(got) != 0 {
+		t.Fatalf("tightened default to 1: expected open, got %d", len(got))
+	}
+
+	// Admin extends the reset window — the breaker must NOT
+	// half-open before the new window elapses.
+	live.resetMs = int64((24 * time.Hour) / time.Millisecond)
+	if got := b.Filter(mkChannels(99)); len(got) != 0 {
+		t.Fatalf("extended reset window: expected still open, got %d", len(got))
+	}
+}
+
+// liveDefaults is a tiny BreakerDefaults implementation that
+// returns mutable values so tests can simulate admin writes
+// between calls.
+type liveDefaults struct {
+	maxFailures int64
+	resetMs     int64
+}
+
+func (l *liveDefaults) BreakerMaxFailures() int64   { return l.maxFailures }
+func (l *liveDefaults) BreakerResetTimeoutMs() int64 { return l.resetMs }
+
+// compile-time check
+var _ BreakerDefaults = (*liveDefaults)(nil)

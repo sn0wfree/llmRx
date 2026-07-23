@@ -20,10 +20,21 @@ type breakerEntry struct {
 	mu          sync.Mutex
 }
 
+// BreakerDefaults is the live snapshot of operator-tunable
+// defaults (admin /runtime config). When a channel's per-row
+// circuit-breaker config is unset, the breaker falls back to
+// these values, so changes via the admin UI take effect on the
+// next request without a restart.
+type BreakerDefaults interface {
+	BreakerMaxFailures() int64
+	BreakerResetTimeoutMs() int64
+}
+
 type CircuitBreaker struct {
-	store   BreakerStore
-	entries map[int64]*breakerEntry
-	mu      sync.RWMutex
+	store    BreakerStore
+	defaults BreakerDefaults // optional; nil ⇒ built-in defaults
+	entries  map[int64]*breakerEntry
+	mu       sync.RWMutex
 }
 
 // BreakerStore is the narrow contract the breaker actually depends
@@ -40,20 +51,36 @@ func NewCircuitBreaker(st store.Store) *CircuitBreaker {
 	}
 }
 
+// SetDefaults injects the live defaults source. nil disables
+// the live-source path and the breaker falls back to its built-in
+// constants.
+func (b *CircuitBreaker) SetDefaults(d BreakerDefaults) {
+	b.defaults = d
+}
+
 func (b *CircuitBreaker) cfgFor(channelID int64) (int, time.Duration) {
-	ch, err := b.store.GetChannel(channelID)
-	if err != nil || ch == nil {
-		return defaultMaxFailures, defaultResetDur
+	maxFail := int64(defaultMaxFailures)
+	resetMs := int64(defaultResetDur / time.Millisecond)
+	if b.defaults != nil {
+		maxFail = b.defaults.BreakerMaxFailures()
+		resetMs = b.defaults.BreakerResetTimeoutMs()
 	}
-	maxFail := ch.CircuitBreaker.MaxFailures
 	if maxFail <= 0 {
 		maxFail = defaultMaxFailures
 	}
-	resetDur := ch.CircuitBreaker.ResetTimeout
+	resetDur := time.Duration(resetMs) * time.Millisecond
 	if resetDur <= 0 {
 		resetDur = defaultResetDur
 	}
-	return maxFail, resetDur
+	if ch, err := b.store.GetChannel(channelID); err == nil && ch != nil {
+		if ch.CircuitBreaker.MaxFailures > 0 {
+			maxFail = int64(ch.CircuitBreaker.MaxFailures)
+		}
+		if ch.CircuitBreaker.ResetTimeout > 0 {
+			resetDur = ch.CircuitBreaker.ResetTimeout
+		}
+	}
+	return int(maxFail), resetDur
 }
 
 func (b *CircuitBreaker) getEntry(channelID int64) *breakerEntry {
