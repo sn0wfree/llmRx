@@ -56,6 +56,17 @@ func (e *RouterEngine) SetIntentClassifier(c intent.Classifier) {
 	e.intent = c
 }
 
+// IntentBackend returns the active classifier's backend name
+// (e.g. "disabled" for Nop, "rust" for the native .so). Used by
+// the /health endpoint so operators can tell whether L4 is live
+// without parsing the bootstrap log.
+func (e *RouterEngine) IntentBackend() string {
+	if e.intent == nil {
+		return "disabled"
+	}
+	return e.intent.Backend()
+}
+
 // ReloadChannel picks up new circuit-breaker settings after the
 // admin updates a channel.
 func (e *RouterEngine) ReloadChannel(channelID int64) {

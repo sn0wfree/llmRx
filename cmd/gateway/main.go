@@ -13,7 +13,6 @@ import (
 	"github.com/sn0wfree/llmRx/internal/auth"
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/config"
-	"github.com/sn0wfree/llmRx/internal/intent"
 	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
@@ -149,15 +148,13 @@ func main() {
 	}
 	eng := router.New(st, cp)
 
-	// L4 Intent classifier. intent.Load() tries to dlopen the
-	// Rust cdylib; on any failure it returns an error and we
-	// fall back to the in-process Nop classifier so the router
-	// keeps working (L4 short-circuits to "unknown").
-	if classifier, err := intent.Load(); err != nil {
-		log.Printf("intent: native classifier unavailable, using Nop: %v", err)
+	// L4 Intent classifier. See loadIntentClassifier for the
+	// LLMRX_INTENT_REQUIRED fail-closed semantics.
+	if classifier, backend, err := loadIntentClassifier(); err != nil {
+		log.Fatalf("%v", err)
 	} else {
 		eng.SetIntentClassifier(classifier)
-		log.Printf("intent: backend=%s", classifier.Backend())
+		log.Printf("intent: backend=%s", backend)
 	}
 	logBroker := broker.New[*model.Log](cfg.Server.MaxLogSubscribers)
 	defer logBroker.Close()

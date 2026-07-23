@@ -21,6 +21,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/sn0wfree/llmRx/internal/intent"
 )
 
 // Resolve the master key used for at-rest encryption of channel API
@@ -242,4 +244,28 @@ func runHealthcheck(addr string, timeout time.Duration) int {
 		return 1
 	}
 	return 0
+}
+
+// loadIntentClassifier resolves the L4 intent classifier with the
+// LLMRX_INTENT_REQUIRED semantics:
+//
+//   - native Load succeeds                  → return (native, nil)
+//   - native Load fails, REQUIRED not set    → return (intent.Nop{}, nil) (dev fallback)
+//   - native Load fails, REQUIRED set        → return (nil, error)        (fail-closed)
+//
+// Production deployments should set LLMRX_INTENT_REQUIRED=1 so a
+// missing or broken Rust cdylib refuses to start the gateway
+// instead of silently downgrading to L4=Nop.
+func loadIntentClassifier() (intent.Classifier, string, error) {
+	required := os.Getenv("LLMRX_INTENT_REQUIRED") != ""
+	classifier, err := intent.Load()
+	switch {
+	case err == nil:
+		return classifier, classifier.Backend(), nil
+	case required:
+		return nil, "", fmt.Errorf("LLMRX_INTENT_REQUIRED set but load failed: %w", err)
+	default:
+		log.Printf("intent: native classifier unavailable, using Nop: %v", err)
+		return intent.Nop{}, "disabled", nil
+	}
 }

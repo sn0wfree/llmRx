@@ -263,4 +263,33 @@ func TestIntentWiring_FallsBackToNop(t *testing.T) {
 	if eng == nil {
 		t.Fatal("router is nil")
 	}
+	// Verify the backend name reflects the actual wiring.
+	if got := eng.IntentBackend(); got == "" {
+		t.Fatal("IntentBackend() returned empty string")
+	}
+}
+
+// TestIntentRequired_EnvFlagCausesFailOnLoadError covers the
+// LLMRX_INTENT_REQUIRED behaviour: when the flag is set and
+// intent.Load() fails, the helper must return a non-nil error so
+// the caller can abort startup. Without the flag the helper
+// returns nil and the caller continues with Nop.
+func TestIntentRequired_EnvFlagCausesFailOnLoadError(t *testing.T) {
+	t.Setenv("LLMRX_INTENT_LIB", "")
+	intent.DefaultLibraryPath = "/nonexistent/libllmrx_intent.so"
+
+	// Required + Load failure => error surfaced.
+	t.Setenv("LLMRX_INTENT_REQUIRED", "1")
+	if _, _, err := loadIntentClassifier(); err == nil {
+		t.Fatal("expected error when required and Load fails")
+	}
+
+	// Required + Load success => no error. (We can't easily
+	// simulate success without the cdylib, so skip that branch.)
+
+	// Not required + Load failure => nil error (fallback to Nop).
+	t.Setenv("LLMRX_INTENT_REQUIRED", "")
+	if _, _, err := loadIntentClassifier(); err != nil {
+		t.Fatalf("expected nil error when not required and Load fails: %v", err)
+	}
 }
