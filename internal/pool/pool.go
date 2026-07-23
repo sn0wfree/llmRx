@@ -41,11 +41,32 @@ func NewChannelPool() *ChannelPool {
 // with status other than KeyActive are still loaded but skipped by
 // NextKey. Each keyEntry carries the SQLite primary key so
 // NextKey can return a model.Key whose ID matches logs.key_id.
+//
+// Counter inheritance: when a channel's key set is unchanged
+// (same DBIDs, same order) the previous round-robin counter is
+// preserved so reloads do not funnel requests onto the first
+// key. If the key set differs, the counter resets to 0.
 func (p *ChannelPool) LoadFromStore(st store.Store) error {
 	chs, err := st.GetChannels()
 	if err != nil {
 		return err
 	}
+
+	// Capture existing counters under read lock so we can inherit
+	// them once the new map is built.
+	p.mu.RLock()
+	prevCounters := make(map[int64]uint64, len(p.channels))
+	prevKeys := make(map[int64][]int64, len(p.channels))
+	for id, entry := range p.channels {
+		prevCounters[id] = atomic.LoadUint64(&entry.counter)
+		ids := make([]int64, len(entry.Keys))
+		for j, ke := range entry.Keys {
+			ids[j] = ke.DBID
+		}
+		prevKeys[id] = ids
+	}
+	p.mu.RUnlock()
+
 	next := make(map[int64]*channelEntry, len(chs))
 	for i := range chs {
 		ch := &chs[i]
@@ -57,11 +78,20 @@ func (p *ChannelPool) LoadFromStore(st store.Store) error {
 			return err
 		}
 		entries := make([]*keyEntry, 0, len(keys))
+		dbids := make([]int64, 0, len(keys))
 		for j := range keys {
 			k := &keys[j]
 			entries = append(entries, &keyEntry{DBID: k.ID, Key: k.Key, Status: k.Status})
+			dbids = append(dbids, k.ID)
 		}
-		next[ch.ID] = &channelEntry{Channel: ch, Keys: entries}
+		ce := &channelEntry{Channel: ch, Keys: entries}
+		// Inherit counter only if the key DBID set is byte-identical
+		// in the same order. Anything else means the channel's key
+		// topology changed and a fresh counter is safer.
+		if prev, ok := prevKeys[ch.ID]; ok && keyDBIDsEqual(prev, dbids) {
+			atomic.StoreUint64(&ce.counter, prevCounters[ch.ID])
+		}
+		next[ch.ID] = ce
 	}
 
 	p.mu.Lock()
@@ -73,15 +103,45 @@ func (p *ChannelPool) LoadFromStore(st store.Store) error {
 // UpsertChannel inserts or refreshes one channel in the in-memory
 // pool from a freshly-loaded Channel + Keys slice. Callers should
 // update the store first, then call this to avoid races.
+//
+// Counter inheritance: same logic as LoadFromStore — preserved
+// only if the new key DBID set matches the old one in order.
 func (p *ChannelPool) UpsertChannel(ch *model.Channel, keys []model.Key) {
 	entries := make([]*keyEntry, 0, len(keys))
+	dbids := make([]int64, 0, len(keys))
 	for i := range keys {
 		k := &keys[i]
 		entries = append(entries, &keyEntry{DBID: k.ID, Key: k.Key, Status: k.Status})
+		dbids = append(dbids, k.ID)
 	}
 	p.mu.Lock()
-	p.channels[ch.ID] = &channelEntry{Channel: ch, Keys: entries}
-	p.mu.Unlock()
+	defer p.mu.Unlock()
+	ce := &channelEntry{Channel: ch, Keys: entries}
+	if prev, ok := p.channels[ch.ID]; ok {
+		prevDBIDs := make([]int64, len(prev.Keys))
+		for j, ke := range prev.Keys {
+			prevDBIDs[j] = ke.DBID
+		}
+		if keyDBIDsEqual(prevDBIDs, dbids) {
+			atomic.StoreUint64(&ce.counter, atomic.LoadUint64(&prev.counter))
+		}
+	}
+	p.channels[ch.ID] = ce
+}
+
+// keyDBIDsEqual reports whether two DBID slices contain the same
+// primary keys in the same order. Used to decide whether a reload
+// can safely inherit the previous round-robin counter.
+func keyDBIDsEqual(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // RemoveChannel drops one channel from the in-memory pool.

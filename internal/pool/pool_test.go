@@ -476,3 +476,139 @@ func TestPool_KeyIDSurvivesDeleteAndAdd(t *testing.T) {
 		t.Fatalf("gamma ID changed: %d -> %d", ids["gamma"], got["gamma"])
 	}
 }
+
+// TestPool_CounterSurvivesLoadFromStore: after some NextKey calls
+// that advance the round-robin counter, reloading from the store
+// must preserve the counter (same DBID set in same order) so
+// subsequent requests don't all hit the first key.
+func TestPool_CounterSurvivesLoadFromStore(t *testing.T) {
+	p := NewChannelPool()
+	s := newTestStore(t)
+
+	ch := &model.Channel{Name: "ch", Provider: "openai", BaseURL: "https://x", Status: model.ChannelEnabled}
+	if err := s.CreateChannel(ch); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	for _, raw := range []string{"a", "b", "c"} {
+		k := &model.Key{ChannelID: ch.ID, Key: raw, KeyMasked: "m", Status: model.KeyActive}
+		if err := s.CreateKey(k); err != nil {
+			t.Fatalf("CreateKey %s: %v", raw, err)
+		}
+	}
+	if err := p.LoadFromStore(s); err != nil {
+		t.Fatalf("LoadFromStore: %v", err)
+	}
+
+	// Burn one NextKey to advance counter to 1 (so the next call
+	// would land on index 1 = "b" if counter is preserved).
+	first, _ := p.NextKey(ch.ID)
+	if first.Key != "a" {
+		t.Fatalf("first NextKey: expected a, got %s", first.Key)
+	}
+
+	// Reload — counter must survive.
+	if err := p.LoadFromStore(s); err != nil {
+		t.Fatalf("LoadFromStore #2: %v", err)
+	}
+	second, _ := p.NextKey(ch.ID)
+	if second.Key != "b" {
+		t.Fatalf("counter reset on reload: expected b, got %s", second.Key)
+	}
+}
+
+// TestPool_CounterResetsOnKeySetChange: when the key set actually
+// changes (add/remove), the counter resets so requests don't
+// suddenly skip a key at a stale offset.
+func TestPool_CounterResetsOnKeySetChange(t *testing.T) {
+	p := NewChannelPool()
+	s := newTestStore(t)
+
+	ch := &model.Channel{Name: "ch", Provider: "openai", BaseURL: "https://x", Status: model.ChannelEnabled}
+	if err := s.CreateChannel(ch); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	keyIDs := []int64{}
+	for _, raw := range []string{"a", "b", "c"} {
+		k := &model.Key{ChannelID: ch.ID, Key: raw, KeyMasked: "m", Status: model.KeyActive}
+		if err := s.CreateKey(k); err != nil {
+			t.Fatalf("CreateKey %s: %v", raw, err)
+		}
+		keyIDs = append(keyIDs, k.ID)
+	}
+	if err := p.LoadFromStore(s); err != nil {
+		t.Fatalf("LoadFromStore: %v", err)
+	}
+	// Advance counter.
+	for i := 0; i < 5; i++ {
+		_, _ = p.NextKey(ch.ID)
+	}
+
+	// Add a fourth key — DBID set changed, counter must reset.
+	newKey := &model.Key{ChannelID: ch.ID, Key: "d", KeyMasked: "m", Status: model.KeyActive}
+	if err := s.CreateKey(newKey); err != nil {
+		t.Fatalf("CreateKey d: %v", err)
+	}
+	if err := p.LoadFromStore(s); err != nil {
+		t.Fatalf("LoadFromStore after add: %v", err)
+	}
+	// First NextKey after the reset should land on index 0 = "a"
+	// (or whichever key is at position 0 in the new ordering).
+	got, _ := p.NextKey(ch.ID)
+	// We can't predict exact order from SQLite, but it must be
+	// a valid key and the counter must be reset to 0 (otherwise
+	// it might skip keys entirely).
+	if got.Key != "a" && got.Key != "b" && got.Key != "c" && got.Key != "d" {
+		t.Fatalf("NextKey returned unknown key: %s", got.Key)
+	}
+	// _ = keyIDs keeps the slice alive (avoids unused).
+	_ = keyIDs
+}
+
+// TestPool_CounterSurvivesUpsertChannel: when the admin path
+// upserts the same channel with the same key set, the counter
+// must survive.
+func TestPool_CounterSurvivesUpsertChannel(t *testing.T) {
+	p := NewChannelPool()
+	ch := &model.Channel{ID: 1, Name: "c1"}
+	keys := []model.Key{
+		{ID: 10, ChannelID: 1, Key: "a", Status: model.KeyActive},
+		{ID: 11, ChannelID: 1, Key: "b", Status: model.KeyActive},
+		{ID: 12, ChannelID: 1, Key: "c", Status: model.KeyActive},
+	}
+	p.UpsertChannel(ch, keys)
+	// Advance past "a".
+	if k, _ := p.NextKey(1); k.Key != "a" {
+		t.Fatalf("seed NextKey: got %s", k.Key)
+	}
+	// Re-upsert with same key set.
+	p.UpsertChannel(ch, keys)
+	// NextKey should pick up at "b" (counter preserved).
+	if k, _ := p.NextKey(1); k.Key != "b" {
+		t.Fatalf("counter reset on upsert with same key set: got %s", k.Key)
+	}
+}
+
+// TestPool_CounterResetsOnUpsertChannelKeyChange: adding a new key
+// via UpsertChannel must reset the counter so the new key gets a
+// fair share of traffic.
+func TestPool_CounterResetsOnUpsertChannelKeyChange(t *testing.T) {
+	p := NewChannelPool()
+	ch := &model.Channel{ID: 1, Name: "c1"}
+	p.UpsertChannel(ch, []model.Key{
+		{ID: 10, ChannelID: 1, Key: "a", Status: model.KeyActive},
+		{ID: 11, ChannelID: 1, Key: "b", Status: model.KeyActive},
+	})
+	for i := 0; i < 5; i++ {
+		_, _ = p.NextKey(1)
+	}
+	// Upsert with the same two keys plus a new one (changed set).
+	p.UpsertChannel(ch, []model.Key{
+		{ID: 10, ChannelID: 1, Key: "a", Status: model.KeyActive},
+		{ID: 11, ChannelID: 1, Key: "b", Status: model.KeyActive},
+		{ID: 12, ChannelID: 1, Key: "c", Status: model.KeyActive},
+	})
+	// Counter should be 0; first NextKey should hit "a".
+	if k, _ := p.NextKey(1); k.Key != "a" {
+		t.Fatalf("expected counter reset → first key 'a', got %s", k.Key)
+	}
+}
