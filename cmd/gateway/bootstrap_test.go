@@ -24,7 +24,7 @@ func TestBootstrapMasterKey_FromEnv(t *testing.T) {
 	const hex64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	t.Setenv("TEST_KEY_MASTER", hex64)
 
-	if err := bootstrapMasterKey("TEST_KEY_MASTER", keyFile); err != nil {
+	if err := bootstrapMasterKey("TEST_KEY_MASTER", keyFile, false); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	if got := os.Getenv("TEST_KEY_MASTER"); got != hex64 {
@@ -46,7 +46,7 @@ func TestBootstrapMasterKey_FromFile(t *testing.T) {
 	t.Setenv("TEST_KEY_MASTER", "")
 	os.Unsetenv("TEST_KEY_MASTER")
 
-	if err := bootstrapMasterKey("TEST_KEY_MASTER", keyFile); err != nil {
+	if err := bootstrapMasterKey("TEST_KEY_MASTER", keyFile, false); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	if got := os.Getenv("TEST_KEY_MASTER"); got != hex64 {
@@ -54,40 +54,44 @@ func TestBootstrapMasterKey_FromFile(t *testing.T) {
 	}
 }
 
-func TestBootstrapMasterKey_Generated(t *testing.T) {
+// TestBootstrapMasterKey_NoEnvNoFileErrors: in production mode
+// (DevAllowPlaintext=false) the bootstrap must refuse to start
+// when neither env nor file is set. The previous behaviour
+// auto-generated and persisted a fresh key, which left fresh
+// installs with a key no operator could recover.
+func TestBootstrapMasterKey_NoEnvNoFileErrors(t *testing.T) {
 	dir := t.TempDir()
-	keyFile := filepath.Join(dir, "llmrx.key")
 	t.Setenv("TEST_KEY_MASTER", "")
 	os.Unsetenv("TEST_KEY_MASTER")
+	err := bootstrapMasterKey("TEST_KEY_MASTER", filepath.Join(dir, "k"), false)
+	if err == nil {
+		t.Fatal("expected error when no env and no file")
+	}
+	if !strings.Contains(err.Error(), "refusing to start") {
+		t.Fatalf("err: %v", err)
+	}
+}
 
-	if err := bootstrapMasterKey("TEST_KEY_MASTER", keyFile); err != nil {
-		t.Fatalf("bootstrap: %v", err)
+// TestBootstrapMasterKey_AllowPlaintextNoOps: dev plaintext
+// mode bypasses the bootstrap entirely — no env, no file, no
+// error.
+func TestBootstrapMasterKey_AllowPlaintextNoOps(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TEST_KEY_MASTER", "")
+	os.Unsetenv("TEST_KEY_MASTER")
+	if err := bootstrapMasterKey("TEST_KEY_MASTER", filepath.Join(dir, "k"), true); err != nil {
+		t.Fatalf("bootstrap with allowPlaintext: %v", err)
 	}
-	got := os.Getenv("TEST_KEY_MASTER")
-	if len(got) != 64 {
-		t.Errorf("generated key length = %d, want 64", len(got))
-	}
-	info, err := os.Stat(keyFile)
-	if err != nil {
-		t.Fatalf("stat key file: %v", err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("key file perm = %o, want 0600", perm)
-	}
-	// Second call should reuse the persisted file, not regenerate.
-	first := got
-	if err := bootstrapMasterKey("TEST_KEY_MASTER", keyFile); err != nil {
-		t.Fatalf("bootstrap #2: %v", err)
-	}
-	if os.Getenv("TEST_KEY_MASTER") != first {
-		t.Errorf("key changed between calls: %q != %q", os.Getenv("TEST_KEY_MASTER"), first)
+	// Env should remain unset.
+	if got := os.Getenv("TEST_KEY_MASTER"); got != "" {
+		t.Errorf("env should remain unset in plaintext mode, got %q", got)
 	}
 }
 
 func TestBootstrapMasterKey_InvalidLength(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("TEST_KEY_MASTER", "abc")
-	if err := bootstrapMasterKey("TEST_KEY_MASTER", filepath.Join(dir, "k")); err == nil {
+	if err := bootstrapMasterKey("TEST_KEY_MASTER", filepath.Join(dir, "k"), false); err == nil {
 		t.Fatal("expected error for short key")
 	}
 }
@@ -95,7 +99,7 @@ func TestBootstrapMasterKey_InvalidLength(t *testing.T) {
 func TestBootstrapMasterKey_InvalidHex(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("TEST_KEY_MASTER", strings.Repeat("z", 64))
-	if err := bootstrapMasterKey("TEST_KEY_MASTER", filepath.Join(dir, "k")); err == nil {
+	if err := bootstrapMasterKey("TEST_KEY_MASTER", filepath.Join(dir, "k"), false); err == nil {
 		t.Fatal("expected error for non-hex key")
 	}
 }
@@ -105,7 +109,7 @@ func TestBootstrapMasterKey_DefaultEnvName(t *testing.T) {
 	const hex64 = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 	t.Setenv("LLMRX_KEY_MASTER", hex64)
 
-	if err := bootstrapMasterKey("", filepath.Join(dir, "k")); err != nil {
+	if err := bootstrapMasterKey("", filepath.Join(dir, "k"), false); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	if got := os.Getenv("LLMRX_KEY_MASTER"); got != hex64 {

@@ -7,11 +7,9 @@
 package main
 
 import (
-	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -32,16 +30,30 @@ import (
 //     or docker secret sets LLMRX_KEY_MASTER).
 //  2. The file at keyFile (persisted key — survives container
 //     restarts without orchestrator support).
-//  3. Generate a fresh 32-byte hex key, write it to keyFile with
-//     mode 0600, return it. (Dev-friendly default so a bare
-//     `docker run -v /data:/data image` Just Works.)
+//
+// The legacy "auto-generate and persist a fresh key" path was
+// removed: it shipped fresh installs with a stable-but-random
+// key that no operator could recover when the /data volume was
+// rebuilt. Production deployments must set LLMRX_KEY_MASTER via
+// the orchestrator or a docker secret (set
+// secrets.dev_allow_plaintext_keys: true in config only for
+// local dev, where the gateway skips encryption entirely).
+//
+// When allowPlaintext is true the function is a no-op (no env
+// or file is needed; the gateway proceeds in plaintext mode).
+// The plaintext path is logged prominently so it can never be
+// silently enabled.
 //
 // Whatever value is chosen is exported back into envName so that
 // secrets.FromEnv (called later in main) sees a valid key without
 // the rest of the codebase needing to know we resolved it here.
-func bootstrapMasterKey(envName, keyFile string) error {
+func bootstrapMasterKey(envName, keyFile string, allowPlaintext bool) error {
 	if envName == "" {
 		envName = "LLMRX_KEY_MASTER"
+	}
+	if allowPlaintext {
+		log.Printf("secrets: dev_allow_plaintext_keys=true — channel API keys will be stored in plaintext. DO NOT USE IN PRODUCTION.")
+		return nil
 	}
 	key := strings.TrimSpace(os.Getenv(envName))
 
@@ -57,21 +69,9 @@ func bootstrapMasterKey(envName, keyFile string) error {
 		}
 	}
 
-	// (3) generate
 	if key == "" {
-		buf := make([]byte, 32)
-		if _, err := io.ReadFull(rand.Reader, buf); err != nil {
-			return fmt.Errorf("generate master key: %w", err)
-		}
-		key = hex.EncodeToString(buf)
-		if err := os.WriteFile(keyFile, []byte(key), 0o600); err != nil {
-			return fmt.Errorf("persist master key to %s: %w", keyFile, err)
-		}
-		// Best-effort chown — we may still be root at this point.
-		// If we already dropped privileges, ignore the error.
-		_ = chownIfRoot(keyFile, "llmrx")
-		log.Printf("secrets: generated and persisted new master key at %s", keyFile)
-		log.Printf("secrets: (dev auto-bootstrap — for production, set %s via your orchestrator or a docker secret)", envName)
+		return fmt.Errorf("refusing to start: %s env var is unset and %s has no key. Set %s (32-byte hex from `openssl rand -hex 32`) via your orchestrator or docker secret, OR enable secrets.dev_allow_plaintext_keys in config for local dev only",
+			envName, keyFile, envName)
 	}
 
 	// Validate: must be 32 bytes hex (64 chars).

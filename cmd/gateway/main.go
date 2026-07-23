@@ -64,9 +64,23 @@ func main() {
 		return
 	}
 
-	// Resolve LLMRX_KEY_MASTER (env → /data/llmrx.key → generate).
-	// Must run BEFORE privilege drop and BEFORE secrets.FromEnv.
-	if err := bootstrapMasterKey("LLMRX_KEY_MASTER", "/data/llmrx.key"); err != nil {
+	// Load config first so we can honour dev_allow_plaintext_keys
+	// when deciding whether to require the master key. The
+	// bootstrap path used to auto-generate a fresh key when no
+	// env/file was set; that left fresh installs with a random
+	// key no operator could recover when the /data volume was
+	// rebuilt. Now production (default) refuses to start without
+	// an explicit LLMRX_KEY_MASTER, and dev mode skips encryption
+	// entirely via cfg.Secrets.DevAllowPlaintext.
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		log.Fatalf("load config: %v", err)
+	}
+
+	// Resolve LLMRX_KEY_MASTER (env → /data/llmrx.key). Must run
+	// BEFORE privilege drop and BEFORE secrets.FromEnv. No-op
+	// when dev_allow_plaintext_keys is set.
+	if err := bootstrapMasterKey("LLMRX_KEY_MASTER", "/data/llmrx.key", cfg.Secrets.DevAllowPlaintext); err != nil {
 		log.Fatalf("secrets: %v", err)
 	}
 
@@ -82,11 +96,6 @@ func main() {
 	}
 	if err := dropPrivileges("llmrx"); err != nil {
 		log.Fatalf("secrets: %v", err)
-	}
-
-	cfg, err := config.Load(*cfgPath)
-	if err != nil {
-		log.Fatalf("load config: %v", err)
 	}
 
 	st, err := store.OpenSQLite(cfg.Database.DSN)
