@@ -7,11 +7,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/cors"
 
 	"github.com/sn0wfree/llmRx/internal/config"
 )
@@ -194,3 +196,119 @@ func mustParsePort(t *testing.T, s string) int {
 }
 
 var _ = httptest.NewRecorder
+
+// TestCORSOptions_DefaultIsNoOrigins: with no CORSAllowedOrigins
+// the helper must return a zero-value AllowedOrigins. The caller
+// (registerMiddleware) skips installing the middleware in this
+// case so no Access-Control-Allow-Origin header is emitted.
+func TestCORSOptions_DefaultIsNoOrigins(t *testing.T) {
+	s := &Server{cfg: &config.Config{}}
+	opts := s.corsOptions()
+	if len(opts.AllowedOrigins) != 0 {
+		t.Fatalf("default AllowedOrigins must be empty, got %v", opts.AllowedOrigins)
+	}
+	if containsAny(opts.AllowedOrigins, "*") {
+		t.Fatalf("default AllowedOrigins must NOT include '*', got %v", opts.AllowedOrigins)
+	}
+}
+
+// TestCORSOptions_OperatorPinsOrigins: configured origins are
+// echoed verbatim into AllowedOrigins.
+func TestCORSOptions_OperatorPinsOrigins(t *testing.T) {
+	s := &Server{cfg: &config.Config{Server: config.ServerConfig{
+		CORSAllowedOrigins: []string{"https://app.example.com", "https://admin.example.com"},
+	}}}
+	opts := s.corsOptions()
+	if !equalStringSlice(opts.AllowedOrigins, []string{"https://app.example.com", "https://admin.example.com"}) {
+		t.Fatalf("AllowedOrigins = %v", opts.AllowedOrigins)
+	}
+}
+
+// TestCORSOptions_LegacyWildcardOptIn: "*" survives the
+// config round-trip when the operator explicitly sets it (dev
+// workflow); we don't silently expand to it.
+func TestCORSOptions_LegacyWildcardOptIn(t *testing.T) {
+	s := &Server{cfg: &config.Config{Server: config.ServerConfig{
+		CORSAllowedOrigins: []string{"*"},
+	}}}
+	opts := s.corsOptions()
+	if !containsAny(opts.AllowedOrigins, "*") {
+		t.Fatalf("explicit '*' must be preserved when configured, got %v", opts.AllowedOrigins)
+	}
+}
+
+// TestCORS_NoACAOHeaderByDefault: a preflight OPTIONS request
+// against a server with no configured origins must NOT receive
+// an Access-Control-Allow-Origin header. This is the safe
+// behaviour for a server-to-server gateway.
+func TestCORS_NoACAOHeaderByDefault(t *testing.T) {
+	s := &Server{cfg: &config.Config{}}
+	s.engine = chi.NewRouter()
+	// Mirror registerMiddleware: only install cors when configured.
+	if len(s.cfg.Server.CORSAllowedOrigins) > 0 {
+		s.engine.Use(cors.Handler(s.corsOptions()))
+	}
+	s.engine.Get("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodOptions, "/v1/models", nil)
+	r.Header.Set("Origin", "https://attacker.example")
+	r.Header.Set("Access-Control-Request-Method", "GET")
+	s.engine.ServeHTTP(rec, r)
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("ACAO header should be empty, got %q", got)
+	}
+}
+
+// TestCORS_AllowedOriginEchoed: configured origins are echoed
+// back on a preflight OPTIONS request.
+func TestCORS_AllowedOriginEchoed(t *testing.T) {
+	s := &Server{cfg: &config.Config{Server: config.ServerConfig{
+		CORSAllowedOrigins: []string{"https://app.example.com"},
+	}}}
+	s.engine = chi.NewRouter()
+	s.engine.Use(cors.Handler(s.corsOptions()))
+	s.engine.Get("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodOptions, "/v1/models", nil)
+	r.Header.Set("Origin", "https://app.example.com")
+	r.Header.Set("Access-Control-Request-Method", "GET")
+	s.engine.ServeHTTP(rec, r)
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example.com" {
+		t.Fatalf("ACAO header = %q, want %q", got, "https://app.example.com")
+	}
+}
+
+// helpers for slice checks
+
+func equalStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func containsAny(s []string, want string) bool {
+	for _, v := range s {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+// silence unused-import for strings in case future edits drop
+// the helpers above
+var _ = strings.Contains

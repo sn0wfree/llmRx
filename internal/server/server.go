@@ -60,14 +60,27 @@ func (s *Server) registerMiddleware() {
 	s.engine.Use(chimw.Recoverer)
 	s.engine.Use(chimw.RealIP)
 	s.engine.Use(chimw.Timeout(120 * time.Second))
-	s.engine.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"*"},
+	// chi/cors defaults to AllowedOrigins=* when the slice is
+	// empty, so we skip the middleware entirely when no origins
+	// are configured. This matches the safe default for a
+	// server-to-server gateway: no Access-Control-Allow-Origin
+	// header is emitted at all and browsers reject cross-origin
+	// requests before they reach our handlers.
+	if len(s.cfg.Server.CORSAllowedOrigins) > 0 {
+		s.engine.Use(cors.Handler(s.corsOptions()))
+	}
+}
+
+// corsOptions returns the configured CORS policy.
+func (s *Server) corsOptions() cors.Options {
+	return cors.Options{
+		AllowedOrigins:   s.cfg.Server.CORSAllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Task-Type", "X-Session-Token"},
 		ExposedHeaders:   []string{"X-Session-Token"},
 		AllowCredentials: false,
 		MaxAge:           300,
-	}))
+	}
 }
 
 func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defaults) {

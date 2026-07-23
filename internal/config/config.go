@@ -51,6 +51,14 @@ type ServerConfig struct {
 	// every source" — keep that opt-in so misconfiguration
 	// can't silently widen the trust boundary.
 	TrustedProxyCIDRs []string `yaml:"trusted_proxy_cidrs"`
+
+	// CORSAllowedOrigins is the list of origins the gateway
+	// will echo back in Access-Control-Allow-Origin. An empty
+	// list disables CORS entirely (no Access-Control-Allow-Origin
+	// header is sent at all). The legacy "*" wildcard is
+	// supported for dev workflows; production deployments
+	// should pin specific origins.
+	CORSAllowedOrigins []string `yaml:"cors_allowed_origins"`
 }
 
 type StrategyConfig struct {
