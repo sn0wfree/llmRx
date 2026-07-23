@@ -2,6 +2,7 @@ package alert
 
 import (
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/model"
@@ -121,11 +122,18 @@ func evalCostSpike(r *model.Alert, now time.Time, st store.Store) (bool, map[str
 	// files. For cost_spike the previous window is [now-2w, now-w];
 	// when 2w exceeds 8 days the previous window falls entirely
 	// outside the readable range, so prev==0 and the alert can
-	// never fire. We refuse such configurations up front and
-	// emit a warning so the operator sees the misconfiguration
-	// instead of a silent no-op.
+	// never fire. Auto-disable the rule and record the reason so
+	// the operator can see what happened (instead of an alert
+	// loop that emits the same error every cycle and could
+	// starve other rules).
 	if 2*w > 8*24*time.Hour {
-		return false, nil, fmt.Errorf("cost_spike window %ds exceeds 4-day safe limit (2*window must be <= 8 days)", r.WindowSec)
+		reason := fmt.Sprintf("cost_spike window %ds exceeds 4-day safe limit (2*window must be <= 8 days)", r.WindowSec)
+		if derr := st.DisableAlert(r.ID, reason); derr != nil {
+			log.Printf("alert: auto-disable rule %d: %v", r.ID, derr)
+		} else {
+			log.Printf("alert: auto-disabled rule %d (%q): %s", r.ID, r.Name, reason)
+		}
+		return false, nil, nil
 	}
 	curFrom := now.Add(-w).Unix()
 	prevFrom := now.Add(-2 * w).Unix()

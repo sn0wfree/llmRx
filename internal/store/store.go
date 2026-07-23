@@ -83,6 +83,11 @@ type Store interface {
 	UpdateAlert(a *model.Alert) error
 	DeleteAlert(id int64) error
 	RecordAlertFired(id int64, atUnix int64) error
+	// DisableAlert flips the rule's enabled flag to 0 and records
+	// the human-readable reason (e.g. "cost_spike window > 4 days").
+	// Auto-disable lets the alert loop stop re-reporting a permanent
+	// misconfiguration; the operator can re-enable via the admin UI.
+	DisableAlert(id int64, reason string) error
 	GetAlertEvents(limit int) ([]model.AlertEvent, error)
 	CreateAlertEvent(e *model.AlertEvent) error
 	AckAlertEvent(id int64) error

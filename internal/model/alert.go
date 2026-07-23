@@ -17,16 +17,17 @@ const (
 // Alert is a user-configured rule. Threshold semantics depend on
 // the Type; see alert.Evaluate.
 type Alert struct {
-	ID            int64     `json:"id"`
-	Name          string    `json:"name"`
-	Type          AlertType `json:"type"`
-	Threshold     float64   `json:"threshold"`
-	WindowSec     int64     `json:"window_sec"`
-	CooldownSec   int64     `json:"cooldown_sec"`
-	WebhookURL    string    `json:"webhook_url"`
-	Enabled       bool      `json:"enabled"`
-	LastFiredAt   int64     `json:"last_fired_at"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID             int64     `json:"id"`
+	Name           string    `json:"name"`
+	Type           AlertType `json:"type"`
+	Threshold      float64   `json:"threshold"`
+	WindowSec      int64     `json:"window_sec"`
+	CooldownSec    int64     `json:"cooldown_sec"`
+	WebhookURL     string    `json:"webhook_url"`
+	Enabled        bool      `json:"enabled"`
+	LastFiredAt    int64     `json:"last_fired_at"`
+	DisabledReason string    `json:"disabled_reason,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // AlertEvent records a fired alert. Payload is JSON-serialised

@@ -231,41 +231,76 @@ func TestEvaluateCostSpike(t *testing.T) {
 // TestEvaluateCostSpike_WindowTooLargeRejected: a window whose
 // 2*WindowSec exceeds the logstore's MaxAttachFiles (8 days)
 // would silently never fire (the previous window falls outside
-// the readable range and prev==0). We reject such windows up
-// front instead of producing a silent no-op.
+// the readable range and prev==0). Auto-disable the rule and
+// record the reason so the operator sees what happened instead
+// of an alert loop that emits the same error every cycle.
 func TestEvaluateCostSpike_WindowTooLargeRejected(t *testing.T) {
 	st := newStore(t)
 	now := time.Now()
 	// 5 days = 432000s. 2*WindowSec > 8*86400 = 691200s → reject.
-	r := &model.Alert{Type: model.AlertCostSpike, WindowSec: 5 * 86400, Threshold: 1.5}
+	r := &model.Alert{
+		Name: "bad-window", Type: model.AlertCostSpike,
+		WindowSec: 5 * 86400, Threshold: 1.5, Enabled: true,
+	}
+	if err := st.CreateAlert(r); err != nil {
+		t.Fatalf("CreateAlert: %v", err)
+	}
 	fired, _, err := Evaluate(r, now, st)
-	if err == nil {
-		t.Fatal("expected error for window > 4 days")
+	if err != nil {
+		t.Fatalf("Evaluate should NOT return error (auto-disable returns clean): %v", err)
 	}
 	if fired {
 		t.Fatal("should not have fired when window is rejected")
+	}
+	got, err := st.GetAlert(r.ID)
+	if err != nil {
+		t.Fatalf("GetAlert: %v", err)
+	}
+	if got.Enabled {
+		t.Fatal("rule should be auto-disabled")
+	}
+	if got.DisabledReason == "" {
+		t.Fatal("disabled_reason should be populated")
 	}
 }
 
 // TestEvaluateCostSpike_BoundaryWindow: exactly 4 days (2*window
 // = 8 days = MaxAttachFiles) should be the largest accepted
-// window. We can't actually run an 8-day-spanning query in a
-// unit test cheaply, but we verify the rejection threshold
-// itself.
+// window. Just past the boundary, the rule auto-disables.
 func TestEvaluateCostSpike_BoundaryWindow(t *testing.T) {
 	st := newStore(t)
 	now := time.Now()
-	r := &model.Alert{Type: model.AlertCostSpike, WindowSec: 4*86400 + 1, Threshold: 1.5}
-	_, _, err := Evaluate(r, now, st)
-	if err == nil {
-		t.Fatal("expected rejection just past the 4-day boundary")
+	r := &model.Alert{
+		Name: "boundary", Type: model.AlertCostSpike,
+		WindowSec: 4*86400 + 1, Threshold: 1.5, Enabled: true,
 	}
-	r.WindowSec = 4 * 86400
-	// Just at the boundary; no logs inserted so prev==0 path is
-	// reached but no error.
-	_, _, err = Evaluate(r, now, st)
+	if err := st.CreateAlert(r); err != nil {
+		t.Fatalf("CreateAlert: %v", err)
+	}
+	_, _, err := Evaluate(r, now, st)
+	if err != nil {
+		t.Fatalf("Evaluate past boundary: %v", err)
+	}
+	got, _ := st.GetAlert(r.ID)
+	if got.Enabled {
+		t.Fatal("rule just past boundary should be auto-disabled")
+	}
+
+	// Boundary itself: 4 days exactly, no logs → no fire, no disable.
+	r2 := &model.Alert{
+		Name: "boundary-ok", Type: model.AlertCostSpike,
+		WindowSec: 4 * 86400, Threshold: 1.5, Enabled: true,
+	}
+	if err := st.CreateAlert(r2); err != nil {
+		t.Fatalf("CreateAlert r2: %v", err)
+	}
+	_, _, err = Evaluate(r2, now, st)
 	if err != nil {
 		t.Fatalf("4-day boundary should be accepted, got %v", err)
+	}
+	got2, _ := st.GetAlert(r2.ID)
+	if !got2.Enabled {
+		t.Fatal("4-day boundary rule must remain enabled")
 	}
 }
 
@@ -338,5 +373,43 @@ func TestManagerCooldownFollowsRuntimeDefaults(t *testing.T) {
 	evs, _ = st.GetAlertEvents(10)
 	if len(evs) != 2 {
 		t.Fatalf("after rt.SetAlertCooldownSec(0): expected 2 events, got %d", len(evs))
+	}
+}
+
+// TestDisableAlert_FlipsEnabledAndRecordsReason: covers the
+// store-level helper that cost_spike uses for auto-disable.
+func TestDisableAlert_FlipsEnabledAndRecordsReason(t *testing.T) {
+	st := newStore(t)
+	a := &model.Alert{
+		Name: "test", Type: model.AlertErrorRate, Threshold: 0.5,
+		WindowSec: 60, Enabled: true,
+	}
+	if err := st.CreateAlert(a); err != nil {
+		t.Fatalf("CreateAlert: %v", err)
+	}
+	if err := st.DisableAlert(a.ID, "test reason"); err != nil {
+		t.Fatalf("DisableAlert: %v", err)
+	}
+	got, err := st.GetAlert(a.ID)
+	if err != nil {
+		t.Fatalf("GetAlert: %v", err)
+	}
+	if got.Enabled {
+		t.Fatal("rule should be disabled")
+	}
+	if got.DisabledReason != "test reason" {
+		t.Fatalf("disabled_reason = %q, want %q", got.DisabledReason, "test reason")
+	}
+	// Idempotent.
+	if err := st.DisableAlert(a.ID, "another reason"); err != nil {
+		t.Fatalf("DisableAlert idempotent: %v", err)
+	}
+	got, _ = st.GetAlert(a.ID)
+	if got.DisabledReason != "another reason" {
+		t.Fatalf("disabled_reason after re-disable = %q", got.DisabledReason)
+	}
+	// Unknown id → ErrNotFound.
+	if err := st.DisableAlert(999, "x"); err == nil {
+		t.Fatal("expected error for unknown alert id")
 	}
 }

@@ -241,7 +241,10 @@ func (s *SQLite) migrate() error {
 	if err := s.addColumnIfMissing("tokens", "used_usd", "REAL NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	return s.addColumnIfMissing("keys", "key_ciphertext", "TEXT NOT NULL DEFAULT ''")
+	if err := s.addColumnIfMissing("keys", "key_ciphertext", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	return s.addColumnIfMissing("alerts", "disabled_reason", "TEXT NOT NULL DEFAULT ''")
 }
 
 func (s *SQLite) addColumnIfMissing(table, column, decl string) error {
@@ -1175,7 +1178,7 @@ func extractDateForStore(key string) string {
 // ---------------- alerts ----------------
 
 func (s *SQLite) GetAlerts() ([]model.Alert, error) {
-	rows, err := s.db.Query(`SELECT id, name, type, threshold, window_sec, cooldown_sec, webhook_url, enabled, last_fired_at, created_at FROM alerts ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, name, type, threshold, window_sec, cooldown_sec, webhook_url, enabled, last_fired_at, disabled_reason, created_at FROM alerts ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1185,7 +1188,7 @@ func (s *SQLite) GetAlerts() ([]model.Alert, error) {
 		var a model.Alert
 		var enabled int
 		var created int64
-		if err := rows.Scan(&a.ID, &a.Name, &a.Type, &a.Threshold, &a.WindowSec, &a.CooldownSec, &a.WebhookURL, &enabled, &a.LastFiredAt, &created); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.Type, &a.Threshold, &a.WindowSec, &a.CooldownSec, &a.WebhookURL, &enabled, &a.LastFiredAt, &a.DisabledReason, &created); err != nil {
 			return nil, err
 		}
 		a.Enabled = enabled != 0
@@ -1196,11 +1199,11 @@ func (s *SQLite) GetAlerts() ([]model.Alert, error) {
 }
 
 func (s *SQLite) GetAlert(id int64) (*model.Alert, error) {
-	row := s.db.QueryRow(`SELECT id, name, type, threshold, window_sec, cooldown_sec, webhook_url, enabled, last_fired_at, created_at FROM alerts WHERE id=?`, id)
+	row := s.db.QueryRow(`SELECT id, name, type, threshold, window_sec, cooldown_sec, webhook_url, enabled, last_fired_at, disabled_reason, created_at FROM alerts WHERE id=?`, id)
 	var a model.Alert
 	var enabled int
 	var created int64
-	if err := row.Scan(&a.ID, &a.Name, &a.Type, &a.Threshold, &a.WindowSec, &a.CooldownSec, &a.WebhookURL, &enabled, &a.LastFiredAt, &created); err != nil {
+	if err := row.Scan(&a.ID, &a.Name, &a.Type, &a.Threshold, &a.WindowSec, &a.CooldownSec, &a.WebhookURL, &enabled, &a.LastFiredAt, &a.DisabledReason, &created); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
 		}
@@ -1247,6 +1250,23 @@ func (s *SQLite) DeleteAlert(id int64) error {
 func (s *SQLite) RecordAlertFired(id int64, atUnix int64) error {
 	_, err := s.db.Exec(`UPDATE alerts SET last_fired_at=? WHERE id=?`, atUnix, id)
 	return err
+}
+
+// DisableAlert flips the rule's enabled flag to 0 and records
+// the reason so the admin UI / /alerts listing can surface why
+// the rule was auto-disabled. Idempotent.
+func (s *SQLite) DisableAlert(id int64, reason string) error {
+	res, err := s.db.Exec(
+		`UPDATE alerts SET enabled=0, disabled_reason=? WHERE id=?`,
+		reason, id,
+	)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *SQLite) CreateAlertEvent(e *model.AlertEvent) error {
