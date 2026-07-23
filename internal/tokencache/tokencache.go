@@ -1,7 +1,9 @@
 package tokencache
 
 import (
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
@@ -13,28 +15,55 @@ type Cache struct {
 	mu    sync.RWMutex
 	items map[string]middleware.TokenInfo
 	store TokenSource
+	// expirer, when non-nil, is called with the token ID for any
+	// token observed past its ExpiresAt. This lets the cache
+	// opportunistically flip Status=TokenExpired in the store so
+	// later reloads do not re-process the same row.
+	expirer func(tokenID int64) error
 }
 
 // TokenSource is the narrow contract the cache depends on; the
-// production store satisfies it via its GetTokens method.
+// production store satisfies it via its GetTokens and GetPlan
+// methods. GetPlan is used to join the plan's budget/used snapshot
+// onto each TokenInfo so the middleware can enforce plan budgets
+// without touching the database on the hot path.
 type TokenSource interface {
 	GetTokens() ([]model.Token, error)
+	GetPlan(id int64) (*model.Plan, error)
 }
 
 func New(st TokenSource) *Cache {
 	c := &Cache{items: make(map[string]middleware.TokenInfo), store: st}
+	// Initial Reload errors are swallowed so callers that don't care
+	// about plan-join failures still get a working cache. Callers that
+	// DO care (e.g. the gateway bootstrap) should call Reload()
+	// explicitly and handle the error themselves.
 	_ = c.Reload()
 	return c
 }
+
+// SetExpirer installs a callback invoked when Reload observes a
+// token whose ExpiresAt is in the past. The store typically uses
+// this to flip Status to TokenExpired so future reloads skip the
+// row. Safe to set after construction; only consulted on the next
+// Reload.
+func (c *Cache) SetExpirer(fn func(tokenID int64) error) { c.expirer = fn }
 
 func (c *Cache) Reload() error {
 	toks, err := c.store.GetTokens()
 	if err != nil {
 		return err
 	}
+	now := time.Now()
 	next := make(map[string]middleware.TokenInfo, len(toks))
 	for _, t := range toks {
 		if t.Status != 0 { // TokenActive == 0
+			continue
+		}
+		if !t.ExpiresAt.IsZero() && now.After(t.ExpiresAt) {
+			if c.expirer != nil {
+				_ = c.expirer(t.ID)
+			}
 			continue
 		}
 		next[t.Key] = middleware.TokenInfo{
@@ -46,6 +75,44 @@ func (c *Cache) Reload() error {
 			TPM:             t.TPM,
 			ModelsWhitelist: t.ModelsWhitelist,
 			IPWhitelist:     t.IPWhitelist,
+			ExpiresAt:       t.ExpiresAt,
+		}
+	}
+	// Plan budgets are joined in a second pass so a token whose
+	// plan has been updated between cache reloads sees the fresh
+	// used_usd / budget_usd snapshot.
+	//
+	// Fail-closed: if GetPlan errors or returns nil for a plan
+	// referenced by an active token, Reload returns an error and
+	// the previous cache is preserved. Otherwise a transient DB
+	// blip would silently downgrade bound tokens to "unlimited"
+	// and let un-budgeted spend through.
+	budgets := map[int64][2]float64{}
+	referenced := map[int64]struct{}{}
+	for _, info := range next {
+		if info.PlanID == 0 {
+			continue
+		}
+		referenced[info.PlanID] = struct{}{}
+	}
+	for pid := range referenced {
+		if _, ok := budgets[pid]; ok {
+			continue
+		}
+		p, perr := c.store.GetPlan(pid)
+		if perr != nil {
+			return fmt.Errorf("load plan %d: %w", pid, perr)
+		}
+		if p == nil {
+			return fmt.Errorf("plan %d not found (referenced by an active token)", pid)
+		}
+		budgets[pid] = [2]float64{p.BudgetUSD, p.UsedUSD}
+	}
+	for k, info := range next {
+		if b, ok := budgets[info.PlanID]; ok {
+			info.PlanBudgetUSD = b[0]
+			info.PlanUsedUSD = b[1]
+			next[k] = info
 		}
 	}
 	c.mu.Lock()

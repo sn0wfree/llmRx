@@ -228,6 +228,47 @@ func TestEvaluateCostSpike(t *testing.T) {
 	}
 }
 
+// TestEvaluateCostSpike_WindowTooLargeRejected: a window whose
+// 2*WindowSec exceeds the logstore's MaxAttachFiles (8 days)
+// would silently never fire (the previous window falls outside
+// the readable range and prev==0). We reject such windows up
+// front instead of producing a silent no-op.
+func TestEvaluateCostSpike_WindowTooLargeRejected(t *testing.T) {
+	st := newStore(t)
+	now := time.Now()
+	// 5 days = 432000s. 2*WindowSec > 8*86400 = 691200s → reject.
+	r := &model.Alert{Type: model.AlertCostSpike, WindowSec: 5 * 86400, Threshold: 1.5}
+	fired, _, err := Evaluate(r, now, st)
+	if err == nil {
+		t.Fatal("expected error for window > 4 days")
+	}
+	if fired {
+		t.Fatal("should not have fired when window is rejected")
+	}
+}
+
+// TestEvaluateCostSpike_BoundaryWindow: exactly 4 days (2*window
+// = 8 days = MaxAttachFiles) should be the largest accepted
+// window. We can't actually run an 8-day-spanning query in a
+// unit test cheaply, but we verify the rejection threshold
+// itself.
+func TestEvaluateCostSpike_BoundaryWindow(t *testing.T) {
+	st := newStore(t)
+	now := time.Now()
+	r := &model.Alert{Type: model.AlertCostSpike, WindowSec: 4*86400 + 1, Threshold: 1.5}
+	_, _, err := Evaluate(r, now, st)
+	if err == nil {
+		t.Fatal("expected rejection just past the 4-day boundary")
+	}
+	r.WindowSec = 4 * 86400
+	// Just at the boundary; no logs inserted so prev==0 path is
+	// reached but no error.
+	_, _, err = Evaluate(r, now, st)
+	if err != nil {
+		t.Fatalf("4-day boundary should be accepted, got %v", err)
+	}
+}
+
 func TestEvaluateP95(t *testing.T) {
 	st := newStore(t)
 	now := time.Now()

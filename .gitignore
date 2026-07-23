@@ -24,10 +24,9 @@ go.work
 Thumbs.db
 
 # Web UI
-web/node_modules/
-web/.env
-# Note: web/dist/ and internal/webui/dist/ are BOTH committed so the
-# binary embeds the latest UI without requiring `npm run build` on every clone.
+# Note: there is no web/ source tree, npm step, or frontend build.
+# The admin UI is Go html/template + HTMX + Tailwind CDN; templates
+# live in internal/webui/templates/.
 
 # Rust build artifacts
 internal/intent/rust/target/

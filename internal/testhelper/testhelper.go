@@ -100,7 +100,11 @@ func New(t *testing.T) *App {
 
 	mux := chi.NewRouter()
 	mux.With(authmw.Token(cache.Lookup)).Mount("/v1", chatH.Routes())
-	mux.Mount("/api/v1", adminH.Routes())
+	// Match the production mount prefix (server.go: Mounts under
+	// /admin/api/v1). Keeping test mux in lock-step with the
+	// real router ensures handler tests catch any drift between
+	// the documented and shipped URL space.
+	mux.Mount("/admin/api/v1", adminH.Routes())
 	mux.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))

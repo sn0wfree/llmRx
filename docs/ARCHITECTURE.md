@@ -37,10 +37,10 @@
 ### 核心能力
 
 - **OpenAI 兼容入口** — `/v1/chat/completions` + `/v1/models`
-- **Token 分发** — 支持 Plan 级预算、速率限制、模型/IP 白名单
+- **Token 分发** — 支持 Plan 级预算、速率限制、模型/IP 白名单、到期检查
 - **智能路由** — L1 Static → L2 Circuit Breaker → L3 Cost → L4 Intent → L5 Adaptive
-- **用量计费** — 美元实价 + 可配置 markup 倍率
-- **管理面板** — 嵌入式 React SPA，单二进制部署
+- **用量计费** — 美元实价 + 可配置 markup 倍率 + Plan 预算原子 SQL 校验
+- **管理面板** — 嵌入式 Go html/template + HTMX + Tailwind CDN，无前端构建步骤
 
 ---
 
@@ -71,12 +71,12 @@
 
 | 维度 | 选择 | 理由 |
 |------|------|------|
-| 语言 | Go | 单二进制部署，高并发，go:embed 嵌入 Web UI |
+| 语言 | Go | 单二进制部署，高并发，go:embed 嵌入模板 |
 | HTTP 框架 | chi | 轻量，标准 `net/http` 兼容，中间件生态好 |
 | 协议 | 纯 OpenAI 兼容 | 所有 provider 统一转 OpenAI 格式 |
-| 存储 | SQLite (默认) / PostgreSQL (可选) | 按需选，Store 层 interface 抽象 |
-| 前端 | React + Tailwind CSS + Recharts | go:embed 嵌入 dist/，零外部依赖 |
-| 配置 | YAML | 人类可读，支持环境变量插值 `${VAR}` |
+| 存储 | SQLite (默认) | 按需选，Store 层 interface 抽象（PostgreSQL 仅声明） |
+| 管理 UI | Go html/template + HTMX + Tailwind CDN | 零前端构建、零 Node 依赖、单二进制部署 |
+| 配置 | YAML | 人类可读 |
 
 ---
 
@@ -98,9 +98,9 @@ Channel Pool:
     DeepSeek / MiniMax / OpenAI / ... (各配 N 个 Key)
     + Health Check goroutine (30s 探测 / 动态上下线)
     │
-Storage: SQLite / PostgreSQL
+Storage: SQLite (default)
     │
-Management API + Web UI (go:embed)
+Management API (/admin/api/v1) + HTML UI (/admin/, go:embed templates)
 ```
 
 ### 4.2 模块结构

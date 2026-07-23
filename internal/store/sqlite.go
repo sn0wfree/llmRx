@@ -22,6 +22,12 @@ import (
 var (
 	ErrNotFound      = errors.New("not found")
 	ErrAlreadyExists = errors.New("already exists")
+	// ErrBudgetExceeded is returned by IncrementPlanSpend when the
+	// requested addition would push the plan's used_usd past its
+	// configured budget_usd. Callers should treat this as a billing
+	// stop: roll back any paired IncrementTokenSpend and reject the
+	// request as 402 Payment Required at the HTTP layer.
+	ErrBudgetExceeded = errors.New("plan budget exceeded")
 	// errNotImplemented is returned by Phase 1.5 reserved BYOK
 	// store methods until the feature ships. Keeping it unexported
 	// so callers don't depend on the wire format.
@@ -664,21 +670,121 @@ func (s *SQLite) IncrementTokenSpend(tokenID int64, amount float64) error {
 	return nil
 }
 
+// IncrementPlanSpend atomically adds amount to a plan's used_usd,
+// but only if the plan has either no budget (budget_usd = 0,
+// meaning unlimited) or enough remaining headroom. The check and
+// the update happen in a single SQL statement so concurrent
+// requests cannot race past the budget. Returns ErrBudgetExceeded
+// when the addition would overshoot the configured limit, and
+// ErrNotFound when the plan row does not exist.
+//
+// Callers that pair this with IncrementTokenSpend must roll the
+// token spend back on ErrBudgetExceeded to keep the two ledgers in
+// agreement.
 func (s *SQLite) IncrementPlanSpend(planID int64, amount float64) error {
 	if amount == 0 || planID == 0 {
 		return nil
 	}
 	res, err := s.db.Exec(
-		`UPDATE plans SET used_usd = used_usd + ? WHERE id = ?`, amount, planID,
+		`UPDATE plans
+		   SET used_usd = used_usd + ?
+		 WHERE id = ?
+		   AND (budget_usd = 0 OR used_usd + ? <= budget_usd)`,
+		amount, planID, amount,
 	)
 	if err != nil {
 		return err
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return ErrNotFound
+		// Distinguish "no such plan" from "budget would overflow".
+		var exists int64
+		if err := s.db.QueryRow(`SELECT 1 FROM plans WHERE id = ?`, planID).Scan(&exists); err != nil {
+			if err == sql.ErrNoRows {
+				return ErrNotFound
+			}
+			return err
+		}
+		return ErrBudgetExceeded
 	}
 	return nil
+}
+
+// RecordRequestSpend credits both the token and plan ledgers
+// inside a single SQL transaction. When the plan leg would
+// exceed budget_usd the transaction is rolled back so the
+// token ledger is automatically reverted — the caller never
+// has to compensate manually.
+//
+// planID == 0 skips the plan leg (no plan bound to the token),
+// in which case only the token ledger is touched and no
+// ErrBudgetExceeded can be raised.
+func (s *SQLite) RecordRequestSpend(tokenID, planID int64, amount float64) error {
+	if amount == 0 {
+		return nil
+	}
+	if tokenID == 0 {
+		// No token leg to credit; nothing to do.
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	// tx.Rollback is safe to call after a successful Commit; the
+	// deferred fallback ensures cleanup on any error path.
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.Exec(
+		`UPDATE tokens SET used_usd = used_usd + ? WHERE id = ?`,
+		amount, tokenID,
+	)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+
+	if planID > 0 {
+		res, err = tx.Exec(
+			`UPDATE plans
+			   SET used_usd = used_usd + ?
+			 WHERE id = ?
+			   AND (budget_usd = 0 OR used_usd + ? <= budget_usd)`,
+			amount, planID, amount,
+		)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			// Distinguish "no such plan" from "budget would overflow".
+			var exists int64
+			if qerr := tx.QueryRow(`SELECT 1 FROM plans WHERE id = ?`, planID).Scan(&exists); qerr != nil {
+				if qerr == sql.ErrNoRows {
+					return ErrNotFound
+				}
+				return qerr
+			}
+			// Budget would overflow — deferred Rollback will
+			// revert the token ledger.
+			return ErrBudgetExceeded
+		}
+	}
+
+	return tx.Commit()
+}
+
+// MarkTokenExpired flips a token's status to TokenExpired so the
+// in-memory cache will skip it on the next reload and any stale
+// request still holding the bearer will be rejected by the
+// Expiry check in middleware. Idempotent.
+func (s *SQLite) MarkTokenExpired(tokenID int64) error {
+	_, err := s.db.Exec(
+		`UPDATE tokens SET status = ? WHERE id = ? AND status = ?`,
+		int(model.TokenExpired), tokenID, int(model.TokenActive),
+	)
+	return err
 }
 
 func (s *SQLite) DeleteToken(id int64) error {

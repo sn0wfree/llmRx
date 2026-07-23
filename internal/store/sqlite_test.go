@@ -263,3 +263,133 @@ func TestLogs_Aggregations(t *testing.T) {
 		t.Fatal("GetLogs not ordered DESC")
 	}
 }
+
+// TestIncrementPlanSpend_BudgetExceeded: when the addition would
+// push used_usd past budget_usd, IncrementPlanSpend returns
+// ErrBudgetExceeded and leaves used_usd unchanged. Plans with
+// budget_usd = 0 are unlimited.
+func TestIncrementPlanSpend_BudgetExceeded(t *testing.T) {
+	s := openTemp(t)
+	p := &model.Plan{Name: "starter", BudgetUSD: 2.0, UsedUSD: 1.5}
+	if err := s.CreatePlan(p); err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+
+	if err := s.IncrementPlanSpend(p.ID, 1.0); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("1.5+1.0 > 2.0: expected ErrBudgetExceeded, got %v", err)
+	}
+	got, _ := s.GetPlan(p.ID)
+	if got.UsedUSD != 1.5 {
+		t.Fatalf("over-budget spend should not be applied, used=%v", got.UsedUSD)
+	}
+
+	if err := s.IncrementPlanSpend(p.ID, 0.4); err != nil {
+		t.Fatalf("within-budget spend should succeed, got %v", err)
+	}
+	got, _ = s.GetPlan(p.ID)
+	if got.UsedUSD != 1.9 {
+		t.Fatalf("within-budget spend not applied, used=%v", got.UsedUSD)
+	}
+
+	// budget_usd = 0 means unlimited; large addition still succeeds.
+	p2 := &model.Plan{Name: "open", BudgetUSD: 0}
+	if err := s.CreatePlan(p2); err != nil {
+		t.Fatalf("CreatePlan open: %v", err)
+	}
+	if err := s.IncrementPlanSpend(p2.ID, 1e9); err != nil {
+		t.Fatalf("unlimited plan: expected nil error, got %v", err)
+	}
+}
+
+// TestMarkTokenExpired_FlipsStatus: idempotent flip that prevents
+// the row from re-entering the cache on subsequent reloads.
+func TestMarkTokenExpired_FlipsStatus(t *testing.T) {
+	s := openTemp(t)
+	tok := &model.Token{Key: "sk-x", Status: model.TokenActive, Name: "x"}
+	if err := s.CreateToken(tok); err != nil {
+		t.Fatalf("CreateToken: %v", err)
+	}
+	if err := s.MarkTokenExpired(tok.ID); err != nil {
+		t.Fatalf("MarkTokenExpired: %v", err)
+	}
+	got, _ := s.GetToken("sk-x")
+	if got.Status != model.TokenExpired {
+		t.Fatalf("status: %v", got.Status)
+	}
+	// Idempotent.
+	if err := s.MarkTokenExpired(tok.ID); err != nil {
+		t.Fatalf("MarkTokenExpired idempotent: %v", err)
+	}
+}
+
+// TestRecordRequestSpend_AtomicRollbackOnBudgetExceeded: when the
+// plan leg exceeds budget, the token leg must be reverted inside
+// the same transaction. Otherwise the two ledgers drift.
+func TestRecordRequestSpend_AtomicRollbackOnBudgetExceeded(t *testing.T) {
+	s := openTemp(t)
+	tok := &model.Token{Key: "sk-atomic", Status: model.TokenActive, Name: "a"}
+	if err := s.CreateToken(tok); err != nil {
+		t.Fatalf("CreateToken: %v", err)
+	}
+	plan := &model.Plan{Name: "tight", BudgetUSD: 1.0, UsedUSD: 0.5}
+	if err := s.CreatePlan(plan); err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+
+	// First request: fits within budget (0.5 + 0.4 = 0.9 ≤ 1.0).
+	if err := s.RecordRequestSpend(tok.ID, plan.ID, 0.4); err != nil {
+		t.Fatalf("first spend: %v", err)
+	}
+	tokAfter, _ := s.GetTokenByID(tok.ID)
+	if tokAfter.UsedUSD < 0.399999 || tokAfter.UsedUSD > 0.400001 {
+		t.Fatalf("token ledger after first spend: %v", tokAfter.UsedUSD)
+	}
+
+	// Second request: 0.9 + 0.5 = 1.4 > 1.0 ⇒ ErrBudgetExceeded.
+	// The token leg must NOT be persisted.
+	if err := s.RecordRequestSpend(tok.ID, plan.ID, 0.5); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("expected ErrBudgetExceeded, got %v", err)
+	}
+	tokAfter, _ = s.GetTokenByID(tok.ID)
+	if tokAfter.UsedUSD < 0.399999 || tokAfter.UsedUSD > 0.400001 {
+		t.Fatalf("token ledger must not advance on budget failure, got %v", tokAfter.UsedUSD)
+	}
+	planAfter, _ := s.GetPlan(plan.ID)
+	if planAfter.UsedUSD < 0.899999 || planAfter.UsedUSD > 0.900001 {
+		t.Fatalf("plan ledger after failed attempt: %v", planAfter.UsedUSD)
+	}
+}
+
+// TestRecordRequestSpend_NoPlanSkipsPlanLeg: when planID=0, only
+// the token ledger is touched.
+func TestRecordRequestSpend_NoPlanSkipsPlanLeg(t *testing.T) {
+	s := openTemp(t)
+	tok := &model.Token{Key: "sk-noplan", Status: model.TokenActive, Name: "np"}
+	if err := s.CreateToken(tok); err != nil {
+		t.Fatalf("CreateToken: %v", err)
+	}
+	if err := s.RecordRequestSpend(tok.ID, 0, 0.25); err != nil {
+		t.Fatalf("RecordRequestSpend: %v", err)
+	}
+	got, _ := s.GetTokenByID(tok.ID)
+	if got.UsedUSD < 0.249999 || got.UsedUSD > 0.250001 {
+		t.Fatalf("token ledger not advanced: %v", got.UsedUSD)
+	}
+}
+
+// TestRecordRequestSpend_NotFoundOnUnknownToken: a non-existent
+// token returns ErrNotFound without touching the plan ledger.
+func TestRecordRequestSpend_NotFoundOnUnknownToken(t *testing.T) {
+	s := openTemp(t)
+	plan := &model.Plan{Name: "any", BudgetUSD: 5.0, UsedUSD: 1.0}
+	if err := s.CreatePlan(plan); err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+	if err := s.RecordRequestSpend(999, plan.ID, 0.1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+	got, _ := s.GetPlan(plan.ID)
+	if got.UsedUSD != 1.0 {
+		t.Fatalf("plan ledger must not change, got %v", got.UsedUSD)
+	}
+}

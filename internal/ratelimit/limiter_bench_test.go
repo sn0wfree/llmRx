@@ -15,7 +15,7 @@ func BenchmarkLimiter_Allow(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if _, _ = l.Allow(1, 600, 100000, 100); true {
+			if _, _ = l.Allow(1, 600, 100000, 100, 0, 0, 0); true {
 				atomic.AddInt64(&hits, 1)
 			}
 		}
@@ -28,7 +28,7 @@ func BenchmarkLimiter_Allow(b *testing.B) {
 func BenchmarkLimiter_AllowMultiKey(b *testing.B) {
 	l := New()
 	for i := 0; i < 100; i++ {
-		_, _ = l.Allow(int64(i), 600, 100000, 100)
+		_, _ = l.Allow(int64(i), 600, 100000, 100, 0, 0, 0)
 	}
 
 	var wg sync.WaitGroup
@@ -37,7 +37,7 @@ func BenchmarkLimiter_AllowMultiKey(b *testing.B) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			_, _ = l.Allow(int64(id%100), 600, 100000, 100)
+			_, _ = l.Allow(int64(id%100), 600, 100000, 100, 0, 0, 0)
 		}(i)
 	}
 	wg.Wait()

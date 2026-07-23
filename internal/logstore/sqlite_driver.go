@@ -122,7 +122,15 @@ func (d *SQLiteDriver) Insert(entry *model.Log) error {
 // future use (currently unused; rollover is derived from the
 // counter).
 func (d *SQLiteDriver) acquire(date string, seqHint int) (*dayFile, string, error) {
+	// seqHint > 0 means the caller is asking for a specific seq
+	// file (typically the anchor in QueryAcross). The fast path
+	// looks it up by the exact dayFileKey, not just the date, so
+	// per-seq entries are reachable without falling through to
+	// the slow path.
 	key := date
+	if seqHint > 0 {
+		key = dayFileKey(date, seqHint)
+	}
 
 	// Fast path: file is in cache and below threshold.
 	d.mu.RLock()
@@ -157,7 +165,10 @@ func (d *SQLiteDriver) acquire(date string, seqHint int) (*dayFile, string, erro
 	}
 
 	// Find next free seq for this date (base, then -1, -2, ...).
-	seq := 0
+	// When seqHint > 0, prefer that slot first (used by the
+	// anchor lookup in QueryAcross so a non-zero seq file can be
+	// opened even when its seq=0 sibling exists on disk).
+	seq := seqHint
 	for {
 		candidate := dayFileKey(date, seq)
 		path := filepath.Join(d.dir, candidate+".db")
@@ -268,13 +279,13 @@ func (d *SQLiteDriver) QueryAcross(filter QueryFilter, days []string) ([]model.L
 	if len(days) == 0 {
 		return []model.Log{}, 0, nil
 	}
-	sort.Strings(days)
-
-	if len(days) > MaxAttachFiles {
-		// Take the most recent N files; older ones are out of
-		// scope for this query.
-		days = days[len(days)-MaxAttachFiles:]
-	}
+	// Sort by (date, seq) numerically so same-day seq=0 (base)
+	// lands adjacent to seq=1, seq=2 etc. Then truncate by date:
+	// when we exceed MaxAttachFiles, drop the **oldest dates
+	// entirely** rather than slicing mid-day and losing the
+	// first 100 MiB of a retained date.
+	days = sortByDateSeq(days)
+	days = truncateByDate(days, MaxAttachFiles)
 
 	// Anchor: the last (most recent) file is the conn we hold open.
 	anchor := days[len(days)-1]
@@ -443,10 +454,10 @@ func (d *SQLiteDriver) LogStats(days []string) (LogStatsResult, error) {
 	if len(days) == 0 {
 		return LogStatsResult{}, nil
 	}
-	sort.Strings(days)
-	if len(days) > MaxAttachFiles {
-		days = days[len(days)-MaxAttachFiles:]
-	}
+	// Same sort + truncate strategy as QueryAcross: keep every
+	// seq of the most recent dates instead of slicing mid-day.
+	days = sortByDateSeq(days)
+	days = truncateByDate(days, MaxAttachFiles)
 
 	anchor := days[len(days)-1]
 	d.mu.RLock()
@@ -661,10 +672,10 @@ func (d *SQLiteDriver) openUnion(days []string) (*dayFile, []string, []string, e
 	if len(days) == 0 {
 		return nil, nil, nil, nil
 	}
-	sort.Strings(days)
-	if len(days) > MaxAttachFiles {
-		days = days[len(days)-MaxAttachFiles:]
-	}
+	// Same sort + truncate strategy as QueryAcross: keep every
+	// seq of the most recent dates instead of slicing mid-day.
+	days = sortByDateSeq(days)
+	days = truncateByDate(days, MaxAttachFiles)
 
 	anchor := days[len(days)-1]
 	d.mu.RLock()
@@ -735,11 +746,18 @@ func (d *SQLiteDriver) DeleteFiles(days []string) error {
 // ---------- Filename helpers ----------
 
 // extractDate pulls the "YYYY-MM-DD" prefix from a dayFile key
-// like "2026-07-09-2". It returns the date unchanged if there is
-// no seq suffix.
+// like "2026-07-09-2". The base file "2026-07-09" (seq=0) has no
+// suffix and is returned unchanged.
+//
+// The key has the format "YYYY-MM-DD[-N]" where N is the optional
+// seq suffix. We count hyphens to distinguish "2026-07-09" (date
+// only, 2 hyphens) from "2026-07-09-2" (date + seq, 3 hyphens).
+// Treating the "09" of "2026-07-09" as a seq suffix (because it
+// parses as a number) collapses every month's files into a single
+// group, which is exactly the bug we are fixing.
 func extractDate(key string) string {
-	if idx := strings.LastIndex(key, "-"); idx > 0 {
-		if _, err := strconv.Atoi(key[idx+1:]); err == nil {
+	if strings.Count(key, "-") >= 3 {
+		if idx := strings.LastIndex(key, "-"); idx > 0 {
 			return key[:idx]
 		}
 	}
@@ -749,9 +767,11 @@ func extractDate(key string) string {
 // seqOf returns the seq suffix of a dayFile key (0 for the base
 // file). Returns 0 if the key has no seq suffix.
 func seqOf(key string) int {
-	if idx := strings.LastIndex(key, "-"); idx > 0 {
-		if n, err := strconv.Atoi(key[idx+1:]); err == nil {
-			return n
+	if strings.Count(key, "-") >= 3 {
+		if idx := strings.LastIndex(key, "-"); idx > 0 {
+			if n, err := strconv.Atoi(key[idx+1:]); err == nil {
+				return n
+			}
 		}
 	}
 	return 0
@@ -759,3 +779,69 @@ func seqOf(key string) int {
 
 // Compile-time assertion that SQLiteDriver satisfies Driver.
 var _ Driver = (*SQLiteDriver)(nil)
+
+// sortByDateSeq orders day-file basenames by (date, seq) using
+// numeric comparison for the seq suffix. The pure string sort in
+// ListFiles / QueryAcross interleaves "2026-07-22" between
+// "2026-07-22-1" and "2026-07-22-2" because '-' (0x2D) < '0'
+// (0x30), which makes the seq=0 base file land *first* in the
+// list. With a max-files truncation, the base file then falls off
+// the head of the slice and the day's first 100 MiB of logs
+// silently disappear from every aggregate. This comparator fixes
+// that by ordering same-day seqs numerically.
+func sortByDateSeq(names []string) []string {
+	out := make([]string, len(names))
+	copy(out, names)
+	sort.SliceStable(out, func(i, j int) bool {
+		di, si := extractDate(out[i]), seqOf(out[i])
+		dj, sj := extractDate(out[j]), seqOf(out[j])
+		if di != dj {
+			return di < dj
+		}
+		return si < sj
+	})
+	return out
+}
+
+// truncateByDate groups day files by date and, when the total
+// exceeds the budget, drops the **oldest dates entirely** so every
+// seq within a retained date survives. This is the correct
+// behaviour for SQLite ATTACH with a hard file cap: rather than
+// trim a slice of files (which may slice through a day's seq
+// range), we sacrifice the oldest day(s).
+func truncateByDate(names []string, budget int) []string {
+	if len(names) <= budget {
+		return names
+	}
+	// Group preserving input order (caller already sorted).
+	type dayGroup struct {
+		date string
+		files []string
+	}
+	var groups []dayGroup
+	idx := map[string]int{}
+	for _, n := range names {
+		d := extractDate(n)
+		if i, ok := idx[d]; ok {
+			groups[i].files = append(groups[i].files, n)
+			continue
+		}
+		idx[d] = len(groups)
+		groups = append(groups, dayGroup{date: d, files: []string{n}})
+	}
+	// Drop leading groups until total fits.
+	total := len(names)
+	drop := 0
+	for total > budget && drop < len(groups)-1 {
+		total -= len(groups[drop].files)
+		drop++
+	}
+	if drop == 0 {
+		return names
+	}
+	out := make([]string, 0, total)
+	for _, g := range groups[drop:] {
+		out = append(out, g.files...)
+	}
+	return out
+}

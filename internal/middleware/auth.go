@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/sn0wfree/llmRx/internal/model"
 )
 
 type contextKey string
@@ -42,16 +45,24 @@ func writeAuthError(w http.ResponseWriter, status int, msg, code string) {
 // token row (0 = unlimited). ModelWhitelist is the list of models
 // the token is allowed to call (empty = any). PlanID ties the token
 // to a billing Plan whose markup_ratio applies on top of the channel
-// markup.
+// markup. PlanBudgetUSD / PlanUsedUSD are the plan's billing
+// budget and accumulated usage snapshot taken at Reload time
+// (refreshed asynchronously by the store on write).
+//
+// ExpiresAt is the absolute expiry timestamp. A zero value means
+// the token never expires.
 type TokenInfo struct {
-	ID             int64
-	Key            string
-	Name           string
-	PlanID         int64
-	RPM            int
-	TPM            int
+	ID              int64
+	Key             string
+	Name            string
+	PlanID          int64
+	RPM             int
+	TPM             int
 	ModelsWhitelist []string
 	IPWhitelist     []string
+	ExpiresAt       time.Time
+	PlanBudgetUSD   float64
+	PlanUsedUSD     float64
 }
 
 // HasModelAccess returns true if the requested model is allowed by
@@ -139,14 +150,25 @@ func TokenWithOptions(lookup TokenLookup, onUnknown UnknownTokenHook) func(http.
 }
 
 // LimitEnforcer decides whether a request is allowed under the
-// token's per-minute / per-token rate limits. The implementation
-// is injected by the caller so middleware stays storage-free.
+// token's per-minute / per-token rate limits and the plan's USD
+// budget. The implementation is injected by the caller so
+// middleware stays storage-free.
+//
+// budgetUSD == 0 means the plan has no configured budget
+// (unlimited). usedUSD is the plan's running total as of the last
+// cache reload. estimatedCostUSD is the operator's guess for the
+// upcoming request — usually 0 in the middleware (we can't know
+// the real cost up-front) and refined after the upstream response
+// in api/router.go. When estimatedCostUSD > 0 and the resulting
+// total would exceed budgetUSD, the enforcer returns
+// reason="budget exceeded" so the middleware can return 402.
 type LimitEnforcer interface {
-	Allow(tokenID int64, rpm, tpm int, promptEstimate int) (allowed bool, reason string)
+	Allow(tokenID int64, rpm, tpm int, promptEstimate int, budgetUSD, usedUSD, estimatedCostUSD float64) (allowed bool, reason string)
 }
 
-// WithLimits wraps Token() with RPM/TPM enforcement. Enforcer may be
-// nil (limits ignored).
+// WithLimits wraps Token() with RPM/TPM + token-expiry + plan
+// budget enforcement. Enforcer may be nil (limits ignored) but
+// expiry is always enforced when TokenInfo.ExpiresAt is set.
 func WithLimits(lookup TokenLookup, enforcer LimitEnforcer) func(http.Handler) http.Handler {
 	return WithLimitsAndOptions(lookup, enforcer, nil)
 }
@@ -167,11 +189,22 @@ func WithLimitsAndOptions(lookup TokenLookup, enforcer LimitEnforcer, onUnknown 
 				next.ServeHTTP(w, r)
 				return
 			}
+			if !info.ExpiresAt.IsZero() && time.Now().After(info.ExpiresAt) {
+				writeAuthError(w, http.StatusForbidden, "token expired", "token_expired")
+				return
+			}
 			// The middleware can't know the prompt size yet; it
 			// accounts for the request itself (1 unit). Streaming
 			// completion usage is accounted later in emitLog.
-			if ok, reason := enforcer.Allow(info.ID, info.RPM, info.TPM, 1); !ok {
-				writeAuthError(w, http.StatusTooManyRequests, reason, "rate_limited")
+			ok, reason := enforcer.Allow(info.ID, info.RPM, info.TPM, 1, info.PlanBudgetUSD, info.PlanUsedUSD, 0)
+			if !ok {
+				status := http.StatusTooManyRequests
+				code := "rate_limited"
+				if reason == "budget exceeded" {
+					status = http.StatusPaymentRequired
+					code = "budget_exceeded"
+				}
+				writeAuthError(w, status, reason, code)
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -214,6 +247,33 @@ func AdminOnly(lookup func(session string) (any, bool)) func(http.Handler) http.
 			}
 			ctx := context.WithValue(r.Context(), UserKey, u)
 			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// RequireRole gates an already-authenticated admin route by the
+// caller's User.Role. AdminOnly must run first (or the lookup must
+// have placed a *model.User under UserKey) so that UserKey is
+// populated; otherwise the request is rejected as forbidden.
+//
+// Use model.RoleAdmin for routine CRUD (channels, tokens, plans,
+// alerts, logs read, analytics). Use model.RoleRoot for
+// user-management, secret rotation, runtime config PUT, and global
+// reload — operations that can lock out other operators or change
+// global behaviour.
+func RequireRole(min model.UserRole) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			u, _ := r.Context().Value(UserKey).(*model.User)
+			if u == nil {
+				writeAuthError(w, http.StatusUnauthorized, "no session", "missing_session")
+				return
+			}
+			if u.Role < min {
+				writeAuthError(w, http.StatusForbidden, "insufficient role", "insufficient_role")
+				return
+			}
+			next.ServeHTTP(w, r)
 		})
 	}
 }

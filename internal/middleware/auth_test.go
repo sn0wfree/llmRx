@@ -196,6 +196,6 @@ type fakeEnforcer struct {
 	reason string
 }
 
-func (f *fakeEnforcer) Allow(tokenID int64, rpm, tpm int, promptEstimate int) (bool, string) {
+func (f *fakeEnforcer) Allow(tokenID int64, rpm, tpm int, promptEstimate int, budgetUSD, usedUSD, estimatedCostUSD float64) (bool, string) {
 	return f.allow, f.reason
 }

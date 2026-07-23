@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sn0wfree/llmRx/internal/auth"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/runtime"
@@ -1203,6 +1204,10 @@ func bcryptHashForTest(pw string) (string, error) {
 	return authBcrypt(pw)
 }
 
+func authHashForTest(pw string) (string, error) {
+	return auth.Hash(pw)
+}
+
 func TestRotateSecrets_RejectsWhenNoManager(t *testing.T) {
 	app := testhelper.New(t)
 	sess := login(t, app)
@@ -1239,5 +1244,152 @@ func TestRotateSecrets_RejectsInvalidHex(t *testing.T) {
 		`{"new_master_key":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- role gates (RoleAdmin / RoleRoot) ---
+
+// loginAs inserts a user with the given role/password directly via
+// the store, logs them in, and returns the session token. Bypasses
+// the RoleRoot-only POST /users endpoint.
+func loginAs(t *testing.T, app *testhelper.App, username, password string, role model.UserRole) string {
+	t.Helper()
+	h, err := hashForTest(password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	u := &model.User{Username: username, PasswordHash: h, Role: role, Status: 1}
+	if err := app.Store.CreateUser(u); err != nil {
+		t.Fatalf("create %s: %v", username, err)
+	}
+	rec := do(t, app.Admin.Routes(), http.MethodPost, "/login", "",
+		`{"username":"`+username+`","password":"`+password+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login %s: %d %s", username, rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		SessionToken string `json:"session_token"`
+	}
+	decodeJSON(t, rec, &resp)
+	if resp.SessionToken == "" {
+		t.Fatalf("%s: empty session token", username)
+	}
+	return resp.SessionToken
+}
+
+func hashForTest(pw string) (string, error) {
+	return authHashForTest(pw)
+}
+
+// TestAdmin_RequireRole_AdminEndpointsAccessByRoleAdmin: an
+// authenticated RoleAdmin operator can read /dashboard and create
+// channels (routine admin operations).
+func TestAdmin_RequireRole_AdminEndpointsAccessByRoleAdmin(t *testing.T) {
+	app := testhelper.New(t)
+	sess := loginAs(t, app, "op1", "op1pass1", model.RoleAdmin)
+
+	// Dashboard: RoleAdmin allowed.
+	rec := do(t, app.Admin.Routes(), http.MethodGet, "/dashboard", sess, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dashboard RoleAdmin: expected 200, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Create channel: RoleAdmin allowed.
+	rec = do(t, app.Admin.Routes(), http.MethodPost, "/channels", sess,
+		`{"name":"c1","provider":"openai","protocol":"openai","base_url":"https://x","models":["m"],"input_price_per_1m":0,"output_price_per_1m":0}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create channel RoleAdmin: expected 200, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestAdmin_RequireRole_RootEndpointsRejectedForRoleAdmin: a
+// RoleAdmin operator is blocked from the high-impact endpoints
+// (users lifecycle, config PUT, reload, secrets/rotate).
+func TestAdmin_RequireRole_RootEndpointsRejectedForRoleAdmin(t *testing.T) {
+	app := testhelper.New(t)
+	sess := loginAs(t, app, "op1", "op1pass1", model.RoleAdmin)
+
+	cases := []struct {
+		method, path, body string
+	}{
+		{http.MethodPost, "/users", `{"username":"x","password":"y","role":0}`},
+		{http.MethodDelete, "/users/1", ""},
+		{http.MethodPut, "/config", `{"cost_strategy":"cheapest"}`},
+		{http.MethodPost, "/reload", ""},
+		{http.MethodPost, "/secrets/rotate", `{"new_master_key":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`},
+	}
+	for _, c := range cases {
+		rec := do(t, app.Admin.Routes(), c.method, c.path, sess, c.body)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s %s as RoleAdmin: expected 403, got %d %s", c.method, c.path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// TestAdmin_RequireRole_RootEndpointsAccessByRoleRoot: the seeded
+// admin (RoleRoot) can reach every endpoint, including the
+// high-impact ones.
+func TestAdmin_RequireRole_RootEndpointsAccessByRoleRoot(t *testing.T) {
+	app := testhelper.New(t)
+	sess := login(t, app) // seeded admin is RoleRoot
+
+	// Create user.
+	rec := do(t, app.Admin.Routes(), http.MethodPost, "/users", sess,
+		`{"username":"carol","password":"carolpass","role":10}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create user as RoleRoot: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Reload.
+	rec = do(t, app.Admin.Routes(), http.MethodPost, "/reload", sess, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reload as RoleRoot: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Config PUT (rejects out-of-range, but should not be 403).
+	rec = do(t, app.Admin.Routes(), http.MethodPut, "/config", sess,
+		`{"cost_strategy":"cheapest"}`)
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("config PUT as RoleRoot: got 403")
+	}
+}
+
+// TestAdmin_RequireRole_AdminEndpointsRejectedForRoleUser: a
+// non-admin operator (RoleUser) is blocked from every admin
+// endpoint, including routine ones.
+func TestAdmin_RequireRole_AdminEndpointsRejectedForRoleUser(t *testing.T) {
+	app := testhelper.New(t)
+	sess := loginAs(t, app, "guest", "guestpass", model.RoleUser)
+
+	cases := []struct {
+		method, path, body string
+	}{
+		{http.MethodGet, "/dashboard", ""},
+		{http.MethodGet, "/channels", ""},
+		{http.MethodPost, "/channels", `{"name":"c1","provider":"openai","protocol":"openai","base_url":"https://x","models":["m"],"input_price_per_1m":0,"output_price_per_1m":0}`},
+		{http.MethodGet, "/tokens", ""},
+		{http.MethodPost, "/tokens", `{"name":"t","key":"sk-x","rpm":0,"tpm":0,"plan_id":0}`},
+		{http.MethodPost, "/users", `{"username":"x","password":"y","role":0}`},
+		{http.MethodPost, "/reload", ""},
+	}
+	for _, c := range cases {
+		rec := do(t, app.Admin.Routes(), c.method, c.path, sess, c.body)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s %s as RoleUser: expected 403, got %d %s", c.method, c.path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// TestRequireRole_NoSessionReturns401 covers the edge case where
+// RequireRole runs without an authenticated user in context.
+func TestRequireRole_NoSessionReturns401(t *testing.T) {
+	h := middleware.RequireRole(model.RoleAdmin)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	h(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("handler should not be reached")
+	})).ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
 	}
 }

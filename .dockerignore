@@ -26,13 +26,9 @@ data/
 *.db-*
 secrets/
 
-# Node + web build artifacts (rebuilt by the host build script
-# when web/src changes; the committed internal/webui/dist is
-# already go:embed'd into the binary).
-web/node_modules
-web/dist
+# Node + web build artifacts: there is no web/ source tree or
+# npm step in the build pipeline. The admin UI ships as Go
+# html/template, embedded via go:embed templates.
 
 # The Dockerfile copies: build/llmRx (host-compiled binary),
-# internal/webui/dist (committed SPA, embedded into the binary
-# at compile time — kept here only as a safety net), go.mod,
-# go.sum. Everything else above is noise.
+# go.mod, go.sum. Everything else above is noise.

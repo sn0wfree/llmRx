@@ -137,8 +137,15 @@ func (h *Handler) UserPasswordForm(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// UserPasswordSubmit handles the change-password POST.
+// UserPasswordSubmit handles the change-password POST. Any logged-in
+// user can change their own password. RoleRoot can change anyone's
+// password without supplying the old one.
 func (h *Handler) UserPasswordSubmit(w http.ResponseWriter, r *http.Request) {
+	caller := getUser(r)
+	if caller == nil {
+		http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+		return
+	}
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		http.Error(w, "bad id", http.StatusBadRequest)
@@ -147,6 +154,10 @@ func (h *Handler) UserPasswordSubmit(w http.ResponseWriter, r *http.Request) {
 	u, err := h.store.GetUser(id)
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if caller.ID != id && caller.Role < model.RoleRoot {
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	if err := r.ParseForm(); err != nil {

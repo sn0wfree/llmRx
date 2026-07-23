@@ -9,7 +9,7 @@ P0 → P7+ 全部完成，所有 L1-L5 路由层齐全，多协议 provider，�
 ### 核心能力
 
 #### 部署 / 持久化
-- Go 单二进制 + 嵌入式 React SPA（`go:embed`，零外部依赖）
+- Go 单二进制 + 嵌入式 HTML/Templates 管理后台（`go:embed templates`，零外部 npm/构建步骤）
 - SQLite 单文件持久化（默认 `data/llmrx.db`，WAL + FK）
 - YAML 配置驱动 → 启动时 seed 进 DB（首次启动）
 - Dockerfile（`FROM scratch` + 静态链接 CGO 二进制，镜像 ≈ 13 MB；启动 / 健康检查 / bootstrap / privilege drop 全部在 Go 二进制内完成，无 shell / busybox / entrypoint）
@@ -17,16 +17,16 @@ P0 → P7+ 全部完成，所有 L1-L5 路由层齐全，多协议 provider，�
 - CI：test.yml（vet + race + 60% 覆盖门槛 + build）+ docker.yml（buildx 多架构 amd64+arm64 → ghcr.io）
 
 #### 管理控制台 + API
-- `/admin/`（Dashboard / Channels / Tokens / Logs / Analytics / **Settings**）
-- 管理面 CRUD：Channels / Keys / Tokens / Users / Alerts / Plans
-- Settings 5 tab：Routing / Security / Alerts / Maintenance / Plans
-- **Effective Tab**：一个只读视图展示所有运行时值、YAML seed、channels/tokens/plans/alerts 摘要，Copy as JSON
+- `/admin/`（Dashboard / Channels / Tokens / Logs / Analytics / Config / Effective）
+- HTML 管理后台基于 Go `html/template` + HTMX + Tailwind（CDN），无前端构建步骤
+- 管理面 CRUD：Channels / Keys / Tokens / Users / Alerts / Plans（JSON API 在 `/admin/api/v1`）
 - 管理员登录 + 会话 TTL（24h 默认）+ 后台 5min 清理
 - Bearer Token 鉴权：内存 cache + DB 持久化
 
 #### 鉴权 / 安全
 - **Argon2id** 密码 hash（m=64MiB, t=3, p=2）+ 旧明文 / bcrypt 自动透明升级
-- 改密端点 `POST /api/v1/users/{id}/password`
+- **两级角色**：`RoleAdmin`（常规 CRUD）+ `RoleRoot`（user 生命周期 / secret 轮换 / runtime config 写入 / 全局 reload）
+- 改密端点 `POST /admin/api/v1/users/{id}/password`
 - **渠道 API Key 静态加密**（AES-256-GCM）：master key 从 `LLMRX_KEY_MASTER`
   启动加载；旧明文行首次读取时 lazy migrate；错 key / 篡改密文会硬失败
 - **多租户强制**：
@@ -34,6 +34,8 @@ P0 → P7+ 全部完成，所有 L1-L5 路由层齐全，多协议 provider，�
   - Per-Token 模型白名单 / IP 白名单（403）
   - Per-Token / Per-Plan spend 累计（`UPDATE used_usd = used_usd + ?` 原子操作）
   - Per-Plan markup 叠加（plan.MarkupRatio × channel markup）
+  - **Token 到期检查**：过期 token 在 reload 时自动 flip `TokenExpired`，中间件 403 拒绝
+  - **Plan 预算检查**：`IncrementPlanSpend` 在 SQL 层原子校验，超限返回 402 并自动回滚 token spend
 
 #### 路由（L1-L5）
 - **L1** static match
@@ -68,8 +70,8 @@ P0 → P7+ 全部完成，所有 L1-L5 路由层齐全，多协议 provider，�
 - **Settings 5 Tab**：Routing / Security / Alerts / Maintenance / Plans
 - **热重载**：
   - Channel / Token / User CRUD 全部即时生效
-  - `PUT /api/v1/tokens/{id}` 改限速 + 白名单
-  - `POST /api/v1/reload` 强制全量重载（token cache / pool / router state / alert rules）
+  - `PUT /admin/api/v1/tokens/{id}` 改限速 + 白名单
+  - `POST /admin/api/v1/reload` 强制全量重载（token cache / pool / router state / alert rules）
 
 ## 升级说明
 
@@ -136,12 +138,12 @@ Anthropic 提示缓存命中时，上游会回 `usage.prompt_tokens_details.cach
 
 ```bash
 # 改密 / 改限速 / 改白名单 / 启用 Token → 立即生效
-curl -X PUT http://localhost:8787/api/v1/tokens/42 \
+curl -X PUT http://localhost:8787/admin/api/v1/tokens/42 \
      -H 'X-Session-Token: ...' \
      -d '{"rpm":120,"tpm":100000,"models_whitelist":["gpt-4","claude-3"]}'
 
 # 强制全量重载（手工改 DB 后 / k8s exec / 异常恢复）
-curl -X POST http://localhost:8787/api/v1/reload \
+curl -X POST http://localhost:8787/admin/api/v1/reload \
      -H 'X-Session-Token: ...'
 # → {"ok":true,"channels":true,"tokens":N,"alerts_reloaded":true}
 ```
@@ -150,7 +152,7 @@ curl -X POST http://localhost:8787/api/v1/reload \
 
 ### SSE 实时日志
 
-Logs 页头部 **Live** 切换。开启后通过 `EventSource` 接收 `/api/v1/logs/stream` 的推送（默认 polling 自动暂停）。EventSource 不能设置自定义 header，鉴权走 `?session_token=` 查询串。
+Logs 页头部 **Live** 切换。开启后通过 `EventSource` 接收 `/admin/api/v1/logs/stream` 的推送（默认 polling 自动暂停）。EventSource 不能设置自定义 header，鉴权走 `?session_token=` 查询串。
 
 ### 告警
 
@@ -251,7 +253,7 @@ curl -H 'Authorization: Bearer sk-test-token-123' \
 ### 接收实时日志（SSE）
 
 ```bash
-curl -N 'http://localhost:8787/api/v1/logs/stream?session_token=<admin_session>'
+curl -N 'http://localhost:8787/admin/api/v1/logs/stream?session_token=<admin_session>'
 # event: log
 # data: {"id":123,"channel_id":1,"model":"deepseek-chat","status_code":200,...}
 ```
@@ -260,68 +262,62 @@ curl -N 'http://localhost:8787/api/v1/logs/stream?session_token=<admin_session>'
 
 ```bash
 # 登录
-curl -X POST http://localhost:8787/api/v1/login \
+curl -X POST http://localhost:8787/admin/api/v1/login \
      -H 'Content-Type: application/json' \
      -d '{"username":"admin","password":"admin"}'
 # → {"session_token":"...","user":{...}}
 
 # Dashboard / Channels / Logs
-curl http://localhost:8787/api/v1/dashboard -H 'X-Session-Token: <token>'
-curl http://localhost:8787/api/v1/channels   -H 'X-Session-Token: <token>'
-curl 'http://localhost:8787/api/v1/logs?limit=20' -H 'X-Session-Token: <token>'
+curl http://localhost:8787/admin/api/v1/dashboard -H 'X-Session-Token: <token>'
+curl http://localhost:8787/admin/api/v1/channels   -H 'X-Session-Token: <token>'
+curl 'http://localhost:8787/admin/api/v1/logs?limit=20' -H 'X-Session-Token: <token>'
 
 # Token CRUD
-curl -X POST http://localhost:8787/api/v1/tokens -H 'X-Session-Token: <token>' \
+curl -X POST http://localhost:8787/admin/api/v1/tokens -H 'X-Session-Token: <token>' \
      -H 'Content-Type: application/json' \
      -d '{"name":"prod","plan_id":1,"rpm":120,"tpm":100000,"models_whitelist":["gpt-4","claude-3"]}'
-curl -X PUT http://localhost:8787/api/v1/tokens/2 -H 'X-Session-Token: <token>' \
+curl -X PUT http://localhost:8787/admin/api/v1/tokens/2 -H 'X-Session-Token: <token>' \
      -H 'Content-Type: application/json' \
      -d '{"rpm":240,"status":1}'
-curl -X DELETE http://localhost:8787/api/v1/tokens/2 -H 'X-Session-Token: <token>'
+curl -X DELETE http://localhost:8787/admin/api/v1/tokens/2 -H 'X-Session-Token: <token>'
 
 # 改密
-curl -X POST http://localhost:8787/api/v1/users/1/password \
+curl -X POST http://localhost:8787/admin/api/v1/users/1/password \
      -H 'X-Session-Token: <token>' -H 'Content-Type: application/json' \
      -d '{"old_password":"admin","new_password":"newpass123"}'
 
 # 告警 CRUD
-curl http://localhost:8787/api/v1/alerts -H 'X-Session-Token: <token>'
-curl -X POST http://localhost:8787/api/v1/alerts -H 'X-Session-Token: <token>' \
+curl http://localhost:8787/admin/api/v1/alerts -H 'X-Session-Token: <token>'
+curl -X POST http://localhost:8787/admin/api/v1/alerts -H 'X-Session-Token: <token>' \
      -H 'Content-Type: application/json' \
      -d '{"name":"high-errors","type":"error_rate","threshold":0.5,"window_sec":300,"cooldown_sec":60,"webhook_url":"https://example.com/hook","enabled":true}'
 
 # 告警事件
-curl http://localhost:8787/api/v1/alerts/events -H 'X-Session-Token: <token>'
+curl http://localhost:8787/admin/api/v1/alerts/events -H 'X-Session-Token: <token>'
 
-# 运行时配置
-curl http://localhost:8787/api/v1/config -H 'X-Session-Token: <token>'
-curl -X PUT http://localhost:8787/api/v1/config -H 'X-Session-Token: <token>' \
+# 运行时配置 (PUT 需 RoleRoot)
+curl http://localhost:8787/admin/api/v1/config -H 'X-Session-Token: <token>'
+curl -X PUT http://localhost:8787/admin/api/v1/config -H 'X-Session-Token: <token>' \
      -H 'Content-Type: application/json' \
      -d '{"cost_strategy":"balanced","markup_ratio":1.2,"log_retention_days":30,"stream_timeout_sec":300}'
 
 # 运行时全貌（Effective）
-curl http://localhost:8787/api/v1/effective -H 'X-Session-Token: <token>'
+curl http://localhost:8787/admin/api/v1/effective -H 'X-Session-Token: <token>'
 
 # Plans CRUD
-curl http://localhost:8787/api/v1/plans -H 'X-Session-Token: <token>'
-curl -X POST http://localhost:8787/api/v1/plans -H 'X-Session-Token: <token>' \
+curl http://localhost:8787/admin/api/v1/plans -H 'X-Session-Token: <token>'
+curl -X POST http://localhost:8787/admin/api/v1/plans -H 'X-Session-Token: <token>' \
      -H 'Content-Type: application/json' \
      -d '{"name":"Standard","markup_ratio":1.0,"description":"default plan"}'
 
-# 强制全量重载
-curl -X POST http://localhost:8787/api/v1/reload -H 'X-Session-Token: <token>'
+# 强制全量重载 (需 RoleRoot)
+curl -X POST http://localhost:8787/admin/api/v1/reload -H 'X-Session-Token: <token>'
 ```
 
-### 重新构建前端
+### 修改管理后台
 
-```bash
-cd web
-npm install
-npm run build   # 输出到 web/dist/（已 symlink 复制到 internal/webui/dist/）
-```
-
-> 修改前端后需把 `web/dist/` 同步到 `internal/webui/dist/` 才能被 Go embed 收录：
-> `cp -r web/dist/* internal/webui/dist/`
+管理后台基于 Go `html/template`，模板位于 `internal/webui/templates/`。
+修改任意 `.html` 后只需重新编译二进制即可生效，不需要 npm / 构建步骤。
 
 ## 开发与测试
 

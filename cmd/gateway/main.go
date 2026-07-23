@@ -13,6 +13,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/auth"
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/config"
+	"github.com/sn0wfree/llmRx/internal/intent"
 	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
@@ -133,7 +134,31 @@ func main() {
 	}
 
 	tokCache := tokencache.New(st)
+	// Opportunistically flip expired tokens to TokenExpired so
+	// later cache reloads skip them. Best-effort: a failure is
+	// logged but does not abort startup (the row stays TokenActive
+	// and the expiry check in middleware still rejects it).
+	tokCache.SetExpirer(func(tokenID int64) error {
+		return st.MarkTokenExpired(tokenID)
+	})
+	// Re-run Reload now that the expirer is wired, and surface
+	// any plan-join failure (fail-closed: a transient DB blip
+	// must NOT silently downgrade bound tokens to "unlimited").
+	if err := tokCache.Reload(); err != nil {
+		log.Fatalf("token cache reload: %v", err)
+	}
 	eng := router.New(st, cp)
+
+	// L4 Intent classifier. intent.Load() tries to dlopen the
+	// Rust cdylib; on any failure it returns an error and we
+	// fall back to the in-process Nop classifier so the router
+	// keeps working (L4 short-circuits to "unknown").
+	if classifier, err := intent.Load(); err != nil {
+		log.Printf("intent: native classifier unavailable, using Nop: %v", err)
+	} else {
+		eng.SetIntentClassifier(classifier)
+		log.Printf("intent: backend=%s", classifier.Backend())
+	}
 	logBroker := broker.New[*model.Log](cfg.Server.MaxLogSubscribers)
 	defer logBroker.Close()
 

@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/sn0wfree/llmRx/internal/model"
 )
 
@@ -318,6 +320,144 @@ func TestSQLiteDriver_QueryAcrossMaxAttachLimit(t *testing.T) {
 	}
 	if total != int64(MaxAttachFiles) {
 		t.Fatalf("expected total=%d (capped), got %d", MaxAttachFiles, total)
+	}
+}
+
+// TestSQLiteDriver_QueryAcrossSameDayRolloversKeepsAllSeq covers
+// the same-day rollover truncation strategy end-to-end via the
+// driver.
+//
+// Layout: 6 historical single-file dates (2026-07-09..14) + a
+// current date with seq 0, 1, 2 (3 seq files). Total 9 files.
+// Budget 8 → drop the oldest single-file date (2026-07-09)
+// entirely; keep 5 single files + 3 seq files of the current
+// date = 8 rows.
+func TestSQLiteDriver_QueryAcrossSameDayRolloversKeepsAllSeq(t *testing.T) {
+	d, dir := newTestDriver(t)
+
+	// 6 historical dates, each gets one row.
+	for i := 0; i < 6; i++ {
+		day := fmt.Sprintf("2026-07-%02d", 9+i)
+		createDayFileWithModel(t, dir, day, fmt.Sprintf("old-%d", i))
+	}
+	// Current date with 3 seq files (simulated rollover):
+	// base, -1, -2 all share date 2026-07-15.
+	createDayFileWithModel(t, dir, "2026-07-15", "base")
+	createDayFileWithModel(t, dir, "2026-07-15-1", "roll-1")
+	createDayFileWithModel(t, dir, "2026-07-15-2", "roll-2")
+
+	files, _ := d.ListFiles()
+	if len(files) != 9 {
+		t.Fatalf("setup: expected 9 files on disk, got %d (%v)", len(files), files)
+	}
+
+	rows, total, err := d.QueryAcross(QueryFilter{}, nil)
+	if err != nil {
+		t.Fatalf("QueryAcross: %v", err)
+	}
+	got := []string{}
+	for _, r := range rows {
+		got = append(got, r.Model)
+	}
+	t.Logf("rows: %v (total=%d)", got, total)
+	// 9 files → budget 8 → drop the oldest single-file date
+	// (2026-07-09). Remaining 5 single files (old-1..old-5)
+	// + 3 seq files of current date (base, roll-1, roll-2) = 8.
+	if total != 8 {
+		t.Fatalf("expected total=8 after truncation, got %d", total)
+	}
+	seen := map[string]bool{}
+	for _, r := range rows {
+		seen[r.Model] = true
+	}
+	for _, want := range []string{"base", "roll-1", "roll-2"} {
+		if !seen[want] {
+			t.Errorf("missing %q — seq file likely got truncated", want)
+		}
+	}
+	if seen["old-0"] {
+		t.Error("old-0 should have been truncated (oldest date)")
+	}
+}
+
+// createDayFileWithModel writes a single test row into a per-day
+// file using the same schema the logstore applies. It returns
+// once the row is durable on disk so subsequent ListFiles sees
+// the new file.
+func createDayFileWithModel(t *testing.T, dir, name, modelLabel string) {
+	t.Helper()
+	path := filepath.Join(dir, name+".db")
+	db, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000")
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS logs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		token_id INTEGER NOT NULL DEFAULT 0,
+		channel_id INTEGER NOT NULL DEFAULT 0,
+		key_id INTEGER NOT NULL DEFAULT 0,
+		model TEXT NOT NULL DEFAULT '',
+		prompt_tokens INTEGER NOT NULL DEFAULT 0,
+		completion_tokens INTEGER NOT NULL DEFAULT 0,
+		cached_tokens INTEGER NOT NULL DEFAULT 0,
+		real_cost_usd REAL NOT NULL DEFAULT 0,
+		billed_cost_usd REAL NOT NULL DEFAULT 0,
+		duration_ms INTEGER NOT NULL DEFAULT 0,
+		status_code INTEGER NOT NULL DEFAULT 0,
+		router_path TEXT NOT NULL DEFAULT '',
+		request_ip TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL
+	)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO logs(model, status_code, created_at) VALUES(?, ?, ?)`,
+		modelLabel, 200, time.Now().Unix()); err != nil {
+		t.Fatalf("insert %s: %v", name, err)
+	}
+}
+
+func TestSortByDateSeq_NumericSeqOrdering(t *testing.T) {
+	in := []string{
+		"2026-07-22-1",
+		"2026-07-22",
+		"2026-07-22-10",
+		"2026-07-22-2",
+	}
+	got := sortByDateSeq(in)
+	want := []string{
+		"2026-07-22",
+		"2026-07-22-1",
+		"2026-07-22-2",
+		"2026-07-22-10",
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Fatalf("position %d: got %s want %s", i, got[i], w)
+		}
+	}
+}
+
+func TestTruncateByDate_DropsWholeDates(t *testing.T) {
+	in := []string{
+		"2026-07-01", "2026-07-02", "2026-07-03", "2026-07-04",
+		"2026-07-05", "2026-07-06", "2026-07-07", "2026-07-08",
+		"2026-07-09", "2026-07-09-1", "2026-07-09-2",
+	}
+	out := truncateByDate(in, MaxAttachFiles)
+	// Budget 8; the oldest single date (2026-07-01) must go.
+	if len(out) != MaxAttachFiles {
+		t.Fatalf("expected %d files retained, got %d (%v)", MaxAttachFiles, len(out), out)
+	}
+	// Same-day seqs of 2026-07-09 must all survive.
+	today := 0
+	for _, n := range out {
+		if extractDate(n) == "2026-07-09" {
+			today++
+		}
+	}
+	if today != 3 {
+		t.Fatalf("expected all 3 seqs of 2026-07-09 to survive, got %d", today)
 	}
 }
 

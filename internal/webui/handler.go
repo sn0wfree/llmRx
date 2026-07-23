@@ -82,15 +82,7 @@ func (h *Handler) Routes() http.Handler {
 		r.Post("/plans", h.PlanCreate)
 		r.Post("/plans/{id}", h.PlanAction)
 
-		// Users
-		r.Get("/users", h.UsersPage)
-		r.Get("/users/new", h.UserNewForm)
-		r.Get("/users/{id}/password", h.UserPasswordForm)
-		r.Post("/users", h.UserCreate)
-		r.Post("/users/{id}/password", h.UserPasswordSubmit)
-		r.Delete("/users/{id}", h.UserDelete)
-
-		// Logs / Alerts / Analytics / Config (Phase 2)
+		// Logs / Alerts / Analytics / Effective
 		r.Get("/logs", h.LogsPage)
 		r.Get("/logs/stream", h.LogsStream)
 
@@ -103,8 +95,32 @@ func (h *Handler) Routes() http.Handler {
 		r.Get("/analytics", h.AnalyticsPage)
 
 		r.Get("/config", h.ConfigPage)
-		r.Post("/config", h.ConfigSave)
 		r.Get("/effective", h.EffectivePage)
+	})
+
+	// Root-only HTML admin operations: user lifecycle, runtime
+	// config writes. Reading /users is fine for RoleAdmin so they
+	// can see who exists; creating, deleting, and changing other
+	// users' passwords is root-only.
+	r.Group(func(r chi.Router) {
+		r.Use(SessionMiddleware(h.store))
+		r.Use(RequireRole(model.RoleRoot))
+
+		r.Get("/users", h.UsersPage)
+		r.Get("/users/new", h.UserNewForm)
+		r.Post("/users", h.UserCreate)
+		r.Delete("/users/{id}", h.UserDelete)
+		r.Post("/config", h.ConfigSave)
+	})
+
+	// /users/{id}/password — RoleRoot can change any; users can
+	// change their own (handled inside UserPasswordSubmit). Login
+	// form lets the operator authenticate, but routing here keeps
+	// the form-protected page out of the RoleAdmin group.
+	r.Group(func(r chi.Router) {
+		r.Use(SessionMiddleware(h.store))
+		r.Get("/users/{id}/password", h.UserPasswordForm)
+		r.Post("/users/{id}/password", h.UserPasswordSubmit)
 	})
 
 	return r

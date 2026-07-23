@@ -67,14 +67,18 @@ func (h *Handler) Routes() http.Handler {
 	r.Post("/login", h.Login)
 	r.Post("/logout", h.Logout)
 
+	authn := middleware.AdminOnly(func(s string) (any, bool) {
+		u, err := h.store.GetUserBySession(s)
+		if err != nil || u == nil {
+			return nil, false
+		}
+		return u, true
+	})
+
+	// Read-only / routine admin endpoints: require RoleAdmin.
 	r.Group(func(r chi.Router) {
-		r.Use(middleware.AdminOnly(func(s string) (any, bool) {
-			u, err := h.store.GetUserBySession(s)
-			if err != nil || u == nil {
-				return nil, false
-			}
-			return u, true
-		}))
+		r.Use(authn)
+		r.Use(middleware.RequireRole(model.RoleAdmin))
 		r.Get("/dashboard", h.Dashboard)
 		r.Get("/channels", h.ListChannels)
 		r.Post("/channels", h.CreateChannel)
@@ -88,8 +92,6 @@ func (h *Handler) Routes() http.Handler {
 		r.Put("/tokens/{id}", h.UpdateToken)
 		r.Delete("/tokens/{id}", h.DeleteToken)
 		r.Get("/users", h.ListUsers)
-		r.Post("/users", h.CreateUser)
-		r.Delete("/users/{id}", h.DeleteUser)
 		r.Post("/users/{id}/password", h.ChangePassword)
 		r.Get("/logs", h.ListLogs)
 		r.Get("/logs/stream", h.StreamLogs)
@@ -109,8 +111,18 @@ func (h *Handler) Routes() http.Handler {
 		r.Put("/plans/{id}", h.UpdatePlan)
 		r.Delete("/plans/{id}", h.DeletePlan)
 		r.Get("/config", h.GetConfig)
-		r.Put("/config", h.UpdateConfig)
 		r.Get("/effective", h.EffectiveConfig)
+	})
+
+	// Root-only high-impact operations: user lifecycle, runtime
+	// config writes, secret rotation, global reload. These can lock
+	// out other operators or alter billing/observability behaviour.
+	r.Group(func(r chi.Router) {
+		r.Use(authn)
+		r.Use(middleware.RequireRole(model.RoleRoot))
+		r.Post("/users", h.CreateUser)
+		r.Delete("/users/{id}", h.DeleteUser)
+		r.Put("/config", h.UpdateConfig)
 		r.Post("/reload", h.ReloadAll)
 		r.Post("/secrets/rotate", h.RotateSecrets)
 	})

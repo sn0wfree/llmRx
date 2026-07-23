@@ -42,8 +42,18 @@ func New() *Limiter {
 // under the configured ceilings. On success the (now, promptTokens)
 // tuple is recorded; rpm/tpm of 0 mean "unlimited".
 //
-// Returns (allowed, reason). reason is empty when allowed.
-func (l *Limiter) Allow(key int64, rpm, tpm int, promptTokens int) (bool, string) {
+// budgetUSD/usedUSD/estimatedCostUSD form the plan-budget gate.
+// budgetUSD == 0 means unlimited; otherwise the request is rejected
+// when usedUSD + estimatedCostUSD would exceed budgetUSD. The check
+// happens before rpm/tpm because hitting a billing stop is more
+// actionable for the operator than a 429.
+//
+// Returns (allowed, reason). reason is empty when allowed. Possible
+// reasons: "rpm exceeded", "tpm exceeded", "budget exceeded".
+func (l *Limiter) Allow(key int64, rpm, tpm int, promptTokens int, budgetUSD, usedUSD, estimatedCostUSD float64) (bool, string) {
+	if budgetUSD > 0 && usedUSD+estimatedCostUSD > budgetUSD {
+		return false, "budget exceeded"
+	}
 	if rpm == 0 && tpm == 0 {
 		return true, ""
 	}

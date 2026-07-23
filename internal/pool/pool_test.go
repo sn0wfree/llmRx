@@ -367,3 +367,112 @@ func TestPool_GetAllChannelsAfterRemove(t *testing.T) {
 		t.Fatal("expected 1 channel after remove")
 	}
 }
+
+// ---------- Key ID parity with SQLite primary key ----------
+
+// TestPool_KeyIDMatchesSQLitePrimaryKey verifies that NextKey
+// returns a model.Key whose ID equals the SQLite keys.id primary
+// key — not an array index — so logs.key_id joins correctly even
+// after keys are deleted and recreated.
+func TestPool_KeyIDMatchesSQLitePrimaryKey(t *testing.T) {
+	p := NewChannelPool()
+	s := newTestStore(t)
+
+	ch := &model.Channel{
+		Name: "ch", Provider: "openai", BaseURL: "https://x",
+		Status: model.ChannelEnabled,
+	}
+	if err := s.CreateChannel(ch); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	// Insert three keys; SQLite will assign AUTOINCREMENT IDs.
+	want := map[int64]string{}
+	for i, raw := range []string{"k1", "k2", "k3"} {
+		k := &model.Key{ChannelID: ch.ID, Key: raw, KeyMasked: "m", Status: model.KeyActive}
+		if err := s.CreateKey(k); err != nil {
+			t.Fatalf("CreateKey %d: %v", i, err)
+		}
+		want[k.ID] = raw
+	}
+
+	if err := p.LoadFromStore(s); err != nil {
+		t.Fatalf("LoadFromStore: %v", err)
+	}
+
+	// Pull every key via the pool and confirm the ID matches the
+	// SQLite-assigned one for the same plaintext.
+	seen := map[string]int64{}
+	for i := 0; i < 6; i++ {
+		k, err := p.NextKey(ch.ID)
+		if err != nil {
+			t.Fatalf("NextKey: %v", err)
+		}
+		raw, ok := want[k.ID]
+		if !ok {
+			t.Fatalf("key %s returned with ID %d, no such primary key in store (known: %v)", k.Key, k.ID, want)
+		}
+		if raw != k.Key {
+			t.Fatalf("ID %d expected key %q, pool returned %q", k.ID, raw, k.Key)
+		}
+		seen[k.Key] = k.ID
+	}
+	// Each key should have a stable ID across calls.
+	first := seen["k1"]
+	for i := 0; i < 3; i++ {
+		k, _ := p.NextKey(ch.ID)
+		if k.Key == "k1" && k.ID != first {
+			t.Fatalf("k1 ID drifted: %d -> %d", first, k.ID)
+		}
+	}
+}
+
+// TestPool_KeyIDSurvivesDeleteAndAdd: after deleting the middle
+// key and reloading, the surviving keys keep their original
+// SQLite primary keys (not shifted indices).
+func TestPool_KeyIDSurvivesDeleteAndAdd(t *testing.T) {
+	p := NewChannelPool()
+	s := newTestStore(t)
+
+	ch := &model.Channel{Name: "ch", Provider: "openai", BaseURL: "https://x", Status: model.ChannelEnabled}
+	if err := s.CreateChannel(ch); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	ids := map[string]int64{}
+	for _, raw := range []string{"alpha", "beta", "gamma"} {
+		k := &model.Key{ChannelID: ch.ID, Key: raw, KeyMasked: "m", Status: model.KeyActive}
+		if err := s.CreateKey(k); err != nil {
+			t.Fatalf("CreateKey %s: %v", raw, err)
+		}
+		ids[raw] = k.ID
+	}
+	if err := p.LoadFromStore(s); err != nil {
+		t.Fatalf("LoadFromStore: %v", err)
+	}
+
+	// Delete beta by ID.
+	if err := s.DeleteKey(ids["beta"]); err != nil {
+		t.Fatalf("DeleteKey: %v", err)
+	}
+	if err := p.LoadFromStore(s); err != nil {
+		t.Fatalf("LoadFromStore after delete: %v", err)
+	}
+
+	// Now only alpha and gamma remain. Their IDs must be the
+	// originals, not 1/2 (positional).
+	got := map[string]int64{}
+	for i := 0; i < 4; i++ {
+		k, err := p.NextKey(ch.ID)
+		if err != nil {
+			t.Fatalf("NextKey: %v", err)
+		}
+		got[k.Key] = k.ID
+	}
+	if got["alpha"] != ids["alpha"] {
+		t.Fatalf("alpha ID changed: %d -> %d", ids["alpha"], got["alpha"])
+	}
+	if got["gamma"] != ids["gamma"] {
+		t.Fatalf("gamma ID changed: %d -> %d", ids["gamma"], got["gamma"])
+	}
+}

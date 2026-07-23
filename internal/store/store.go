@@ -39,6 +39,12 @@ type Store interface {
 	DeleteToken(id int64) error
 	IncrementTokenSpend(tokenID int64, amount float64) error
 	IncrementPlanSpend(planID int64, amount float64) error
+	// RecordRequestSpend atomically credits both the per-token
+	// and per-plan spend ledgers in a single SQL transaction.
+	// On ErrBudgetExceeded the transaction is rolled back so
+	// the two ledgers cannot drift. planID==0 skips the plan
+	// leg. This is the canonical entry point for the chat path.
+	RecordRequestSpend(tokenID, planID int64, amount float64) error
 
 	// Plans
 	GetPlans() ([]model.Plan, error)

@@ -18,11 +18,16 @@ type ChannelPool struct {
 
 type channelEntry struct {
 	Channel *model.Channel
+	// Keys is an ordered slice preserved across reloads so
+	// NextKey's round-robin counter stays stable when individual
+	// keys are added/removed. Each entry's DBID is the SQLite
+	// keys.id primary key, which the API logs as logs.key_id.
 	Keys    []*keyEntry
 	counter uint64
 }
 
 type keyEntry struct {
+	DBID   int64
 	Key    string
 	Status model.KeyStatus
 }
@@ -34,7 +39,8 @@ func NewChannelPool() *ChannelPool {
 // LoadFromStore rebuilds the in-memory channel/keys tables from the
 // provided store. Channels that are not Enabled are skipped. Keys
 // with status other than KeyActive are still loaded but skipped by
-// NextKey.
+// NextKey. Each keyEntry carries the SQLite primary key so
+// NextKey can return a model.Key whose ID matches logs.key_id.
 func (p *ChannelPool) LoadFromStore(st store.Store) error {
 	chs, err := st.GetChannels()
 	if err != nil {
@@ -53,7 +59,7 @@ func (p *ChannelPool) LoadFromStore(st store.Store) error {
 		entries := make([]*keyEntry, 0, len(keys))
 		for j := range keys {
 			k := &keys[j]
-			entries = append(entries, &keyEntry{Key: k.Key, Status: k.Status})
+			entries = append(entries, &keyEntry{DBID: k.ID, Key: k.Key, Status: k.Status})
 		}
 		next[ch.ID] = &channelEntry{Channel: ch, Keys: entries}
 	}
@@ -71,7 +77,7 @@ func (p *ChannelPool) UpsertChannel(ch *model.Channel, keys []model.Key) {
 	entries := make([]*keyEntry, 0, len(keys))
 	for i := range keys {
 		k := &keys[i]
-		entries = append(entries, &keyEntry{Key: k.Key, Status: k.Status})
+		entries = append(entries, &keyEntry{DBID: k.ID, Key: k.Key, Status: k.Status})
 	}
 	p.mu.Lock()
 	p.channels[ch.ID] = &channelEntry{Channel: ch, Keys: entries}
@@ -85,6 +91,11 @@ func (p *ChannelPool) RemoveChannel(id int64) {
 	p.mu.Unlock()
 }
 
+// NextKey returns the next available key for the given channel
+// using a per-channel round-robin counter. The returned model.Key
+// carries the SQLite keys.id primary key as ID so audit logs and
+// analytics that join on key_id stay in sync with the database
+// even after deletes/recreates.
 func (p *ChannelPool) NextKey(channelID int64) (*model.Key, error) {
 	p.mu.RLock()
 	entry, ok := p.channels[channelID]
@@ -110,7 +121,7 @@ func (p *ChannelPool) NextKey(channelID int64) (*model.Key, error) {
 			masked = masked[:4] + "***" + masked[len(masked)-4:]
 		}
 		return &model.Key{
-			ID:        int64(idx + 1),
+			ID:        ke.DBID,
 			ChannelID: channelID,
 			Key:       ke.Key,
 			KeyMasked: masked,

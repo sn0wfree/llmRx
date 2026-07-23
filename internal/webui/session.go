@@ -68,6 +68,27 @@ func getUser(r *http.Request) *model.User {
 	return nil
 }
 
+// RequireRole gates an already-authenticated HTML admin route by
+// the caller's User.Role. SessionMiddleware must run first so that
+// the user is in context. Pages that need RoleRoot should install
+// this middleware after SessionMiddleware.
+func RequireRole(min model.UserRole) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			u := getUser(r)
+			if u == nil {
+				http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+				return
+			}
+			if u.Role < min {
+				http.Error(w, "forbidden: insufficient role", http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // MethodOverride middleware allows HTML forms (which only support
 // GET/POST) to issue PUT/DELETE requests via a hidden _method field.
 // Used for form-based edits where HTMX is not appropriate.

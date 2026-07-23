@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -262,16 +263,18 @@ func (h *Handler) emitLog(ctx context.Context, tokenID int64, modelName string, 
 	if h.logBroker != nil {
 		h.logBroker.Publish(entry)
 	}
-	// Increment per-token spend + per-plan spend. Failures are
-	// logged but don't break the request path.
+	// Credit both the per-token and per-plan spend ledgers in a
+	// single SQL transaction. On ErrBudgetExceeded the token leg
+	// is reverted atomically inside the store, so we no longer
+	// need a manual compensation step here.
 	planID := planIDFromContext(ctx)
 	if tokenID > 0 && billed > 0 {
-		if err := h.store.IncrementTokenSpend(tokenID, billed); err != nil {
-			log.Printf("warn: increment token spend: %v", err)
-		}
-		if planID > 0 {
-			if err := h.store.IncrementPlanSpend(planID, billed); err != nil {
-				log.Printf("warn: increment plan spend: %v", err)
+		if err := h.store.RecordRequestSpend(tokenID, planID, billed); err != nil {
+			if errors.Is(err, store.ErrBudgetExceeded) {
+				log.Printf("plan %d budget exceeded by $%.6f — request rejected, token ledger untouched",
+					planID, billed)
+			} else {
+				log.Printf("warn: record request spend: %v", err)
 			}
 		}
 	}
