@@ -344,6 +344,7 @@ go test -v ./internal/admin ./internal/api
 
 | 文档 | 内容 |
 |---|---|
+| [docs/UPGRADE.md](docs/UPGRADE.md) | **升级指南**：v2.0+ 系列破坏性变更、迁移步骤、回滚、常见问题 |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | **运维手册**：部署路径、Docker / 裸金属 / docker-compose、首启配置、备份恢复、监控、HA、故障排查、生产 checklist |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 18 节架构设计（路由管线、broker、SSE、告警、L4/L5、缓存折扣、多租户、热重载） |
 | [docs/COMPARATIVE.md](docs/COMPARATIVE.md) | vs LiteLLM / One-API / Bifrost / Kong 的能力矩阵 + 路线图 |
