@@ -97,6 +97,19 @@ func (e *RouterEngine) SetStrategy(s model.CostStrategy) {
 	e.cost.SetStrategy(s)
 }
 
+// LoadThompsonState hydrates L5 from a previously-saved state
+// file. Missing file is a no-op (first run). Wraps thompson.Load
+// so callers don't need to know the package.
+func (e *RouterEngine) LoadThompsonState(path string) error {
+	return e.thompson.Load(path)
+}
+
+// SaveThompsonState writes the current L5 posteriors to path so
+// a graceful shutdown preserves L5's learned weights.
+func (e *RouterEngine) SaveThompsonState(path string) error {
+	return e.thompson.Save(path)
+}
+
 // RegisterExtraChannels installs a callback that returns additional
 // channels to consider during L1. Used by the (Phase 1.5 reserved)
 // BYOK path to inject consumer-supplied upstream keys into the

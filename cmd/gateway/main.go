@@ -160,6 +160,17 @@ func main() {
 	}
 	eng := router.New(st, cp)
 
+	// Hydrate L5 (Thompson sampling) posteriors from the persisted
+	// state file. Missing file is a no-op (first run); malformed
+	// file is a hard error so we don't silently fall back to the
+	// uniform prior and undo weeks of learned weights.
+	thompsonPath := "/data/thompson.json"
+	if err := eng.LoadThompsonState(thompsonPath); err != nil {
+		log.Fatalf("thompson: load state from %s: %v", thompsonPath, err)
+	} else {
+		log.Printf("thompson: state loaded from %s", thompsonPath)
+	}
+
 	// L4 Intent classifier. See loadIntentClassifier for the
 	// LLMRX_INTENT_REQUIRED fail-closed semantics.
 	if classifier, backend, err := loadIntentClassifier(); err != nil {
@@ -252,6 +263,15 @@ func main() {
 	go func() {
 		sig := <-sigCh
 		log.Printf("signal received: %s — initiating graceful shutdown", sig)
+		// Persist L5 posteriors BEFORE the listener shuts down so
+		// the next process boots with the learned channel weights
+		// intact. Best-effort: a write error here shouldn't block
+		// the shutdown.
+		if err := eng.SaveThompsonState(thompsonPath); err != nil {
+			log.Printf("thompson: save state on shutdown: %v", err)
+		} else {
+			log.Printf("thompson: state saved to %s", thompsonPath)
+		}
 		cancel()
 	}()
 

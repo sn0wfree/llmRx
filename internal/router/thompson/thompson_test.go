@@ -1,10 +1,17 @@
 package thompson
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/sn0wfree/llmRx/internal/model"
 )
+
+// writeFile is a tiny helper to keep the test bodies compact.
+func writeFile(path string, data []byte) error {
+	return os.WriteFile(path, data, 0o600)
+}
 
 func ch(id int64, prio int) *model.Channel {
 	return &model.Channel{ID: id, Name: "c", Provider: "p", Priority: prio}
@@ -87,5 +94,95 @@ func TestSampleEmpty(t *testing.T) {
 	s := New(Config{Seed: 1})
 	if out := s.Sample(nil); len(out) != 0 {
 		t.Fatalf("empty: %v", out)
+	}
+}
+
+// TestNew_SeedZeroUsesTime verifies that the default cfg.Seed==0
+// path produces a time-based seed (not the legacy fixed=1 that
+// made every gateway instance draw the same samples).
+func TestNew_SeedZeroUsesTime(t *testing.T) {
+	a := New(Config{})
+	b := New(Config{})
+	// Two consecutive New() calls should draw different first
+	// samples — proving the RNG was seeded differently. We can't
+	// access the seed directly but the public RNG output differs.
+	if a.rng.Int63() == b.rng.Int63() {
+		t.Fatalf("seed=0 should produce distinct RNG streams")
+	}
+}
+
+// TestSaveLoadRoundTrip: a sampler's posterior must survive a
+// Save→Load cycle, so a graceful shutdown + restart doesn't drop
+// L5 back to the uniform prior.
+func TestSaveLoadRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "thompson.json")
+	a := New(Config{Seed: 42})
+	a.RecordSuccess(1)
+	a.RecordSuccess(1)
+	a.RecordFailure(2)
+	a.RecordSuccess(2)
+	if err := a.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Fresh sampler with a different seed: Load must overwrite
+	// its state.
+	b := New(Config{Seed: 99})
+	if err := b.Load(path); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	gotA := a.Snapshot()
+	gotB := b.Snapshot()
+	if len(gotA) != len(gotB) {
+		t.Fatalf("length mismatch: a=%v b=%v", gotA, gotB)
+	}
+	for id, abA := range gotA {
+		abB, ok := gotB[id]
+		if !ok {
+			t.Fatalf("channel %d missing from loaded snapshot", id)
+		}
+		if abA != abB {
+			t.Fatalf("channel %d: a=%v b=%v", id, abA, abB)
+		}
+	}
+}
+
+// TestLoadMissingIsNoOp: a fresh install with no state file must
+// not error — L5 simply starts with the uniform prior.
+func TestLoadMissingIsNoOp(t *testing.T) {
+	s := New(Config{Seed: 1})
+	if err := s.Load(filepath.Join(t.TempDir(), "no-such-file.json")); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(s.Snapshot()) != 0 {
+		t.Fatalf("missing file should leave state untouched, got %v", s.Snapshot())
+	}
+}
+
+// TestLoadMalformedErrors: a corrupted state file must NOT
+// silently fall back to the uniform prior — that would undo
+// weeks of learned weights.
+func TestLoadMalformedErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "thompson.json")
+	if err := writeFile(path, []byte("not-json{")); err != nil {
+		t.Fatal(err)
+	}
+	s := New(Config{Seed: 1})
+	if err := s.Load(path); err == nil {
+		t.Fatal("expected error for malformed state file")
+	}
+}
+
+// TestLoadVersionMismatch: a future schema bump must refuse to
+// load the old file (operator decides whether to delete or
+// migrate).
+func TestLoadVersionMismatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "thompson.json")
+	if err := writeFile(path, []byte(`{"version":99,"betas":{}}`)); err != nil {
+		t.Fatal(err)
+	}
+	s := New(Config{Seed: 1})
+	if err := s.Load(path); err == nil {
+		t.Fatal("expected error for version mismatch")
 	}
 }

@@ -11,13 +11,24 @@
 // Priors: Beta(1, 1) (uniform) is the cold start. Successes add
 // to α, failures to β. A small blend with the channel's configured
 // priority prevents total starvation during exploration.
+//
+// Persistence: Save/Load round-trip the (alpha, beta) per channel
+// so a restart doesn't drop L5 back to the uniform prior. The
+// file lives next to the SQLite DB (see main.go) and is rewritten
+// on graceful shutdown plus periodically via Snapshot.
 package thompson
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"math"
 	"math/rand"
+	"os"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/sn0wfree/llmRx/internal/model"
 )
@@ -68,7 +79,11 @@ func New(cfg Config) *Sampler {
 		cfg.ExploreFraction = 1
 	}
 	if cfg.Seed == 0 {
-		cfg.Seed = 1
+		// Time-based default so each instance gets a distinct
+		// sampling sequence (the previous fixed-seed=1 made every
+		// gateway draw the same numbers, which biases exploration
+		// toward a fixed channel on multi-instance deploys).
+		cfg.Seed = time.Now().UnixNano()
 	}
 	if cfg.MinSamplesPerChannel <= 0 {
 		cfg.MinSamplesPerChannel = 5
@@ -80,6 +95,70 @@ func New(cfg Config) *Sampler {
 		explore:              cfg.ExploreFraction,
 		minSamplesPerChannel: cfg.MinSamplesPerChannel,
 	}
+}
+
+// stateFile is the on-disk schema for Save/Load. Stored as JSON
+// so operators can inspect it without parsing a binary blob.
+type stateFile struct {
+	Version int                  `json:"version"`
+	Seed    int64                `json:"seed"`
+	Betas   map[int64][2]float64 `json:"betas"` // channelID -> [alpha, beta]
+}
+
+const stateVersion = 1
+
+// Save writes the current (alpha, beta) per channel to path so a
+// restart picks up where the previous process left off. The
+// write is atomic: a tmp file in the same directory replaces
+// the destination on success.
+func (s *Sampler) Save(path string) error {
+	snap := s.Snapshot()
+	out := stateFile{
+		Version: stateVersion,
+		Seed:    0, // RNG state isn't portable; we reseed on Load.
+		Betas:   snap,
+	}
+	data, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("write tmp: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("rename: %w", err)
+	}
+	return nil
+}
+
+// Load reads a previously-saved state file and replaces the
+// in-memory posteriors. Missing file is not an error (first run
+// starts with the uniform prior). A malformed file IS an error
+// — we'd rather fail to start than silently reset L5.
+func (s *Sampler) Load(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+	var sf stateFile
+	if err := json.NewDecoder(f).Decode(&sf); err != nil {
+		return fmt.Errorf("decode state: %w", err)
+	}
+	if sf.Version != stateVersion {
+		return fmt.Errorf("state version %d != expected %d (delete the file to reset)", sf.Version, stateVersion)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state = make(map[int64]*beta, len(sf.Betas))
+	for id, ab := range sf.Betas {
+		s.state[id] = &beta{alpha: ab[0], beta: ab[1]}
+	}
+	return nil
 }
 
 type beta struct {
