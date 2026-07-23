@@ -151,6 +151,11 @@ func TestChat_HappyPath(t *testing.T) {
 	app := testhelper.New(t)
 	app.AddChannelWithPrice("c", "openai", "https://x", []string{"gpt-4"}, 0.14, 0.42, "sk-key")
 	tok := app.AddToken("sk-t", "t")
+	// Enable proxy-header trust so the XFF set on the test
+	// request is honoured. testhelper's default config has
+	// TrustProxyHeaders=false (the safe default for direct
+	// deployments).
+	app.Cfg.Server.TrustProxyHeaders = true
 	app.Provider.Responses = []*provider.ChatResponse{
 		{
 			ID: "chatcmpl-1", Object: "chat.completion", Model: "gpt-4",

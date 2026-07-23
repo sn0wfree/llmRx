@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -167,7 +169,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
 			return
 		}
-		ip := clientIP(r)
+		ip := h.clientIP(r)
 		if !info.HasIPAccess(ip) {
 			writeError(w, http.StatusForbidden, "ip not allowed for this token", "ip_not_allowed")
 			return
@@ -195,23 +197,79 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.router.RecordFailure(route.Channel.ID)
 		writeError(w, statusCode, "upstream error: "+err.Error(), "upstream_error")
-		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, clientIP(r))
+		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
 		return
 	}
 
 	h.router.RecordSuccess(route.Channel.ID)
-	h.emitLog(r.Context(), tokenID, req.Model, route, &resp.Usage, duration, statusCode, false, clientIP(r))
+	h.emitLog(r.Context(), tokenID, req.Model, route, &resp.Usage, duration, statusCode, false, h.clientIP(r))
 	writeJSON(w, resp)
 }
 
-func clientIP(r *http.Request) string {
-	if v := r.Header.Get("X-Forwarded-For"); v != "" {
-		return v
-	}
-	if v := r.Header.Get("X-Real-IP"); v != "" {
-		return v
+// clientIP returns the best-effort source IP for the request,
+// consulting proxy headers only when the operator has opted
+// in AND the immediate peer is in the trusted proxy CIDR list.
+//
+// Defaults to r.RemoteAddr so a direct-internet deployment
+// can't be spoofed into bypassing per-token IP whitelists via
+// X-Forwarded-For.
+func (h *Handler) clientIP(r *http.Request) string {
+	if h.cfg != nil && h.cfg.Server.TrustProxyHeaders {
+		if v := h.firstTrustedProxyHeader(r); v != "" {
+			return v
+		}
 	}
 	return r.RemoteAddr
+}
+
+// firstTrustedProxyHeader returns the leftmost X-Forwarded-For
+// or X-Real-IP value when r.RemoteAddr is in the configured
+// trusted CIDR list. Returns "" otherwise.
+func (h *Handler) firstTrustedProxyHeader(r *http.Request) string {
+	remoteHost, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		remoteHost = r.RemoteAddr
+	}
+	if !h.peerIsTrustedProxy(remoteHost) {
+		return ""
+	}
+	if v := r.Header.Get("X-Forwarded-For"); v != "" {
+		// XFF is a comma-separated chain leftmost=client;
+		// trim spaces and return the leftmost entry.
+		if i := strings.IndexByte(v, ','); i >= 0 {
+			v = v[:i]
+		}
+		return strings.TrimSpace(v)
+	}
+	if v := r.Header.Get("X-Real-IP"); v != "" {
+		return strings.TrimSpace(v)
+	}
+	return ""
+}
+
+// peerIsTrustedProxy reports whether the configured CIDR list
+// trusts the immediate peer. An empty list under TrustProxyHeaders
+// is treated as "trust every source" so the operator can opt in
+// for tightly-controlled environments where every peer is a
+// reverse proxy (e.g. K8s behind a single service mesh).
+func (h *Handler) peerIsTrustedProxy(remoteHost string) bool {
+	if len(h.cfg.Server.TrustedProxyCIDRs) == 0 {
+		return true
+	}
+	ip := net.ParseIP(remoteHost)
+	if ip == nil {
+		return false
+	}
+	for _, cidr := range h.cfg.Server.TrustedProxyCIDRs {
+		_, n, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func lookupTokenID(ctx context.Context, st store.Store) int64 {
@@ -449,7 +507,7 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 		flusher.Flush()
 		h.router.RecordFailure(route.Channel.ID)
 		h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, nil,
-			time.Since(start).Milliseconds(), http.StatusBadGateway, true, clientIP(r))
+			time.Since(start).Milliseconds(), http.StatusBadGateway, true, h.clientIP(r))
 		return
 	}
 
@@ -467,7 +525,7 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 			fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", reason)
 			flusher.Flush()
 			h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
-				time.Since(start).Milliseconds(), http.StatusGatewayTimeout, true, clientIP(r))
+				time.Since(start).Milliseconds(), http.StatusGatewayTimeout, true, h.clientIP(r))
 			return
 		case ev, ok := <-ch:
 			if !ok {
@@ -479,7 +537,7 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 				fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", ev.Err.Error())
 				flusher.Flush()
 				h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
-					time.Since(start).Milliseconds(), http.StatusBadGateway, true, clientIP(r))
+					time.Since(start).Milliseconds(), http.StatusBadGateway, true, h.clientIP(r))
 				return
 			}
 			if ev.Chunk.Usage != nil {
@@ -501,7 +559,7 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 				flusher.Flush()
 				h.router.RecordFailure(route.Channel.ID)
 				h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
-					time.Since(start).Milliseconds(), http.StatusRequestEntityTooLarge, true, clientIP(r))
+					time.Since(start).Milliseconds(), http.StatusRequestEntityTooLarge, true, h.clientIP(r))
 				return
 			}
 			// Flush every 4 chunks or on the final one to keep latency
@@ -517,7 +575,7 @@ done:
 	flusher.Flush()
 	h.router.RecordSuccess(route.Channel.ID)
 	h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
-		time.Since(start).Milliseconds(), http.StatusOK, false, clientIP(r))
+		time.Since(start).Milliseconds(), http.StatusOK, false, h.clientIP(r))
 }
 
 // streamTimeout returns the per-stream wall-clock cap. Reads the
