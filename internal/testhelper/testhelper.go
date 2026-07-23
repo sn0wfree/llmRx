@@ -208,7 +208,7 @@ type MockProvider struct {
 
 func (m *MockProvider) Name() string { return "mock" }
 
-func (m *MockProvider) Chat(req *provider.ChatRequest, apiKey string, baseURL string) (*provider.ChatResponse, int, error) {
+func (m *MockProvider) Chat(ctx context.Context, req *provider.ChatRequest, apiKey string, baseURL string) (*provider.ChatResponse, int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	idx := m.Calls

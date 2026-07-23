@@ -118,7 +118,7 @@ func TestAnthropicProvider_Chat(t *testing.T) {
 	}))
 	defer srv.Close()
 	p := NewAnthropicProvider()
-	resp, code, err := p.Chat(&ChatRequest{
+	resp, code, err := p.Chat(context.Background(), &ChatRequest{
 		Model: "claude-3",
 		Messages: []Message{
 			{Role: "system", Content: "be brief"},
@@ -150,7 +150,7 @@ func TestGeminiProvider_Chat(t *testing.T) {
 	}))
 	defer srv.Close()
 	p := NewGeminiProvider()
-	resp, code, err := p.Chat(&ChatRequest{
+	resp, code, err := p.Chat(context.Background(), &ChatRequest{
 		Model: "gemini-pro",
 		Messages: []Message{
 			{Role: "user", Content: "hello"},
@@ -167,6 +167,56 @@ func TestGeminiProvider_Chat(t *testing.T) {
 	}
 	if resp.Usage.PromptTokens != 7 || resp.Usage.CompletionTokens != 4 {
 		t.Fatalf("usage: %+v", resp.Usage)
+	}
+}
+
+// TestGeminiProvider_Chat_EmptyCandidates: a 200 with an empty
+// candidates array (safety filter / max-output-tokens hit) used
+// to panic on gr.Candidates[0]. Now it returns a clean upstream
+// error so the client gets a real failure instead of a process
+// crash.
+func TestGeminiProvider_Chat_EmptyCandidates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"candidates":[],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":0,"totalTokenCount":1}}`)
+	}))
+	defer srv.Close()
+	p := NewGeminiProvider()
+	_, code, err := p.Chat(context.Background(), &ChatRequest{
+		Model:    "gemini-pro",
+		Messages: []Message{{Role: "user", Content: "hello"}},
+	}, "sk-test", srv.URL)
+	if err == nil {
+		t.Fatal("expected error for empty candidates")
+	}
+	if code != http.StatusBadGateway {
+		t.Fatalf("code: %d, want 502", code)
+	}
+	if !strings.Contains(err.Error(), "no candidates") {
+		t.Fatalf("err: %v", err)
+	}
+}
+
+// TestOpenAIProvider_Chat_ContextCancelled: when the inbound
+// request context is cancelled (client disconnected), the
+// upstream HTTP request must be aborted — not run to its 120s
+// timeout. Verifies the fix for non-streaming context propagation.
+func TestOpenAIProvider_Chat_ContextCancelled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Hold the connection until the client cancels.
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	p := NewOpenAIProvider()
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel immediately to simulate a client disconnect.
+	cancel()
+	_, _, err := p.Chat(ctx, &ChatRequest{
+		Model:    "gpt-4",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	}, "sk", srv.URL)
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
 	}
 }
 
@@ -275,7 +325,7 @@ func TestOpenAIProvider_Chat(t *testing.T) {
 	}))
 	defer srv.Close()
 	p := NewOpenAIProvider()
-	resp, code, err := p.Chat(&ChatRequest{
+	resp, code, err := p.Chat(context.Background(), &ChatRequest{
 		Model:    "gpt-4",
 		Messages: []Message{{Role: "user", Content: "hello"}},
 	}, "sk-test", srv.URL)
@@ -299,7 +349,7 @@ func TestOpenAIProvider_Chat_UpstreamError(t *testing.T) {
 	}))
 	defer srv.Close()
 	p := NewOpenAIProvider()
-	_, code, err := p.Chat(&ChatRequest{Model: "gpt-4", Messages: []Message{{Role: "user", Content: "hi"}}}, "sk", srv.URL)
+	_, code, err := p.Chat(context.Background(), &ChatRequest{Model: "gpt-4", Messages: []Message{{Role: "user", Content: "hi"}}}, "sk", srv.URL)
 	if err == nil {
 		t.Fatal("expected error")
 	}

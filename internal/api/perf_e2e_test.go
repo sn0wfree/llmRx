@@ -204,7 +204,7 @@ func newMockProvider() *mockProvider { return &mockProvider{} }
 
 func (m *mockProvider) Name() string { return "mock" }
 
-func (m *mockProvider) Chat(req *provider.ChatRequest, apiKey, baseURL string) (*provider.ChatResponse, int, error) {
+func (m *mockProvider) Chat(ctx context.Context, req *provider.ChatRequest, apiKey, baseURL string) (*provider.ChatResponse, int, error) {
 	return &provider.ChatResponse{
 		ID:      "chatcmpl-mock",
 		Object:  "chat.completion",

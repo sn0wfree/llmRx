@@ -187,7 +187,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	prov := h.providerFor(route.Channel.Protocol)
 	start := time.Now()
-	resp, statusCode, err := prov.Chat(&req, route.KeyValue, route.Channel.BaseURL)
+	resp, statusCode, err := prov.Chat(r.Context(), &req, route.KeyValue, route.Channel.BaseURL)
 	duration := time.Since(start).Milliseconds()
 
 	tokenID := lookupTokenID(r.Context(), h.store)

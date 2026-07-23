@@ -268,7 +268,7 @@ func IntOr(p *int, def int) int {
 // non-streaming.
 type Provider interface {
 	Name() string
-	Chat(req *ChatRequest, apiKey string, baseURL string) (*ChatResponse, int, error)
+	Chat(ctx context.Context, req *ChatRequest, apiKey string, baseURL string) (*ChatResponse, int, error)
 }
 
 // StreamingProvider is an optional capability some providers
@@ -300,13 +300,13 @@ func (p *OpenAIProvider) Name() string {
 	return "openai-compatible"
 }
 
-func (p *OpenAIProvider) Chat(req *ChatRequest, apiKey string, baseURL string) (*ChatResponse, int, error) {
+func (p *OpenAIProvider) Chat(ctx context.Context, req *ChatRequest, apiKey string, baseURL string) (*ChatResponse, int, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequest("POST", baseURL+"/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, fmt.Errorf("create request: %w", err)
 	}

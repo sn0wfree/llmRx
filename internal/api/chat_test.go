@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -107,7 +108,7 @@ func TestChat_StreamNotSupported(t *testing.T) {
 type plainProvider struct{}
 
 func (plainProvider) Name() string { return "plain" }
-func (plainProvider) Chat(req *provider.ChatRequest, _, _ string) (*provider.ChatResponse, int, error) {
+func (plainProvider) Chat(_ context.Context, req *provider.ChatRequest, _, _ string) (*provider.ChatResponse, int, error) {
 	return &provider.ChatResponse{ID: "x", Model: req.Model, Usage: provider.Usage{}}, 200, nil
 }
 

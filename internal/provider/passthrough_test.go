@@ -53,7 +53,7 @@ func TestOpenAIChat_ForwardsAllFields(t *testing.T) {
 		Metadata:   map[string]any{"trace": "abc"},
 	}
 	p := NewOpenAIProvider()
-	resp, code, err := p.Chat(req, "sk-test", srv.URL)
+	resp, code, err := p.Chat(context.Background(), req, "sk-test", srv.URL)
 	if err != nil || code != 200 {
 		t.Fatalf("chat err=%v code=%d", err, code)
 	}
@@ -119,7 +119,7 @@ func TestOpenAIChat_OmitsZeroFields(t *testing.T) {
 		fmt.Fprint(w, `{"id":"x","object":"chat.completion","model":"m","choices":[],"usage":{}}`)
 	}))
 	defer srv.Close()
-	_, _, err := NewOpenAIProvider().Chat(&ChatRequest{
+	_, _, err := NewOpenAIProvider().Chat(context.Background(), &ChatRequest{
 		Model:    "m",
 		Messages: []Message{{Role: "user", Content: "hi"}},
 	}, "sk", srv.URL)
@@ -154,7 +154,7 @@ func TestOpenAIChat_MultimodalContentPassesThrough(t *testing.T) {
 		{Type: "text", Text: "what's in this image?"},
 		{Type: "image_url", ImageURL: &ImageURL{URL: "https://example.com/x.png", Detail: "high"}},
 	}
-	_, _, err := NewOpenAIProvider().Chat(&ChatRequest{
+	_, _, err := NewOpenAIProvider().Chat(context.Background(), &ChatRequest{
 		Model:    "gpt-4-vision",
 		Messages: []Message{{Role: "user", Content: parts}},
 	}, "sk", srv.URL)

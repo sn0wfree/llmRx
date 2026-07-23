@@ -152,7 +152,7 @@ type hangingProvider struct {
 
 func (h *hangingProvider) Name() string { return "hanging" }
 
-func (h *hangingProvider) Chat(req *provider.ChatRequest, _, _ string) (*provider.ChatResponse, int, error) {
+func (h *hangingProvider) Chat(_ context.Context, req *provider.ChatRequest, _, _ string) (*provider.ChatResponse, int, error) {
 	return nil, 500, errors.New("not used in stream tests")
 }
 
@@ -190,7 +190,7 @@ type contextRecordingProvider struct {
 
 func (c *contextRecordingProvider) Name() string { return "ctx-rec" }
 
-func (c *contextRecordingProvider) Chat(req *provider.ChatRequest, _, _ string) (*provider.ChatResponse, int, error) {
+func (c *contextRecordingProvider) Chat(_ context.Context, req *provider.ChatRequest, _, _ string) (*provider.ChatResponse, int, error) {
 	return &provider.ChatResponse{ID: "x", Model: req.Model}, 200, nil
 }
 

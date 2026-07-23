@@ -159,12 +159,12 @@ type anthropicUsage struct {
 	OutputTokens int `json:"output_tokens"`
 }
 
-func (p *AnthropicProvider) Chat(req *ChatRequest, apiKey, baseURL string) (*ChatResponse, int, error) {
+func (p *AnthropicProvider) Chat(ctx context.Context, req *ChatRequest, apiKey, baseURL string) (*ChatResponse, int, error) {
 	body, err := json.Marshal(p.translateReq(req))
 	if err != nil {
 		return nil, 0, err
 	}
-	httpReq, err := http.NewRequest("POST", strings.TrimRight(baseURL, "/")+"/v1/messages", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(baseURL, "/")+"/v1/messages", bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -487,14 +487,14 @@ type geminiResponse struct {
 	} `json:"usageMetadata"`
 }
 
-func (p *GeminiProvider) Chat(req *ChatRequest, apiKey, baseURL string) (*ChatResponse, int, error) {
+func (p *GeminiProvider) Chat(ctx context.Context, req *ChatRequest, apiKey, baseURL string) (*ChatResponse, int, error) {
 	body, err := json.Marshal(p.translateReq(req))
 	if err != nil {
 		return nil, 0, err
 	}
 	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent?key=%s",
 		strings.TrimRight(baseURL, "/"), req.Model, apiKey)
-	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -512,11 +512,19 @@ func (p *GeminiProvider) Chat(req *ChatRequest, apiKey, baseURL string) (*ChatRe
 	if err := json.Unmarshal(raw, &gr); err != nil {
 		return nil, resp.StatusCode, err
 	}
+	// Gemini may return HTTP 200 with an empty candidates array
+	// when the upstream filtered the response (safety filter,
+	// max-output-tokens hit, etc.). Returning an empty choice
+	// list would force the chat client to interpret "" as a
+	// successful answer — we surface a clear upstream error
+	// instead.
+	if len(gr.Candidates) == 0 {
+		return nil, http.StatusBadGateway, fmt.Errorf("upstream returned no candidates (raw=%s)", truncate(string(raw), 200))
+	}
+	cand := gr.Candidates[0]
 	var text string
-	if len(gr.Candidates) > 0 {
-		for _, p := range gr.Candidates[0].Content.Parts {
-			text += p.Text
-		}
+	for _, p := range cand.Content.Parts {
+		text += p.Text
 	}
 	return &ChatResponse{
 		Object: "chat.completion",
@@ -524,7 +532,7 @@ func (p *GeminiProvider) Chat(req *ChatRequest, apiKey, baseURL string) (*ChatRe
 		Choices: []Choice{{
 			Index:        0,
 			Message:      Message{Role: "assistant", Content: text},
-			FinishReason: lowerFirst(gr.Candidates[0].FinishReason),
+			FinishReason: lowerFirst(cand.FinishReason),
 		}},
 		Usage: Usage{
 			PromptTokens:     gr.UsageMetadata.PromptTokenCount,
@@ -532,6 +540,16 @@ func (p *GeminiProvider) Chat(req *ChatRequest, apiKey, baseURL string) (*ChatRe
 			TotalTokens:      gr.UsageMetadata.TotalTokenCount,
 		},
 	}, resp.StatusCode, nil
+}
+
+// truncate returns the first n bytes of s as a string. Used in
+// error messages so a 1MB upstream response doesn't blow up
+// our logs.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
 
 func (p *GeminiProvider) translateReq(req *ChatRequest) geminiRequest {
