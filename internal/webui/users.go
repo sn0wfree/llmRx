@@ -111,8 +111,16 @@ func (h *Handler) UserDelete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// UserPasswordForm renders the change-password form.
+// UserPasswordForm renders the change-password form. Mirrors
+// UserPasswordSubmit's ownership rule: a user may only view
+// their own change-password page, unless they are RoleRoot
+// (who can manage anyone).
 func (h *Handler) UserPasswordForm(w http.ResponseWriter, r *http.Request) {
+	caller := getUser(r)
+	if caller == nil {
+		http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+		return
+	}
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		http.Error(w, "bad id", http.StatusBadRequest)
@@ -123,10 +131,14 @@ func (h *Handler) UserPasswordForm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	if caller.ID != id && caller.Role < model.RoleRoot {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
 	data := map[string]any{
 		"Body":   "users_form_body",
 		"Title":  "修改密码 - " + u.Username,
-		"User":   userToView(getUser(r)),
+		"User":   userToView(caller),
 		"Active": "users",
 		"User2":  u,
 	}
