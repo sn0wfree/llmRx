@@ -14,7 +14,7 @@ import (
 
 // Handler holds dependencies for the admin web UI.
 type Handler struct {
-	store      store.Store
+	store      WebuiStore
 	renderer   *Renderer
 	adminH     *webAPIBridge
 	configPath string
@@ -31,6 +31,10 @@ func New(st store.Store, adminAPI *webAPIBridge, configPath string) (*Handler, e
 	}
 	return &Handler{store: st, renderer: r, adminH: adminAPI, configPath: configPath}, nil
 }
+
+// SetStore replaces the handler's store. Intended for tests that need
+// to inject a mock store to exercise error paths.
+func (h *Handler) SetStore(st WebuiStore) { h.store = st }
 
 // Routes returns the http handler that serves /admin/*.
 func (h *Handler) Routes() http.Handler {

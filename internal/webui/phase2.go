@@ -289,7 +289,7 @@ func writeFileAtomic(path string, data []byte) error {
 
 // loadEffectiveYAML reads the YAML file plus runtime overrides and
 // returns a flat key->value map for display.
-func loadEffectiveYAML(path string, st store.Store) (map[string]string, error) {
+func loadEffectiveYAML(path string, st interface{ GetRuntimeSettings() ([]byte, error) }) (map[string]string, error) {
 	out := map[string]string{}
 	if path == "" {
 		return out, nil

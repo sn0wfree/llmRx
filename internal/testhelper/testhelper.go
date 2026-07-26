@@ -126,6 +126,60 @@ func New(t *testing.T) *App {
 	}
 }
 
+// NewWithStore constructs an App using the provided store instead of
+// opening a fresh SQLite database. This allows tests to inject a mock
+// store (e.g. ScriptedStore) to exercise handler error paths. The
+// remaining infrastructure (pool, cache, router, broker, runtime,
+// admin handler, chat handler) is wired from the given store.
+func NewWithStore(t *testing.T, st store.Store) *App {
+	t.Helper()
+
+	cp := pool.NewChannelPool()
+	if err := cp.LoadFromStore(st); err != nil {
+		t.Fatalf("LoadFromStore: %v", err)
+	}
+
+	cache := tokencache.New(st)
+	eng := router.New(st, cp)
+	logBroker := broker.New[*model.Log](128)
+	rt := runtime.New()
+	cfg := &config.Config{}
+	adminH := admin.New(st, cp, eng, cache, logBroker, rt, cfg, "")
+
+	mp := &MockProvider{}
+	chatH := api.New(cfg, eng, cp, st, logBroker, rt)
+	chatH.SetProvider(mp)
+	chatH.SetProviders(map[string]provider.Provider{
+		"":          mp,
+		"openai":    mp,
+		"anthropic": mp,
+		"gemini":    mp,
+	})
+
+	mux := chi.NewRouter()
+	mux.With(authmw.Token(cache.Lookup)).Mount("/v1", chatH.Routes())
+	mux.Mount("/admin/api/v1", adminH.Routes())
+	mux.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	return &App{
+		T:         t,
+		Store:     st,
+		Pool:      cp,
+		Cache:     cache,
+		Engine:    eng,
+		Admin:     adminH,
+		Chat:      chatH,
+		Provider:  mp,
+		LogBroker: logBroker,
+		RT:        rt,
+		Cfg:       cfg,
+		Mux:       mux,
+	}
+}
+
 // AddChannel inserts a channel + optional key directly via the store.
 func (a *App) AddChannel(name, providerName, baseURL string, models []string, keys ...string) *model.Channel {
 	a.T.Helper()

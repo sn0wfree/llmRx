@@ -38,7 +38,7 @@ func nowAdd(d time.Duration) time.Time {
 
 // SessionMiddleware reads llmrx_session cookie, resolves the user
 // from store, and attaches it to the request context.
-func SessionMiddleware(st store.Store) func(http.Handler) http.Handler {
+func SessionMiddleware(st UserLookup) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cookie, err := r.Cookie(sessionCookieName)

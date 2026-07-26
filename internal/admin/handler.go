@@ -53,6 +53,10 @@ func New(st store.Store, cp *pool.ChannelPool, eng *router.RouterEngine, tc *tok
 	return &Handler{store: st, pool: cp, router: eng, tokens: tc, logBroker: lb, rt: rt, cfg: cfg, keyFile: keyFile, sessionTTL: 24 * time.Hour}
 }
 
+// SetStore replaces the handler's store. Intended for tests that need
+// to inject a mock store to exercise error paths.
+func (h *Handler) SetStore(st store.Store) { h.store = st }
+
 // SetAlertManager lets main.go inject the alert manager for /reload.
 // Accepts the AlertReloader interface to keep the import graph
 // acyclic.

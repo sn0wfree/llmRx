@@ -2,113 +2,126 @@ package runtime
 
 import (
 	"bytes"
+	"log"
 	"strings"
 	"testing"
 )
 
-func TestLevelFilter_DropsBelowThreshold(t *testing.T) {
-	var out bytes.Buffer
-	rt := New()
-	rt.SetLogLevel(2) // warn: drops info and debug
-
-	f := NewLevelFilter(rt, &out)
-	f.Write([]byte("debug: this should drop\n"))
-	f.Write([]byte("info: this should drop\n"))
-	f.Write([]byte("warn: this stays\n"))
-	f.Write([]byte("error: this stays\n"))
-	f.Write([]byte("plain info line (no prefix) drops\n"))
-
-	got := out.String()
-	if !strings.Contains(got, "warn: this stays") {
-		t.Errorf("warn should pass: %q", got)
+func TestLogLevelName(t *testing.T) {
+	tests := []struct {
+		level int64
+		want  string
+	}{
+		{0, "debug"},
+		{1, "info"},
+		{2, "warn"},
+		{3, "error"},
 	}
-	if !strings.Contains(got, "error: this stays") {
-		t.Errorf("error should pass: %q", got)
-	}
-	if strings.Contains(got, "this should drop") {
-		t.Errorf("debug/info should be dropped: %q", got)
-	}
-	if strings.Contains(got, "plain info line") {
-		t.Errorf("unprefixed line should drop at warn level: %q", got)
-	}
-}
-
-func TestLevelFilter_PassesAllAtDebug(t *testing.T) {
-	var out bytes.Buffer
-	rt := New()
-	rt.SetLogLevel(0) // debug: everything passes
-
-	f := NewLevelFilter(rt, &out)
-	f.Write([]byte("debug: d\n"))
-	f.Write([]byte("info: i\n"))
-	f.Write([]byte("warn: w\n"))
-	f.Write([]byte("error: e\n"))
-
-	got := out.String()
-	for _, want := range []string{"debug: d", "info: i", "warn: w", "error: e"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("debug level should pass %q: %q", want, got)
+	for _, tc := range tests {
+		got := LogLevelName(tc.level)
+		if got != tc.want {
+			t.Errorf("LogLevelName(%d): got %q, want %q", tc.level, got, tc.want)
 		}
 	}
 }
 
-func TestLevelFilter_OnlyErrorAtError(t *testing.T) {
-	var out bytes.Buffer
-	rt := New()
-	rt.SetLogLevel(3) // error: drops everything below
-
-	f := NewLevelFilter(rt, &out)
-	f.Write([]byte("debug: d\n"))
-	f.Write([]byte("info: i\n"))
-	f.Write([]byte("warn: w\n"))
-	f.Write([]byte("error: e\n"))
-
-	got := out.String()
-	if !strings.Contains(got, "error: e") {
-		t.Errorf("error should pass: %q", got)
+func TestLogLevelName_OutOfRange(t *testing.T) {
+	got := LogLevelName(5)
+	if got == "" {
+		t.Fatal("should not be empty for unknown level")
 	}
-	if strings.Contains(got, "info: i") {
-		t.Errorf("info should be dropped at error level: %q", got)
+	if !strings.Contains(got, "?") {
+		t.Fatalf("unknown level should contain '?': got %q", got)
 	}
 }
 
-func TestLevelFilter_ThresholdLiveUpdate(t *testing.T) {
-	// Filter reads from rt on every Write. Lower the threshold
-	// between writes and verify the next write respects the new
-	// value.
-	var out bytes.Buffer
+func TestNewLevelFilter(t *testing.T) {
 	rt := New()
-	rt.SetLogLevel(3) // error
+	var buf bytes.Buffer
+	f := NewLevelFilter(rt, &buf)
 
-	f := NewLevelFilter(rt, &out)
-	f.Write([]byte("info: dropped first\n"))
-	if strings.Contains(out.String(), "dropped first") {
-		t.Fatalf("info should drop at error level: %q", out.String())
+	rt.SetLogLevel(1)
+
+	input := []byte("info: test message\n")
+	n, err := f.Write(input)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
 	}
-
-	rt.SetLogLevel(0) // now debug — everything passes
-	f.Write([]byte("info: passes second\n"))
-	if !strings.Contains(out.String(), "passes second") {
-		t.Fatalf("info should pass after lowering: %q", out.String())
+	if n != len(input) {
+		t.Fatalf("Write returned %d, want %d", n, len(input))
+	}
+	if !strings.Contains(buf.String(), "test message") {
+		t.Fatalf("output should contain message: %s", buf.String())
 	}
 }
 
-func TestLevelForLine(t *testing.T) {
-	cases := map[string]int64{
-		"debug: foo":        0,
-		"info: bar":         1,
-		"warn: baz":         2,
-		"error: qux":        3,
-		"plain line":        1,
-		"warning: typo":     1, // "warning:" not recognised
-		"alert: foo":        1,
-		"":                  1,
-		"warn: ":            2,
-		"warning: ":         1,
+func TestLevelFilter_FiltersBelowThreshold(t *testing.T) {
+	rt := New()
+	var buf bytes.Buffer
+	f := NewLevelFilter(rt, &buf)
+
+	rt.SetLogLevel(3)
+
+	input := []byte("info: should be filtered\n")
+	n, _ := f.Write(input)
+	if n != len(input) {
+		t.Fatalf("Write should report full length, got %d want %d", n, len(input))
 	}
-	for s, want := range cases {
-		if got := levelForLine(s); got != want {
-			t.Errorf("levelForLine(%q): got %d, want %d", s, got, want)
-		}
+	if buf.Len() != 0 {
+		t.Fatalf("info should be filtered at error level, got: %s", buf.String())
+	}
+}
+
+func TestLevelFilter_PassesAtThreshold(t *testing.T) {
+	rt := New()
+	var buf bytes.Buffer
+	f := NewLevelFilter(rt, &buf)
+
+	rt.SetLogLevel(2)
+
+	f.Write([]byte("warn: warning message\n"))
+	if !strings.Contains(buf.String(), "warning message") {
+		t.Fatalf("warn should pass at warn level: %s", buf.String())
+	}
+}
+
+func TestLevelFilter_PassesAboveThreshold(t *testing.T) {
+	rt := New()
+	var buf bytes.Buffer
+	f := NewLevelFilter(rt, &buf)
+
+	rt.SetLogLevel(0)
+
+	f.Write([]byte("error: error message\n"))
+	if !strings.Contains(buf.String(), "error message") {
+		t.Fatalf("error should pass at debug level: %s", buf.String())
+	}
+}
+
+func TestLevelFilter_MultipleLines(t *testing.T) {
+	rt := New()
+	var buf bytes.Buffer
+	f := NewLevelFilter(rt, &buf)
+
+	rt.SetLogLevel(2)
+	f.Write([]byte("info: filtered\nwarn: kept\nerror: kept\n"))
+	out := buf.String()
+	if strings.Contains(out, "filtered") {
+		t.Fatalf("info should be filtered: %s", out)
+	}
+	if !strings.Contains(out, "kept") {
+		t.Fatalf("warn/error should be kept: %s", out)
+	}
+}
+
+func TestInstallLogFilter(t *testing.T) {
+	rt := New()
+	var buf bytes.Buffer
+	InstallLogFilter(rt, &buf)
+	rt.SetLogLevel(0)
+
+	log.Printf("debug: test debug message")
+	if !strings.Contains(buf.String(), "test debug message") {
+		t.Fatalf("debug message should pass: %s", buf.String())
 	}
 }

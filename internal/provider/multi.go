@@ -338,17 +338,26 @@ func (p *AnthropicProvider) StreamChat(ctx context.Context, req *ChatRequest, ap
 						eventType = strings.TrimPrefix(line, "event: ")
 					case strings.HasPrefix(line, "data: "):
 						payload := strings.TrimPrefix(line, "data: ")
-						if eventType == "content_block_delta" {
-							var d struct {
-								Delta struct {
-									Type string `json:"type"`
-									Text string `json:"text"`
-								} `json:"delta"`
+					if eventType == "content_block_delta" {
+						var d struct {
+							Delta struct {
+								Type string `json:"type"`
+								Text string `json:"text"`
+							} `json:"delta"`
+						}
+						if json.Unmarshal([]byte(payload), &d) == nil {
+							acc.WriteString(d.Delta.Text)
+							chunk := StreamChunk{
+								Object:  "chat.completion.chunk",
+								Choices: []StreamChoice{{Index: 0, Delta: Message{Content: d.Delta.Text}}},
 							}
-							if json.Unmarshal([]byte(payload), &d) == nil {
-								acc.WriteString(d.Delta.Text)
+							select {
+							case <-ctx.Done():
+								return
+							case out <- StreamEvent{Chunk: chunk}:
 							}
 						}
+					}
 						if eventType == "message_start" {
 							var m struct {
 								Message struct {
