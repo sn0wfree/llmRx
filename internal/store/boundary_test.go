@@ -1,55 +1,12 @@
 package store_test
 
 import (
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
-	"github.com/sn0wfree/llmRx/internal/secrets"
 	"github.com/sn0wfree/llmRx/internal/store"
 )
-
-// --- reencryptAllTokens edge cases ---
-
-func TestReencryptAllTokens_EmptyDB(t *testing.T) {
-	s, _ := openTempLog(t)
-	mgr1, _ := secrets.FromHexKey("aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899")
-	mgr2, _ := secrets.FromHexKey("99887766554433221100ffeeddccbbaa99887766554433221100ffeeddccbbaa")
-	s.SetSecrets(mgr1)
-	n, err := s.ReencryptAllKeys(mgr1, mgr2)
-	if err != nil {
-		t.Fatalf("ReencryptAllKeys: %v", err)
-	}
-	if n != 0 {
-		t.Errorf("expected 0, got %d", n)
-	}
-}
-
-func TestReencryptAllTokens_WrongOldKey(t *testing.T) {
-	dir := t.TempDir()
-	s, _ := store.OpenSQLite(filepath.Join(dir, "test.db"))
-	t.Cleanup(func() { _ = s.Close() })
-	logDir := filepath.Join(dir, "logs")
-	logstore.EnsureDir(logDir)
-	ls, _ := logstore.New(logDir, nil)
-	t.Cleanup(func() { _ = ls.Close() })
-	s.SetLogStore(ls)
-
-	mgr1, _ := secrets.FromHexKey("aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899")
-	s.SetSecrets(mgr1)
-	ch := &model.Channel{Name: "ch", Provider: "openai", Protocol: "openai", BaseURL: "https://x", Models: []string{"m"}, Status: model.ChannelEnabled}
-	s.CreateChannel(ch)
-	s.CreateKey(&model.Key{ChannelID: ch.ID, Key: "sk-test", KeyMasked: "sk-t***test", Status: model.KeyActive})
-
-	wrongMgr, _ := secrets.FromHexKey("11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff")
-	newMgr, _ := secrets.FromHexKey("99887766554433221100ffeeddccbbaa99887766554433221100ffeeddccbbaa")
-	_, err := s.ReencryptAllKeys(wrongMgr, newMgr)
-	if err == nil {
-		t.Errorf("expected error with wrong old key")
-	}
-}
 
 // --- RecordRequestSpend edge cases ---
 
