@@ -17,6 +17,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/logstore"
+	"github.com/sn0wfree/llmRx/internal/observability"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/provider"
@@ -302,6 +303,16 @@ func main() {
 
 	log.Printf("starting llmRx gateway on :%d (channels=%d tokens=%d db=%s)",
 		cfg.Server.Port, len(cp.GetAllChannels()), tokCache.Size(), cfg.Database.DSN)
+
+	// Initialize Prometheus metrics and start the metrics server.
+	observability.Init()
+	stopMetrics := srv.StartMetricsServer(ctx)
+	defer stopMetrics()
+
+	// Set initial gauge values.
+	observability.SetChannelsEnabled(float64(len(cp.GetAllChannels())))
+	observability.SetTokensActive(float64(tokCache.Size()))
+
 	if err := srv.Start(ctx); err != nil {
 		log.Fatalf("server: %v", err)
 	}

@@ -47,6 +47,15 @@ type ServerConfig struct {
 	// Actual delay = base * 2^attempt, capped at 30s. Default 500.
 	RetryBaseDelayMs int `yaml:"retry_base_delay_ms"`
 
+	// MetricsAddr is the listen address for the Prometheus /metrics
+	// endpoint. Empty string disables the metrics server. Default
+	// empty (disabled). Example: "127.0.0.1:9090".
+	MetricsAddr string `yaml:"metrics_addr"`
+
+	// MetricsAuthToken is an optional bearer token for /metrics
+	// access. Empty string allows unauthenticated access.
+	MetricsAuthToken string `yaml:"metrics_auth_token"`
+
 	// AllowDefaultAdminPassword, when true, lets the gateway
 	// start with the well-known admin/admin credential. Off by
 	// default so production deployments refuse to bootstrap

@@ -16,6 +16,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/observability"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/provider"
 	"github.com/sn0wfree/llmRx/internal/ratelimit"
@@ -448,6 +449,9 @@ func (h *Handler) emitLog(ctx context.Context, tokenID int64, modelName string, 
 	if h.logBroker != nil {
 		h.logBroker.Publish(entry)
 	}
+	// Record Prometheus metrics.
+	observability.RecordRequest(modelName, durationMs, failed, billed,
+		promptTokens(usage), completionTokens(usage), false)
 	// Credit both the per-token and per-plan spend ledgers in a
 	// single SQL transaction. On ErrBudgetExceeded the token leg
 	// is reverted atomically inside the store, so we no longer
@@ -619,6 +623,8 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 	flusher.Flush()
 
 	start := time.Now()
+	observability.StreamStart()
+	defer observability.StreamEnd()
 	// Build a single derived context. Use WithTimeout when the
 	// admin has configured a non-zero cap (default 5m); otherwise
 	// the request context alone is enough — no extra WithCancel

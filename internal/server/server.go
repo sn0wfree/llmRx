@@ -23,6 +23,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
 	"github.com/sn0wfree/llmRx/internal/tokencache"
+	"github.com/sn0wfree/llmRx/internal/observability"
 	"github.com/sn0wfree/llmRx/internal/webui"
 )
 
@@ -169,5 +170,49 @@ func (s *Server) Start(ctx context.Context) error {
 func (s *Server) SetAlertManager(m *alert.Manager) {
 	if s.admin != nil {
 		s.admin.SetAlertManager(m)
+	}
+}
+
+// StartMetricsServer starts the Prometheus metrics server on the
+// configured MetricsAddr. Returns nil if metrics are disabled.
+func (s *Server) StartMetricsServer(ctx context.Context) func() {
+	addr := s.cfg.Server.MetricsAddr
+	if addr == "" {
+		return func() {}
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", observability.Handler())
+
+	// Optional auth token.
+	token := s.cfg.Server.MetricsAuthToken
+	if token != "" {
+		mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+			auth := r.Header.Get("Authorization")
+			if auth != "Bearer "+token {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			observability.Handler().ServeHTTP(w, r)
+		})
+	}
+
+	ms := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		log.Printf("metrics: listening on %s", addr)
+		if err := ms.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("metrics: %v", err)
+		}
+	}()
+
+	return func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = ms.Shutdown(shutdownCtx)
 	}
 }
