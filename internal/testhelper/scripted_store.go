@@ -112,6 +112,11 @@ type ScriptedStore struct {
 	ListBYOKChannelsFunc    func(ctx context.Context) ([]*model.BYOKChannel, error)
 	GetBYOKChannelFunc      func(ctx context.Context, id int64) (*model.BYOKChannel, error)
 	DeleteBYOKChannelFunc   func(ctx context.Context, id int64) error
+
+	// ProviderDefs
+	GetProviderDefsFunc  func() ([]model.ProviderDef, error)
+	CreateProviderDefFunc func(p *model.ProviderDef) error
+	DeleteProviderDefFunc func(id int64) error
 }
 
 // NewScriptedStore wraps the given store. All methods delegate to the
@@ -536,4 +541,23 @@ func (s *ScriptedStore) DeleteBYOKChannel(ctx context.Context, id int64) error {
 		return s.DeleteBYOKChannelFunc(ctx, id)
 	}
 	return s.underlying.DeleteBYOKChannel(ctx, id)
+}
+
+func (s *ScriptedStore) GetProviderDefs() ([]model.ProviderDef, error) {
+	if s.GetProviderDefsFunc != nil {
+		return s.GetProviderDefsFunc()
+	}
+	return s.underlying.GetProviderDefs()
+}
+func (s *ScriptedStore) CreateProviderDef(p *model.ProviderDef) error {
+	if s.CreateProviderDefFunc != nil {
+		return s.CreateProviderDefFunc(p)
+	}
+	return s.underlying.CreateProviderDef(p)
+}
+func (s *ScriptedStore) DeleteProviderDef(id int64) error {
+	if s.DeleteProviderDefFunc != nil {
+		return s.DeleteProviderDefFunc(id)
+	}
+	return s.underlying.DeleteProviderDef(id)
 }

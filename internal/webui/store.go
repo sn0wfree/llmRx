@@ -68,4 +68,9 @@ type WebuiStore interface {
 
 	// Runtime
 	GetRuntimeSettings() ([]byte, error)
+
+	// ProviderDefs
+	GetProviderDefs() ([]model.ProviderDef, error)
+	CreateProviderDef(p *model.ProviderDef) error
+	DeleteProviderDef(id int64) error
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
+	"github.com/sn0wfree/llmRx/internal/provider"
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/secrets"
@@ -91,6 +93,10 @@ func (h *Handler) Routes() http.Handler {
 		r.Get("/channels/{id}/keys", h.ListKeys)
 		r.Post("/channels/{id}/keys", h.CreateKey)
 		r.Delete("/channels/{id}/keys/{keyId}", h.DeleteKey)
+		r.Post("/channels/{id}/fetch-models", h.FetchModels)
+		r.Get("/providers", h.ListProviders)
+		r.Post("/providers", h.CreateProvider)
+		r.Delete("/providers/{id}", h.DeleteProvider)
 		r.Get("/tokens", h.ListTokens)
 		r.Post("/tokens", h.CreateToken)
 		r.Put("/tokens/{id}", h.UpdateToken)
@@ -481,6 +487,94 @@ func (h *Handler) DeleteKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.pool.LoadFromStore(h.store); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// ---------- fetch models ----------
+
+// FetchModels calls the upstream API to discover available models
+// for a channel. Uses the channel's provider (to resolve the
+// protocol) and the channel's first active key for auth.
+func (h *Handler) FetchModels(w http.ResponseWriter, r *http.Request) {
+	id, err := pathInt(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	ch, err := h.store.GetChannel(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	keys, err := h.store.GetKeys(id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(keys) == 0 || keys[0].Key == "" {
+		writeErr(w, http.StatusBadRequest, "channel has no API key configured")
+		return
+	}
+	models, err := provider.ListModels(r.Context(), ch.Provider, keys[0].Key, ch.BaseURL)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, fmt.Sprintf("upstream: %v", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+}
+
+// ---------- providers ----------
+
+func (h *Handler) ListProviders(w http.ResponseWriter, r *http.Request) {
+	descs := provider.AllProviders()
+	writeJSON(w, http.StatusOK, map[string]any{"data": descs})
+}
+
+func (h *Handler) CreateProvider(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name        string `json:"name"`
+		DisplayName string `json:"display_name"`
+		Protocol    string `json:"protocol"`
+		BaseURL     string `json:"base_url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if body.Name == "" || body.Protocol == "" || body.BaseURL == "" {
+		writeErr(w, http.StatusBadRequest, "name, protocol, and base_url are required")
+		return
+	}
+	pd := &model.ProviderDef{
+		Name:        body.Name,
+		DisplayName: body.DisplayName,
+		Protocol:    body.Protocol,
+		BaseURL:     body.BaseURL,
+	}
+	if err := h.store.CreateProviderDef(pd); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	provider.RegisterProvider(provider.ProviderDesc{
+		Name:           pd.Name,
+		DisplayName:    pd.DisplayName,
+		Protocol:       pd.Protocol,
+		DefaultBaseURL: pd.BaseURL,
+		Source:         "db",
+	})
+	writeJSON(w, http.StatusOK, pd)
+}
+
+func (h *Handler) DeleteProvider(w http.ResponseWriter, r *http.Request) {
+	id, err := pathInt(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	if err := h.store.DeleteProviderDef(id); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

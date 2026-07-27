@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/provider"
 	"github.com/sn0wfree/llmRx/internal/secrets"
 )
 
@@ -67,10 +68,11 @@ func (h *Handler) channelsListPage(w http.ResponseWriter, r *http.Request, query
 // ChannelNewForm renders the new channel form.
 func (h *Handler) ChannelNewForm(w http.ResponseWriter, r *http.Request) {
 	data := map[string]any{
-		"Body":   "channels_form_body",
-		"Title":  "新建通道",
-		"User":   userToView(getUser(r)),
-		"Active": "channels",
+		"Body":      "channels_form_body",
+		"Title":     "新建通道",
+		"User":      userToView(getUser(r)),
+		"Active":    "channels",
+		"Providers": provider.AllProviders(),
 	}
 	if err := h.renderer.Render(w, "channels_form_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -90,11 +92,12 @@ func (h *Handler) ChannelEditForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := map[string]any{
-		"Body":    "channels_form_body",
-		"Title":   "编辑通道",
-		"User":    userToView(getUser(r)),
-		"Active":  "channels",
-		"Channel": ch,
+		"Body":      "channels_form_body",
+		"Title":     "编辑通道",
+		"User":      userToView(getUser(r)),
+		"Active":    "channels",
+		"Channel":   ch,
+		"Providers": provider.AllProviders(),
 	}
 	if err := h.renderer.Render(w, "channels_form_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -341,6 +344,7 @@ func (h *Handler) renderFormError(w http.ResponseWriter, r *http.Request, ch *mo
 		"Channel":   ch,
 		"FormError": msg,
 		"FormData":  fd,
+		"Providers": provider.AllProviders(),
 	}
 	if err := h.renderer.Render(w, "channels_form_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

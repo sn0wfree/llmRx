@@ -19,12 +19,15 @@ import (
 	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
+	"github.com/sn0wfree/llmRx/internal/provider"
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/secrets"
 	"github.com/sn0wfree/llmRx/internal/server"
 	"github.com/sn0wfree/llmRx/internal/store"
 	"github.com/sn0wfree/llmRx/internal/tokencache"
+
+	"gopkg.in/yaml.v3"
 )
 
 func main() {
@@ -133,6 +136,28 @@ func main() {
 	defer logStore.Close()
 	st.SetLogStore(logStore)
 	log.Printf("logstore: initialized at %s", logDir)
+
+	// Load provider descriptors from config.yml and DB into the
+	// provider registry. Built-in providers from providers.yaml are
+	// already loaded via init(); this merges operator overrides and
+	// user-defined providers from the DB.
+	if len(cfg.Providers) > 0 {
+		yamlBytes, _ := yaml.Marshal(map[string]any{"providers": cfg.Providers})
+		if err := provider.LoadProvidersFromYAML(yamlBytes, "config"); err != nil {
+			log.Printf("provider: load config providers: %v", err)
+		}
+	}
+	if defs, err := st.GetProviderDefs(); err == nil {
+		for _, d := range defs {
+			provider.RegisterProvider(provider.ProviderDesc{
+				Name:           d.Name,
+				DisplayName:    d.DisplayName,
+				Protocol:       d.Protocol,
+				DefaultBaseURL: d.BaseURL,
+				Source:         "db",
+			})
+		}
+	}
 
 	if err := seed(st, cfg); err != nil {
 		log.Fatalf("seed: %v", err)

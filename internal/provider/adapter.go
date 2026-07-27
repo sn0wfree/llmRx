@@ -286,6 +286,13 @@ type StreamEvent struct {
 	Err   error
 }
 
+// ModelLister is an optional capability. Protocols that can fetch
+// the list of available models from the upstream API implement this.
+// (Defined here instead of registry.go to keep it next to Provider.)
+type ModelLister interface {
+	ListModels(ctx context.Context, apiKey, baseURL string) ([]string, error)
+}
+
 type OpenAIProvider struct {
 	client *http.Client
 }
@@ -410,4 +417,47 @@ func (p *OpenAIProvider) StreamChat(ctx context.Context, req *ChatRequest, apiKe
 		}
 	}()
 	return out, nil
+}
+
+// ListModels fetches the list of available models from the upstream
+// API by calling GET {baseURL}/models. Works with any OpenAI-compatible
+// upstream (OpenAI, MiniMax, DeepSeek, Moonshot, Qwen, etc.).
+func (p *OpenAIProvider) ListModels(ctx context.Context, apiKey, baseURL string) ([]string, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, "GET", baseURL+"/models", nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(body))
+	}
+
+	// OpenAI-shaped response: {object: "list", data: [{id: "...", ...}]}
+	var result struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+	models := make([]string, 0, len(result.Data))
+	for _, m := range result.Data {
+		if m.ID != "" {
+			models = append(models, m.ID)
+		}
+	}
+	return models, nil
 }

@@ -1,0 +1,58 @@
+# Built-in provider catalog. Embedded into the binary via go:embed.
+# Operators can override entries or add new ones via config.yml
+# (providers: section) or the Admin UI (stored in the DB).
+#
+# Adding a new OpenAI-compatible provider requires only a new entry
+# here - no Go code changes needed.
+#
+# Fields:
+#   name         - unique identifier (used in channel.provider)
+#   display_name - human-readable label for the admin UI
+#   protocol     - which protocol adapter to use (openai|anthropic|gemini)
+#   base_url     - default upstream API base URL
+
+providers:
+  - name: openai
+    display_name: OpenAI
+    protocol: openai
+    base_url: https://api.openai.com/v1
+
+  - name: anthropic
+    display_name: Anthropic
+    protocol: anthropic
+    base_url: https://api.anthropic.com
+
+  - name: gemini
+    display_name: Google Gemini
+    protocol: gemini
+    base_url: https://generativelanguage.googleapis.com
+
+  - name: minimax
+    display_name: MiniMax
+    protocol: openai
+    base_url: https://api.minimax.io/v1
+
+  - name: deepseek
+    display_name: DeepSeek
+    protocol: openai
+    base_url: https://api.deepseek.com/v1
+
+  - name: moonshot
+    display_name: Moonshot (Kimi)
+    protocol: openai
+    base_url: https://api.moonshot.cn/v1
+
+  - name: qwen
+    display_name: Qwen (通义千问)
+    protocol: openai
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+
+  - name: zhipu
+    display_name: Zhipu (智谱)
+    protocol: openai
+    base_url: https://open.bigmodel.cn/api/paas/v4
+
+  - name: volcengine
+    display_name: 火山引擎 (豆包)
+    protocol: openai
+    base_url: https://ark.cn-beijing.volces.com/api/v3

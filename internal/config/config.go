@@ -15,6 +15,7 @@ type Config struct {
 	Channels []ChannelConfig `yaml:"channels"`
 	Secrets  SecretsConfig   `yaml:"secrets"`
 	BYOK     BYOKConfig      `yaml:"byok"`
+	Providers []ProviderConfig `yaml:"providers"`
 }
 
 type ServerConfig struct {
@@ -78,6 +79,15 @@ type ChannelConfig struct {
 	OutputPrice    float64  `yaml:"output_price_per_1m"`
 	MaxFailures    int      `yaml:"max_failures"`
 	ResetTimeoutMs int      `yaml:"reset_timeout_ms"`
+}
+
+// ProviderConfig lets operators override built-in providers or add
+// new ones via config.yml. Same shape as the built-in providers.yaml.
+type ProviderConfig struct {
+	Name        string `yaml:"name"`
+	DisplayName string `yaml:"display_name"`
+	Protocol    string `yaml:"protocol"`
+	BaseURL     string `yaml:"base_url"`
 }
 
 type TokenConfig struct {

@@ -220,6 +220,15 @@ func (s *SQLite) migrate() error {
 			settings_json TEXT NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS providers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT UNIQUE NOT NULL,
+			display_name TEXT NOT NULL,
+			protocol TEXT NOT NULL,
+			base_url TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
@@ -1493,4 +1502,44 @@ func (s *SQLite) GetBYOKChannel(ctx context.Context, id int64) (*model.BYOKChann
 
 func (s *SQLite) DeleteBYOKChannel(ctx context.Context, id int64) error {
 	return errNotImplemented
+}
+
+// ---------- ProviderDefs ----------
+
+func (s *SQLite) GetProviderDefs() ([]model.ProviderDef, error) {
+	rows, err := s.db.Query(`SELECT id, name, display_name, protocol, base_url, created_at, updated_at FROM providers ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.ProviderDef
+	for rows.Next() {
+		var p model.ProviderDef
+		var created, updated int64
+		if err := rows.Scan(&p.ID, &p.Name, &p.DisplayName, &p.Protocol, &p.BaseURL, &created, &updated); err != nil {
+			return nil, err
+		}
+		p.CreatedAt = time.Unix(created, 0)
+		p.UpdatedAt = time.Unix(updated, 0)
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) CreateProviderDef(p *model.ProviderDef) error {
+	now := time.Now().Unix()
+	res, err := s.db.Exec(`INSERT INTO providers (name, display_name, protocol, base_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		p.Name, p.DisplayName, p.Protocol, p.BaseURL, now, now)
+	if err != nil {
+		return err
+	}
+	p.ID, _ = res.LastInsertId()
+	p.CreatedAt = time.Unix(now, 0)
+	p.UpdatedAt = time.Unix(now, 0)
+	return nil
+}
+
+func (s *SQLite) DeleteProviderDef(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM providers WHERE id = ?`, id)
+	return err
 }

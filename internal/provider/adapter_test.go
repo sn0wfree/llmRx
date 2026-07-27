@@ -296,9 +296,7 @@ func TestIntOr(t *testing.T) {
 // ---------- SetFactoryOverride ----------
 
 func TestSetFactoryOverride(t *testing.T) {
-	// Save and restore
-	original := Factory("openai")
-	defer SetFactoryOverride(original)
+	defer SetFactoryOverride(nil)
 
 	custom := &OpenAIProvider{}
 	SetFactoryOverride(custom)

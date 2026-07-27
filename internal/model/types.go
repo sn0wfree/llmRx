@@ -162,3 +162,17 @@ type Log struct {
 	RequestIP       string    `json:"request_ip" gorm:"size:64"`
 	CreatedAt       time.Time `json:"created_at"`
 }
+
+// ProviderDef is a user-defined provider descriptor stored in the DB.
+// It maps a provider name to a protocol adapter and a default base URL.
+// Built-in providers come from providers.yaml; user-defined ones are
+// created via the Admin UI and stored in the providers table.
+type ProviderDef struct {
+	ID          int64     `json:"id" gorm:"primaryKey"`
+	Name        string    `json:"name" gorm:"uniqueIndex;size:64"`
+	DisplayName string    `json:"display_name" gorm:"size:128"`
+	Protocol    string    `json:"protocol" gorm:"size:32"`
+	BaseURL     string    `json:"base_url" gorm:"size:512"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}

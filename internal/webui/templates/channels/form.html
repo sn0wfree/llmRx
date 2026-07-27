@@ -24,13 +24,12 @@
       </div>
       <div>
         <label class="block text-sm font-medium text-gray-700">Provider *</label>
-        <select name="provider" required
+        <select name="provider" required id="provider-select"
                 class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
           {{$p := or .FormData.Provider .Channel.Provider}}
-          <option value="openai" {{if eq $p "openai"}}selected{{end}}>OpenAI</option>
-          <option value="anthropic" {{if eq $p "anthropic"}}selected{{end}}>Anthropic</option>
-          <option value="gemini" {{if eq $p "gemini"}}selected{{end}}>Google Gemini</option>
-          <option value="deepseek" {{if eq $p "deepseek"}}selected{{end}}>DeepSeek</option>
+          {{range .Providers}}
+          <option value="{{.Name}}" data-base-url="{{.DefaultBaseURL}}" {{if eq $p .Name}}selected{{end}}>{{.DisplayName}}</option>
+          {{end}}
         </select>
       </div>
     </div>
@@ -40,7 +39,7 @@
     <h2 class="text-lg font-medium text-gray-900 mb-4">端点配置</h2>
     <div>
       <label class="block text-sm font-medium text-gray-700">Base URL *</label>
-      <input type="url" name="base_url" required
+      <input type="url" name="base_url" id="base-url-input" required
              value="{{or .FormData.BaseURL .Channel.BaseURL}}"
              placeholder="https://api.openai.com/v1"
              class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
@@ -49,12 +48,24 @@
 
   <div>
     <h2 class="text-lg font-medium text-gray-900 mb-4">支持的模型</h2>
-    <div>
-      <label class="block text-sm font-medium text-gray-700">模型列表（每行一个）</label>
-      <textarea name="models" rows="4" required
-                placeholder="gpt-4&#10;gpt-3.5-turbo"
-                class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm">{{or .FormData.ModelsStr (joinStrings .Channel.Models)}}</textarea>
+    <div class="flex items-start gap-3">
+      <div class="flex-1">
+        <label class="block text-sm font-medium text-gray-700">模型列表（每行一个）</label>
+        <textarea name="models" id="models-textarea" rows="4" required
+                  placeholder="gpt-4&#10;gpt-3.5-turbo"
+                  class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm">{{or .FormData.ModelsStr (joinStrings .Channel.Models)}}</textarea>
+      </div>
+      <div class="pt-7">
+        {{if .Channel}}
+        <button type="button" id="fetch-models-btn"
+                class="px-3 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-sm font-medium whitespace-nowrap"
+                onclick="fetchModels({{.Channel.ID}})">拉取模型</button>
+        {{else}}
+        <p class="text-xs text-gray-400 mt-7">保存后可拉取</p>
+        {{end}}
+      </div>
     </div>
+    <div id="fetch-models-result" class="mt-3"></div>
     <div class="mt-3">
       <label class="block text-sm font-medium text-gray-700">意图标签（可选，每行一个）</label>
       <textarea name="intents" rows="3"
@@ -100,4 +111,89 @@
     </button>
   </div>
 </form>
-<div id="flash"></div>{{end}}
+<div id="flash"></div>
+
+<script>
+// Auto-fill base_url when provider changes (only if the field is
+// empty or matches a known provider default).
+document.getElementById('provider-select').addEventListener('change', function() {
+  var selected = this.options[this.selectedIndex];
+  var defaultURL = selected.getAttribute('data-base-url');
+  var urlInput = document.getElementById('base-url-input');
+  if (defaultURL && (!urlInput.value || urlInput.dataset.autoFilled === 'true')) {
+    urlInput.value = defaultURL;
+    urlInput.dataset.autoFilled = 'true';
+  }
+});
+
+// Fetch models from upstream and show a preview/select dialog.
+function fetchModels(channelId) {
+  var btn = document.getElementById('fetch-models-btn');
+  var result = document.getElementById('fetch-models-result');
+  btn.disabled = true;
+  btn.textContent = '拉取中...';
+  result.innerHTML = '';
+
+  fetch('/admin/channels/' + channelId + '/fetch-models', {method: 'POST'})
+    .then(function(resp) {
+      if (!resp.ok) {
+        return resp.text().then(function(t) { throw new Error(t) });
+      }
+      return resp.json();
+    })
+    .then(function(data) {
+      var models = data.models || [];
+      if (models.length === 0) {
+        result.innerHTML = '<p class="text-sm text-gray-500">上游未返回任何模型</p>';
+        return;
+      }
+      var ta = document.getElementById('models-textarea');
+      var existing = ta.value.split('\n').map(function(s) { return s.trim() }).filter(function(s) { return s });
+      var html = '<div class="p-3 rounded border border-gray-200 bg-gray-50">';
+      html += '<div class="flex items-center justify-between mb-2">';
+      html += '<span class="text-sm font-medium text-gray-700">发现 ' + models.length + ' 个模型，勾选后追加</span>';
+      html += '<div class="flex gap-2">';
+      html += '<button type="button" class="text-xs text-blue-600" onclick="selectAllModels(true)">全选</button>';
+      html += '<button type="button" class="text-xs text-gray-500" onclick="selectAllModels(false)">取消全选</button>';
+      html += '</div></div>';
+      html += '<div class="max-h-48 overflow-y-auto space-y-1">';
+      models.forEach(function(m) {
+        var checked = existing.indexOf(m) >= 0;
+        html += '<label class="flex items-center text-sm"><input type="checkbox" value="' + escapeHtml(m) + '" class="mr-2 model-checkbox"' + (checked ? ' checked' : '') + '>' + escapeHtml(m) + '</label>';
+      });
+      html += '</div>';
+      html += '<button type="button" class="mt-2 px-3 py-1 bg-blue-600 text-white rounded text-sm" onclick="applyFetchedModels()">追加到列表</button>';
+      html += '</div>';
+      result.innerHTML = html;
+    })
+    .catch(function(err) {
+      result.innerHTML = '<p class="text-sm text-red-600">拉取失败: ' + escapeHtml(err.message) + '</p>';
+    })
+    .finally(function() {
+      btn.disabled = false;
+      btn.textContent = '拉取模型';
+    });
+}
+
+function selectAllModels(checked) {
+  document.querySelectorAll('.model-checkbox').forEach(function(cb) { cb.checked = checked });
+}
+
+function applyFetchedModels() {
+  var ta = document.getElementById('models-textarea');
+  var existing = ta.value.split('\n').map(function(s) { return s.trim() }).filter(function(s) { return s });
+  document.querySelectorAll('.model-checkbox:checked').forEach(function(cb) {
+    if (existing.indexOf(cb.value) < 0) {
+      existing.push(cb.value);
+    }
+  });
+  ta.value = existing.join('\n');
+  document.getElementById('fetch-models-result').innerHTML = '';
+}
+
+function escapeHtml(s) {
+  var d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+</script>{{end}}

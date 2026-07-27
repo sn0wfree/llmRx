@@ -69,6 +69,12 @@ func (h *Handler) Routes() http.Handler {
 		r.Delete("/channels/{id}", h.ChannelDelete)
 		r.Post("/channels/{id}/keys", h.ChannelKeyCreate)
 		r.Delete("/channels/{id}/keys/{keyId}", h.ChannelKeyDelete)
+		r.Post("/channels/{id}/fetch-models", h.ChannelFetchModels)
+
+		// Providers
+		r.Get("/providers", h.ProvidersPage)
+		r.Post("/providers", h.ProviderCreate)
+		r.Delete("/providers/{id}", h.ProviderDelete)
 
 		// Tokens
 		r.Get("/tokens", h.TokensPage)

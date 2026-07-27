@@ -118,6 +118,13 @@ type Store interface {
 	ListBYOKChannels(ctx context.Context) ([]*model.BYOKChannel, error)
 	GetBYOKChannel(ctx context.Context, id int64) (*model.BYOKChannel, error)
 	DeleteBYOKChannel(ctx context.Context, id int64) error
+
+	// ProviderDefs - user-defined provider descriptors created via
+	// the Admin UI. Built-in providers come from providers.yaml and
+	// are not stored in the DB; only operator-created ones live here.
+	GetProviderDefs() ([]model.ProviderDef, error)
+	CreateProviderDef(p *model.ProviderDef) error
+	DeleteProviderDef(id int64) error
 }
 
 type LogStats struct {
