@@ -54,21 +54,30 @@ func TestBootstrapMasterKey_FromFile(t *testing.T) {
 	}
 }
 
-// TestBootstrapMasterKey_NoEnvNoFileErrors: in production mode
-// (DevAllowPlaintext=false) the bootstrap must refuse to start
-// when neither env nor file is set. The previous behaviour
-// auto-generated and persisted a fresh key, which left fresh
-// installs with a key no operator could recover.
-func TestBootstrapMasterKey_NoEnvNoFileErrors(t *testing.T) {
+// TestBootstrapMasterKey_NoEnvNoFileAutoGenerates: in production
+// mode (DevAllowPlaintext=false) when neither env nor file is set,
+// bootstrap auto-generates a fresh key and persists it to keyFile.
+func TestBootstrapMasterKey_NoEnvNoFileAutoGenerates(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("TEST_KEY_MASTER", "")
 	os.Unsetenv("TEST_KEY_MASTER")
-	err := bootstrapMasterKey("TEST_KEY_MASTER", filepath.Join(dir, "k"), false)
-	if err == nil {
-		t.Fatal("expected error when no env and no file")
+	keyFile := filepath.Join(dir, "k")
+	err := bootstrapMasterKey("TEST_KEY_MASTER", keyFile, false)
+	if err != nil {
+		t.Fatalf("expected auto-generate, got error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "refusing to start") {
-		t.Fatalf("err: %v", err)
+	// Key file should exist with a 64-char hex string.
+	data, err := os.ReadFile(keyFile)
+	if err != nil {
+		t.Fatalf("read key file: %v", err)
+	}
+	key := strings.TrimSpace(string(data))
+	if len(key) != 64 {
+		t.Fatalf("key length: want 64, got %d", len(key))
+	}
+	// Env should be set to the generated key.
+	if got := os.Getenv("TEST_KEY_MASTER"); got != key {
+		t.Errorf("env not set to generated key: got %q want %q", got, key)
 	}
 }
 

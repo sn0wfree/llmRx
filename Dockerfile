@@ -36,11 +36,10 @@ EOF
 # --- the gateway (statically linked, ~12 MB) ---
 COPY build/llmRx /usr/local/bin/llmRx
 
-# Run as llmrx. Bootstrap re-acquires root only when needed (it
-# runs before setuid, so the binary still chowns bind-mounts and
-# generates the master key as root, then drops to llmrx before
-# opening the DB).
-USER llmrx:llmrx
+# Start as root so the binary can chown bind-mounted /data and
+# write the starter config.yml on a fresh volume. The binary
+# drops privileges to llmrx internally via dropPrivileges() before
+# opening the DB or listening on the port.
 WORKDIR /data
 
 EXPOSE 8787

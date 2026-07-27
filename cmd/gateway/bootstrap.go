@@ -7,6 +7,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -28,16 +29,11 @@ import (
 //
 //  1. The env var named by envName (production path: orchestrator
 //     or docker secret sets LLMRX_KEY_MASTER).
-//  2. The file at keyFile (persisted key — survives container
+//  2. The file at keyFile (persisted key - survives container
 //     restarts without orchestrator support).
-//
-// The legacy "auto-generate and persist a fresh key" path was
-// removed: it shipped fresh installs with a stable-but-random
-// key that no operator could recover when the /data volume was
-// rebuilt. Production deployments must set LLMRX_KEY_MASTER via
-// the orchestrator or a docker secret (set
-// secrets.dev_allow_plaintext_keys: true in config only for
-// local dev, where the gateway skips encryption entirely).
+//  3. Auto-generate a fresh key and persist it to keyFile (docker
+//     "Just Works" path - safe because the DB lives on the same
+//     volume as keyFile, so if the volume is rebuilt both are gone).
 //
 // When allowPlaintext is true the function is a no-op (no env
 // or file is needed; the gateway proceeds in plaintext mode).
@@ -70,8 +66,20 @@ func bootstrapMasterKey(envName, keyFile string, allowPlaintext bool) error {
 	}
 
 	if key == "" {
-		return fmt.Errorf("refusing to start: %s env var is unset and %s has no key. Set %s (32-byte hex from `openssl rand -hex 32`) via your orchestrator or docker secret, OR enable secrets.dev_allow_plaintext_keys in config for local dev only",
-			envName, keyFile, envName)
+		// Auto-generate a fresh key and persist it to keyFile.
+		// This is safe because the DB (with encrypted channel keys)
+		// lives on the same volume as keyFile - if the volume is
+		// rebuilt, both are gone, so a new key is correct.
+		gen, err := generateMasterKey()
+		if err != nil {
+			return fmt.Errorf("generate master key: %w", err)
+		}
+		if err := os.WriteFile(keyFile, []byte(gen), 0o600); err != nil {
+			return fmt.Errorf("persist master key to %s: %w", keyFile, err)
+		}
+		_ = chownIfRoot(keyFile, "llmrx")
+		key = gen
+		log.Printf("secrets: auto-generated master key and persisted to %s", keyFile)
 	}
 
 	// Validate: must be 32 bytes hex (64 chars).
@@ -84,6 +92,15 @@ func bootstrapMasterKey(envName, keyFile string, allowPlaintext bool) error {
 
 	_ = os.Setenv(envName, key)
 	return nil
+}
+
+// generateMasterKey returns a fresh 32-byte hex-encoded key.
+func generateMasterKey() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // If running as root AND dir is owned by UID 0, recursively chown to
@@ -194,17 +211,20 @@ func maybeWriteStarterConfig(dataDir, configPath string) error {
 	body := `server:
   port: 8787
   log_level: info
+  # Fresh install: allow default admin/admin login so the operator
+  # can sign in immediately. CHANGE THE PASSWORD after first login.
+  allow_default_admin_password: true
 
 database:
   driver: sqlite
   dsn: ` + dataDir + `/llmrx.db
 
 # Secrets: at-rest encryption of channel API keys (AES-256-GCM).
-# In production, set LLMRX_KEY_MASTER in the environment (32-byte
-# hex, generate with ` + "`openssl rand -hex 32`" + `). For local
-# dev only, dev_allow_plaintext_keys: true lets the gateway start
-# without a master key — channel keys are stored in plaintext.
-# NEVER enable this on any non-localhost deployment.
+# A master key is auto-generated at ` + dataDir + `/llmrx.key on
+# first boot. To use an explicit key instead, set LLMRX_KEY_MASTER
+# (32-byte hex from ` + "`openssl rand -hex 32`" + `).
+# For local dev only, dev_allow_plaintext_keys: true skips
+# encryption entirely. NEVER enable on non-localhost deployments.
 secrets:
   key_master_env: LLMRX_KEY_MASTER
   dev_allow_plaintext_keys: false

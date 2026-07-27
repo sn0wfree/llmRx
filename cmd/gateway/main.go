@@ -64,14 +64,24 @@ func main() {
 		return
 	}
 
-	// Load config first so we can honour dev_allow_plaintext_keys
-	// when deciding whether to require the master key. The
-	// bootstrap path used to auto-generate a fresh key when no
-	// env/file was set; that left fresh installs with a random
-	// key no operator could recover when the /data volume was
-	// rebuilt. Now production (default) refuses to start without
-	// an explicit LLMRX_KEY_MASTER, and dev mode skips encryption
-	// entirely via cfg.Secrets.DevAllowPlaintext.
+	// If running as root (typical docker entrypoint), chown
+	// bind-mounted /data before opening the DB.
+	if err := maybeChownDataDir("/data", "llmrx"); err != nil {
+		log.Printf("secrets: chown /data: %v (continuing — DB writes may fail)", err)
+	}
+	// Write a starter config.yml if /data is fresh so that
+	// `docker compose up` works without a manual config
+	// step. Must run BEFORE config.Load.
+	if err := maybeWriteStarterConfig("/data", *cfgPath); err != nil {
+		log.Printf("config: %v (continuing — provide your own config.yml)", err)
+	}
+
+	// Load config so we can honour dev_allow_plaintext_keys
+	// when deciding whether to require the master key. In
+	// production, set LLMRX_KEY_MASTER via the orchestrator;
+	// dev mode skips encryption via cfg.Secrets.DevAllowPlaintext.
+	// If neither is set, a key is auto-generated and persisted
+	// to /data/llmrx.key so docker compose Just Works.
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
@@ -84,16 +94,6 @@ func main() {
 		log.Fatalf("secrets: %v", err)
 	}
 
-	// If running as root (typical docker entrypoint), chown bind-
-	// mounted /data and drop to llmrx before opening the DB.
-	if err := maybeChownDataDir("/data", "llmrx"); err != nil {
-		log.Printf("secrets: chown /data: %v (continuing — DB writes may fail)", err)
-	}
-	// Write a starter config.yml if /data is fresh — lets `docker
-	// compose up` Just Work without a manual config step.
-	if err := maybeWriteStarterConfig("/data", "/data/config.yml"); err != nil {
-		log.Printf("config: %v (continuing — provide your own config.yml)", err)
-	}
 	if err := dropPrivileges("llmrx"); err != nil {
 		log.Fatalf("secrets: %v", err)
 	}
