@@ -54,6 +54,20 @@ const (
 	StrategyBalanced  CostStrategy = "balanced"
 )
 
+// ComboMode selects the routing strategy inside a token combo model.
+type ComboMode string
+
+const (
+	// ComboModeLoadBalance: expand the combo's model list into a
+	// candidate set and run L1-L5 to pick a single channel. Default.
+	ComboModeLoadBalance ComboMode = "load_balance"
+	// ComboModeSerial: try underlying models in order; first 2xx wins,
+	// others serve as fallback. Non-2xx responses trigger L2 breaker.
+	ComboModeSerial ComboMode = "serial"
+	// (reserved) ComboModeParallel  ComboMode = "parallel"
+	// (reserved) ComboModeIntent    ComboMode = "intent"
+)
+
 type CircuitBreakerConfig struct {
 	MaxFailures  int           `yaml:"max_failures" json:"max_failures"`
 	ResetTimeout time.Duration `yaml:"reset_timeout" json:"reset_timeout"`
@@ -175,4 +189,25 @@ type ProviderDef struct {
 	BaseURL     string    `json:"base_url" gorm:"size:512"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// TokenComboModel maps a virtual model name to a pool of underlying
+// real model names. Each token can define its own combos; the combo
+// name is the "entry point" the client sends in the model field.
+//
+// load_balance: expand Models into the L1 candidate set, run L1-L5.
+// serial:       try Models in order; first 2xx wins.
+//
+// combo names are token-scoped (two tokens may both have "smart-1")
+// and must not collide with any channel.Models real model name.
+type TokenComboModel struct {
+	ID        int64      `json:"id" gorm:"primaryKey"`
+	TokenID   int64      `json:"token_id" gorm:"index"`
+	Name      string     `json:"name" gorm:"size:64"`
+	Models    []string   `json:"models" gorm:"serializer:json"`
+	Mode      ComboMode  `json:"mode"`
+	Strategy  CostStrategy `json:"strategy"` // "" = inherit global
+	Enabled   bool       `json:"enabled"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }

@@ -86,6 +86,14 @@ func (h *Handler) Routes() http.Handler {
 		r.Post("/tokens/{id}", h.TokenAction)
 		r.Delete("/tokens/{id}", h.TokenDelete)
 
+		// ComboModels (sub-resource of tokens)
+		r.Get("/tokens/{id}/combos", h.CombosPage)
+		r.Get("/tokens/{id}/combos/new", h.ComboNewForm)
+		r.Get("/tokens/{id}/combos/{cid}/edit", h.ComboEditForm)
+		r.Post("/tokens/{id}/combos", h.ComboCreate)
+		r.Post("/tokens/{id}/combos/{cid}", h.ComboAction)
+		r.Delete("/tokens/{id}/combos/{cid}", h.ComboDelete)
+
 		// Plans
 		r.Get("/plans", h.PlansPage)
 		r.Get("/plans/new", h.PlanNewForm)

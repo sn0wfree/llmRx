@@ -131,7 +131,9 @@ func (e *RouterEngine) CostStrategy() model.CostStrategy {
 // and the log line. It is optional; zero value gives the legacy
 // behaviour where no L4 step runs.
 type RouteOptions struct {
-	Text string // last user message, used for L4 intent classification
+	Text         string              // last user message, used for L4 intent classification
+	ModelSet     []string            // optional L1 override: match any of these models (combo load_balance)
+	CostStrategy model.CostStrategy  // optional L3 override: "" = use global
 }
 
 // Route is the legacy entry point. Use RouteWith for L4 support.
@@ -145,8 +147,17 @@ func (e *RouterEngine) RouteWith(ctx context.Context, modelName string, opts Rou
 	start := time.Now()
 	var logParts []string
 
-	candidates := e.static.Match(modelName)
-	logParts = append(logParts, "L1(static)")
+	// L1: static match. When ModelSet is provided (combo
+	// load_balance), expand the candidate set to all channels
+	// that serve any model in the pool.
+	var candidates []*model.Channel
+	if len(opts.ModelSet) > 0 {
+		candidates = e.static.MatchAny(opts.ModelSet)
+		logParts = append(logParts, "L1(static,combo)")
+	} else {
+		candidates = e.static.Match(modelName)
+		logParts = append(logParts, "L1(static)")
+	}
 	// Hook for Phase 1.5 BYOK: extra channel sources. Currently
 	// no callbacks are registered so this is a no-op.
 	for _, src := range e.extraChannels {
@@ -162,8 +173,15 @@ func (e *RouterEngine) RouteWith(ctx context.Context, modelName string, opts Rou
 		return nil, ErrAllBroken
 	}
 
-	candidates = e.cost.Sort(candidates)
-	logParts = append(logParts, "L3(cost)")
+	// L3 cost sort. When CostStrategy is set (combo override),
+	// use SortWith to avoid mutating global state.
+	if opts.CostStrategy != "" {
+		candidates = e.cost.SortWith(candidates, opts.CostStrategy)
+		logParts = append(logParts, "L3(cost="+string(opts.CostStrategy)+")")
+	} else {
+		candidates = e.cost.Sort(candidates)
+		logParts = append(logParts, "L3(cost)")
+	}
 
 	// L4: intent match. If we have a classifier and an input text,
 	// bubble channels whose Intents list contains the predicted

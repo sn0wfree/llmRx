@@ -1,0 +1,64 @@
+{{define "combos_list_body"}}<div class="mb-6 flex justify-between items-center">
+  <div>
+    <a href="/admin/tokens" class="text-sm text-gray-500 hover:text-gray-700">← 返回 Token 列表</a>
+    <h1 class="text-2xl font-bold text-gray-900 mt-2">组合模型</h1>
+    <p class="mt-1 text-sm text-gray-500">Token「{{.Token.Name}}」(#{{.Token.ID}}) 的虚拟模型配置</p>
+  </div>
+  <a href="/admin/tokens/{{.Token.ID}}/combos/new" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+    + 新建组合模型
+  </a>
+</div>
+
+<div class="bg-white shadow rounded-lg overflow-hidden">
+  <table class="min-w-full divide-y divide-gray-200">
+    <thead class="bg-gray-50">
+      <tr>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">名称</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">模式</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">底层模型</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">策略</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">状态</th>
+        <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">操作</th>
+      </tr>
+    </thead>
+    <tbody class="bg-white divide-y divide-gray-200">
+      {{range .Combos}}
+      <tr id="combo-row-{{.ID}}">
+        <td class="px-6 py-4 whitespace-nowrap">
+          <div class="text-sm font-medium text-gray-900 font-mono">{{.Name}}</div>
+        </td>
+        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+          {{if eq .Mode "serial"}}
+            <span class="px-2 py-0.5 text-xs bg-orange-100 text-orange-800 rounded">串行</span>
+          {{else}}
+            <span class="px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded">负载均衡</span>
+          {{end}}
+        </td>
+        <td class="px-6 py-4 text-sm text-gray-700">
+          <span class="font-mono">{{range $i, $m := .Models}}{{if $i}}, {{end}}{{$m}}{{end}}</span>
+        </td>
+        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+          {{if ne .Strategy ""}}{{.Strategy}}{{else}}<span class="text-gray-400">继承</span>{{end}}
+        </td>
+        <td class="px-6 py-4 whitespace-nowrap">
+          {{if .Enabled}}<span class="px-2 py-0.5 text-xs bg-green-100 text-green-800 rounded">启用</span>
+          {{else}}<span class="px-2 py-0.5 text-xs bg-gray-100 text-gray-800 rounded">禁用</span>{{end}}
+        </td>
+        <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+          <a href="/admin/tokens/{{$.Token.ID}}/combos/{{.ID}}/edit" class="text-blue-600 hover:text-blue-900 mr-3">编辑</a>
+          <button hx-delete="/admin/tokens/{{$.Token.ID}}/combos/{{.ID}}"
+                  hx-target="#combo-row-{{.ID}}"
+                  hx-swap="outerHTML"
+                  hx-confirm="确定删除组合模型 {{.Name}}？"
+                  class="text-red-600 hover:text-red-900">删除</button>
+        </td>
+      </tr>
+      {{else}}
+      <tr><td colspan="6" class="px-6 py-12 text-center text-sm text-gray-500">
+        还没有组合模型。<a href="/admin/tokens/{{.Token.ID}}/combos/new" class="text-blue-600 hover:underline">新建第一个</a>
+      </td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+<div id="flash"></div>{{end}}

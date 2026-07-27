@@ -63,11 +63,22 @@ type TokenInfo struct {
 	ExpiresAt       time.Time
 	PlanBudgetUSD   float64
 	PlanUsedUSD     float64
+	// ComboModels maps virtual model names to their combo definitions.
+	// Populated by tokencache.Reload() from the token_combo_models
+	// table. If a request's model field matches a key here, the
+	// combo routing path is taken instead of direct L1-L5.
+	ComboModels map[string]model.TokenComboModel
 }
 
 // HasModelAccess returns true if the requested model is allowed by
-// the token's whitelist. Empty whitelist = no restriction.
+// the token's whitelist. Empty whitelist = no restriction. Combo
+// model names are treated as valid entries regardless of the
+// whitelist — the combo definition itself constrains which real
+// models can be reached.
 func (t TokenInfo) HasModelAccess(model string) bool {
+	if _, isCombo := t.ComboModels[model]; isCombo {
+		return true
+	}
 	if len(t.ModelsWhitelist) == 0 {
 		return true
 	}

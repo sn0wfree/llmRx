@@ -117,6 +117,14 @@ type ScriptedStore struct {
 	GetProviderDefsFunc  func() ([]model.ProviderDef, error)
 	CreateProviderDefFunc func(p *model.ProviderDef) error
 	DeleteProviderDefFunc func(id int64) error
+
+	// ComboModels
+	GetComboModelsFunc    func(tokenID int64) ([]model.TokenComboModel, error)
+	GetComboModelFunc     func(id int64) (*model.TokenComboModel, error)
+	GetAllComboModelsFunc func() ([]model.TokenComboModel, error)
+	CreateComboModelFunc  func(c *model.TokenComboModel) error
+	UpdateComboModelFunc  func(c *model.TokenComboModel) error
+	DeleteComboModelFunc func(id int64) error
 }
 
 // NewScriptedStore wraps the given store. All methods delegate to the
@@ -560,4 +568,40 @@ func (s *ScriptedStore) DeleteProviderDef(id int64) error {
 		return s.DeleteProviderDefFunc(id)
 	}
 	return s.underlying.DeleteProviderDef(id)
+}
+func (s *ScriptedStore) GetComboModels(tokenID int64) ([]model.TokenComboModel, error) {
+	if s.GetComboModelsFunc != nil {
+		return s.GetComboModelsFunc(tokenID)
+	}
+	return s.underlying.GetComboModels(tokenID)
+}
+func (s *ScriptedStore) GetComboModel(id int64) (*model.TokenComboModel, error) {
+	if s.GetComboModelFunc != nil {
+		return s.GetComboModelFunc(id)
+	}
+	return s.underlying.GetComboModel(id)
+}
+func (s *ScriptedStore) GetAllComboModels() ([]model.TokenComboModel, error) {
+	if s.GetAllComboModelsFunc != nil {
+		return s.GetAllComboModelsFunc()
+	}
+	return s.underlying.GetAllComboModels()
+}
+func (s *ScriptedStore) CreateComboModel(c *model.TokenComboModel) error {
+	if s.CreateComboModelFunc != nil {
+		return s.CreateComboModelFunc(c)
+	}
+	return s.underlying.CreateComboModel(c)
+}
+func (s *ScriptedStore) UpdateComboModel(c *model.TokenComboModel) error {
+	if s.UpdateComboModelFunc != nil {
+		return s.UpdateComboModelFunc(c)
+	}
+	return s.underlying.UpdateComboModel(c)
+}
+func (s *ScriptedStore) DeleteComboModel(id int64) error {
+	if s.DeleteComboModelFunc != nil {
+		return s.DeleteComboModelFunc(id)
+	}
+	return s.underlying.DeleteComboModel(id)
 }

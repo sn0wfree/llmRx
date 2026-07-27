@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -229,6 +230,19 @@ func (s *SQLite) migrate() error {
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS token_combo_models (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			token_id INTEGER NOT NULL,
+			name TEXT NOT NULL,
+			models TEXT NOT NULL DEFAULT '[]',
+			mode TEXT NOT NULL DEFAULT 'load_balance',
+			strategy TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 1,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			UNIQUE(token_id, name)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_combo_token ON token_combo_models(token_id)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
@@ -1542,4 +1556,159 @@ func (s *SQLite) CreateProviderDef(p *model.ProviderDef) error {
 func (s *SQLite) DeleteProviderDef(id int64) error {
 	_, err := s.db.Exec(`DELETE FROM providers WHERE id = ?`, id)
 	return err
+}
+
+// ---------- ComboModels ----------
+
+func (s *SQLite) scanComboRow(r interface{ Scan(dest ...any) error }) (*model.TokenComboModel, error) {
+	var c model.TokenComboModel
+	var modelsJSON, mode, strategy string
+	var enabled int
+	var created, updated int64
+	if err := r.Scan(&c.ID, &c.TokenID, &c.Name, &modelsJSON, &mode, &strategy, &enabled, &created, &updated); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	c.Models = decodeStrings(modelsJSON)
+	c.Mode = model.ComboMode(mode)
+	c.Strategy = model.CostStrategy(strategy)
+	c.Enabled = enabled == 1
+	c.CreatedAt = fromUnix(created)
+	c.UpdatedAt = fromUnix(updated)
+	return &c, nil
+}
+
+func (s *SQLite) GetComboModels(tokenID int64) ([]model.TokenComboModel, error) {
+	rows, err := s.db.Query(`SELECT id, token_id, name, models, mode, strategy, enabled, created_at, updated_at FROM token_combo_models WHERE token_id = ? ORDER BY id`, tokenID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.TokenComboModel
+	for rows.Next() {
+		c, err := s.scanComboRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *c)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) GetComboModel(id int64) (*model.TokenComboModel, error) {
+	row := s.db.QueryRow(`SELECT id, token_id, name, models, mode, strategy, enabled, created_at, updated_at FROM token_combo_models WHERE id = ?`, id)
+	return s.scanComboRow(row)
+}
+
+func (s *SQLite) GetAllComboModels() ([]model.TokenComboModel, error) {
+	rows, err := s.db.Query(`SELECT id, token_id, name, models, mode, strategy, enabled, created_at, updated_at FROM token_combo_models WHERE enabled = 1 ORDER BY token_id, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.TokenComboModel
+	for rows.Next() {
+		c, err := s.scanComboRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *c)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) CreateComboModel(c *model.TokenComboModel) error {
+	if err := s.validateCombo(c); err != nil {
+		return err
+	}
+	now := time.Now().Unix()
+	res, err := s.db.Exec(
+		`INSERT INTO token_combo_models (token_id, name, models, mode, strategy, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.TokenID, c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), boolToInt(c.Enabled), now, now,
+	)
+	if err != nil {
+		return err
+	}
+	c.ID, _ = res.LastInsertId()
+	c.CreatedAt = fromUnix(now)
+	c.UpdatedAt = fromUnix(now)
+	return nil
+}
+
+func (s *SQLite) validateCombo(c *model.TokenComboModel) error {
+	// name format: ^[a-zA-Z0-9_-]{1,64}$
+	if !comboNameRe.MatchString(c.Name) {
+		return fmt.Errorf("combo name %q must match ^[a-zA-Z0-9_-]{1,64}$", c.Name)
+	}
+	// models: 1..100 items, each ^[a-zA-Z0-9._-]{1,128}$
+	if len(c.Models) == 0 {
+		return errors.New("combo models list must not be empty")
+	}
+	if len(c.Models) > 100 {
+		return fmt.Errorf("combo models list has %d items, max is 100", len(c.Models))
+	}
+	for _, m := range c.Models {
+		if !comboModelRe.MatchString(m) {
+			return fmt.Errorf("combo model name %q must match ^[a-zA-Z0-9._-]{1,128}$", m)
+		}
+	}
+	// mode must be valid
+	switch c.Mode {
+	case model.ComboModeLoadBalance, model.ComboModeSerial:
+		// ok
+	default:
+		return fmt.Errorf("combo mode %q must be load_balance or serial", c.Mode)
+	}
+	// strategy must be valid
+	switch c.Strategy {
+	case "", model.StrategyCheapest, model.StrategyFastest, model.StrategyBalanced:
+		// ok
+	default:
+		return fmt.Errorf("combo strategy %q must be empty, cheapest, fastest, or balanced", c.Strategy)
+	}
+	// check name does not collide with any channel.Models real model name
+	chs, err := s.GetChannels()
+	if err != nil {
+		return fmt.Errorf("check combo name conflict: %w", err)
+	}
+	for i := range chs {
+		for _, m := range chs[i].Models {
+			if m == c.Name {
+				return fmt.Errorf("combo name %q conflicts with real model name in channel %q", c.Name, chs[i].Name)
+			}
+		}
+	}
+	return nil
+}
+
+var (
+	comboNameRe  = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+	comboModelRe = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,128}$`)
+)
+
+func (s *SQLite) UpdateComboModel(c *model.TokenComboModel) error {
+	now := time.Now().Unix()
+	_, err := s.db.Exec(
+		`UPDATE token_combo_models SET name=?, models=?, mode=?, strategy=?, enabled=?, updated_at=? WHERE id=?`,
+		c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), boolToInt(c.Enabled), now, c.ID,
+	)
+	if err != nil {
+		return err
+	}
+	c.UpdatedAt = fromUnix(now)
+	return nil
+}
+
+func (s *SQLite) DeleteComboModel(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM token_combo_models WHERE id = ?`, id)
+	return err
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

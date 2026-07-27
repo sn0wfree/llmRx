@@ -86,6 +86,7 @@
 
   <div class="flex justify-end gap-3 pt-4 border-t">
     <a href="/admin/tokens" class="px-4 py-2 text-gray-700 hover:text-gray-900 text-sm">取消</a>
+    {{if .Token}}<a href="/admin/tokens/{{.Token.ID}}/combos" class="px-4 py-2 bg-green-100 text-green-700 hover:bg-green-200 text-sm rounded-md">管理组合模型</a>{{end}}
     <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
       {{if .Token}}保存{{else}}创建{{end}}
     </button>

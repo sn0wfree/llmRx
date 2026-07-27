@@ -14,6 +14,7 @@ type fakeStore struct {
 	tokens   []model.Token
 	plans    map[int64]*model.Plan
 	planErr  error // returned by GetPlan when non-nil; supersedes plans map
+	combos   []model.TokenComboModel
 }
 
 func (f *fakeStore) GetTokens() ([]model.Token, error) { return f.tokens, nil }
@@ -25,6 +26,9 @@ func (f *fakeStore) GetPlan(id int64) (*model.Plan, error) {
 		return p, nil
 	}
 	return nil, nil
+}
+func (f *fakeStore) GetAllComboModels() ([]model.TokenComboModel, error) {
+	return f.combos, nil
 }
 
 func TestCache_InitialLoadFromStore(t *testing.T) {

@@ -26,10 +26,13 @@ type Cache struct {
 // production store satisfies it via its GetTokens and GetPlan
 // methods. GetPlan is used to join the plan's budget/used snapshot
 // onto each TokenInfo so the middleware can enforce plan budgets
-// without touching the database on the hot path.
+// without touching the database on the hot path. GetAllComboModels
+// returns all enabled combos in one query (batch-loaded) so the
+// cache avoids N+1 SQL round-trips during Reload.
 type TokenSource interface {
 	GetTokens() ([]model.Token, error)
 	GetPlan(id int64) (*model.Plan, error)
+	GetAllComboModels() ([]model.TokenComboModel, error)
 }
 
 func New(st TokenSource) *Cache {
@@ -54,6 +57,14 @@ func (c *Cache) Reload() error {
 	if err != nil {
 		return err
 	}
+
+	// Batch-load all enabled combos in one query to avoid N+1.
+	combos, _ := c.store.GetAllComboModels() // non-fatal: DB may not have the table yet
+	comboMap := make(map[int64][]model.TokenComboModel, len(combos))
+	for _, cb := range combos {
+		comboMap[cb.TokenID] = append(comboMap[cb.TokenID], cb)
+	}
+
 	now := time.Now()
 	next := make(map[string]middleware.TokenInfo, len(toks))
 	for _, t := range toks {
@@ -66,7 +77,7 @@ func (c *Cache) Reload() error {
 			}
 			continue
 		}
-		next[t.Key] = middleware.TokenInfo{
+		info := middleware.TokenInfo{
 			ID:              t.ID,
 			Key:             t.Key,
 			Name:            t.Name,
@@ -77,6 +88,13 @@ func (c *Cache) Reload() error {
 			IPWhitelist:     t.IPWhitelist,
 			ExpiresAt:       t.ExpiresAt,
 		}
+		if cmbs, ok := comboMap[t.ID]; ok {
+			info.ComboModels = make(map[string]model.TokenComboModel, len(cmbs))
+			for _, cb := range cmbs {
+				info.ComboModels[cb.Name] = cb
+			}
+		}
+		next[t.Key] = info
 	}
 	// Plan budgets are joined in a second pass so a token whose
 	// plan has been updated between cache reloads sees the fresh

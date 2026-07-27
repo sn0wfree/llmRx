@@ -174,6 +174,14 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "ip not allowed for this token", "ip_not_allowed")
 			return
 		}
+
+		// Combo model dispatch: if the request model matches a
+		// combo defined on this token, route via the combo path
+		// instead of the standard L1-L5 pipeline.
+		if combo, ok := info.ComboModels[req.Model]; ok && combo.Enabled {
+			h.handleCombo(w, r, &req, combo, info)
+			return
+		}
 	}
 
 	if req.Stream {
@@ -204,6 +212,100 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	h.router.RecordSuccess(route.Channel.ID)
 	h.emitLog(r.Context(), tokenID, req.Model, route, &resp.Usage, duration, statusCode, false, h.clientIP(r))
 	writeJSON(w, resp)
+}
+
+// handleCombo dispatches a combo-model request. Non-streaming only
+// in this iteration; streaming combos are deferred.
+func (h *Handler) handleCombo(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, combo model.TokenComboModel, info middleware.TokenInfo) {
+	if req.Stream {
+		// TODO: streaming combo support in future iteration
+		writeError(w, http.StatusBadRequest, "streaming combo models is not yet supported", "combo_stream_not_supported")
+		return
+	}
+	switch combo.Mode {
+	case model.ComboModeSerial:
+		h.handleSerialCombo(w, r, req, combo, info)
+	default:
+		h.handleLoadBalanceCombo(w, r, req, combo, info)
+	}
+}
+
+// handleLoadBalanceCombo routes a combo-model request through the
+// existing L1-L5 pipeline with the combo's model pool as the L1
+// candidate set and optional L3 strategy override.
+func (h *Handler) handleLoadBalanceCombo(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, combo model.TokenComboModel, info middleware.TokenInfo) {
+	tokenID := lookupTokenID(r.Context(), h.store)
+	opts := router.RouteOptions{
+		Text:         lastUserText(req.Messages),
+		ModelSet:     combo.Models,
+		CostStrategy: combo.Strategy,
+	}
+	route, err := h.router.RouteWith(context.Background(), req.Model, opts)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "no available channel: "+err.Error(), "no_channel")
+		h.emitLog(r.Context(), tokenID, req.Model, route, nil, 0, 0, true, h.clientIP(r))
+		return
+	}
+
+	prov := h.providerFor(route.Channel.Protocol)
+	start := time.Now()
+	resp, statusCode, err := prov.Chat(r.Context(), req, route.KeyValue, route.Channel.BaseURL)
+	duration := time.Since(start).Milliseconds()
+
+	if err != nil {
+		h.router.RecordFailure(route.Channel.ID)
+		writeError(w, statusCode, "upstream error: "+err.Error(), "upstream_error")
+		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
+		return
+	}
+
+	h.router.RecordSuccess(route.Channel.ID)
+	h.emitLog(r.Context(), tokenID, req.Model, route, &resp.Usage, duration, statusCode, false, h.clientIP(r))
+	writeJSON(w, resp)
+}
+
+// handleSerialCombo tries each underlying model in order. First
+// successful 2xx response wins; failures trigger L2 breaker.
+func (h *Handler) handleSerialCombo(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, combo model.TokenComboModel, info middleware.TokenInfo) {
+	tokenID := lookupTokenID(r.Context(), h.store)
+	opts := router.RouteOptions{Text: lastUserText(req.Messages)}
+	var lastErr error
+
+	for _, modelName := range combo.Models {
+		// Try to route to a channel for this model.
+		route, routeErr := h.router.RouteWith(context.Background(), modelName, opts)
+		if routeErr != nil {
+			// No channel or all broken for this model; skip.
+			lastErr = routeErr
+			continue
+		}
+
+		// Attempt the actual chat.
+		prov := h.providerFor(route.Channel.Protocol)
+		start := time.Now()
+		resp, statusCode, err := prov.Chat(r.Context(), req, route.KeyValue, route.Channel.BaseURL)
+		duration := time.Since(start).Milliseconds()
+
+		if err != nil || statusCode >= 500 {
+			h.router.RecordFailure(route.Channel.ID)
+			lastErr = fmt.Errorf("model %s: status=%d err=%w", modelName, statusCode, err)
+			h.emitLog(r.Context(), tokenID, modelName, route, nil, duration, statusCode, true, h.clientIP(r))
+			continue
+		}
+
+		// Success.
+		h.router.RecordSuccess(route.Channel.ID)
+		h.emitLog(r.Context(), tokenID, modelName, route, &resp.Usage, duration, statusCode, false, h.clientIP(r))
+		writeJSON(w, resp)
+		return
+	}
+
+	// All models failed.
+	if lastErr != nil {
+		writeError(w, http.StatusBadGateway, "all combo models failed: "+lastErr.Error(), "combo_all_failed")
+	} else {
+		writeError(w, http.StatusServiceUnavailable, "no channel matched for combo models", "no_channel")
+	}
 }
 
 // clientIP returns the best-effort source IP for the request,

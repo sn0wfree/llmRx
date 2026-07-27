@@ -45,3 +45,35 @@ func (r *StaticRouter) Match(modelName string) []*model.Channel {
 	})
 	return candidates
 }
+
+// MatchAny returns enabled channels that serve any of the given
+// model names. Used by combo load_balance mode to expand a pool of
+// underlying models into a candidate set. The result is sorted by
+// descending priority, same as Match.
+func (r *StaticRouter) MatchAny(models []string) []*model.Channel {
+	chs, err := r.store.GetChannels()
+	if err != nil {
+		return nil
+	}
+	modelSet := make(map[string]bool, len(models))
+	for _, m := range models {
+		modelSet[m] = true
+	}
+	var candidates []*model.Channel
+	for i := range chs {
+		ch := &chs[i]
+		if ch.Status != model.ChannelEnabled {
+			continue
+		}
+		for _, m := range ch.Models {
+			if modelSet[m] {
+				candidates = append(candidates, ch)
+				break
+			}
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].Priority > candidates[j].Priority
+	})
+	return candidates
+}

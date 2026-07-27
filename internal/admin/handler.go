@@ -101,6 +101,10 @@ func (h *Handler) Routes() http.Handler {
 		r.Post("/tokens", h.CreateToken)
 		r.Put("/tokens/{id}", h.UpdateToken)
 		r.Delete("/tokens/{id}", h.DeleteToken)
+		r.Get("/tokens/{id}/combos", h.ListCombos)
+		r.Post("/tokens/{id}/combos", h.CreateCombo)
+		r.Put("/combos/{id}", h.UpdateCombo)
+		r.Delete("/combos/{id}", h.DeleteCombo)
 		r.Get("/users", h.ListUsers)
 		r.Post("/users/{id}/password", h.ChangePassword)
 		r.Get("/logs", h.ListLogs)
@@ -1380,4 +1384,131 @@ func readCookie(r *http.Request, name string) string {
 		return ""
 	}
 	return c.Value
+}
+
+// ---------- ComboModels ----------
+
+func (h *Handler) ListCombos(w http.ResponseWriter, r *http.Request) {
+	tokenID, err := pathInt(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad token id")
+		return
+	}
+	combos, err := h.store.GetComboModels(tokenID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": nonNil(combos)})
+}
+
+func (h *Handler) CreateCombo(w http.ResponseWriter, r *http.Request) {
+	tokenID, err := pathInt(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad token id")
+		return
+	}
+	var body struct {
+		Name     string   `json:"name"`
+		Models   []string `json:"models"`
+		Mode     string   `json:"mode"`
+		Strategy string   `json:"strategy"`
+		Enabled  *bool    `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if body.Name == "" {
+		writeErr(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if len(body.Models) == 0 {
+		writeErr(w, http.StatusBadRequest, "models list must not be empty")
+		return
+	}
+	mode := model.ComboMode(body.Mode)
+	if mode == "" {
+		mode = model.ComboModeLoadBalance
+	}
+	enabled := true
+	if body.Enabled != nil {
+		enabled = *body.Enabled
+	}
+	c := &model.TokenComboModel{
+		TokenID:  tokenID,
+		Name:     body.Name,
+		Models:   body.Models,
+		Mode:     mode,
+		Strategy: model.CostStrategy(body.Strategy),
+		Enabled:  enabled,
+	}
+	if err := h.store.CreateComboModel(c); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	_ = h.tokens.Reload()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":   c.ID,
+		"name": c.Name,
+	})
+}
+
+func (h *Handler) UpdateCombo(w http.ResponseWriter, r *http.Request) {
+	comboID, err := pathInt(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad combo id")
+		return
+	}
+	existing, err := h.store.GetComboModel(comboID)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "combo not found")
+		return
+	}
+	var body struct {
+		Name     *string  `json:"name"`
+		Models   []string `json:"models"`
+		Mode     *string  `json:"mode"`
+		Strategy *string  `json:"strategy"`
+		Enabled  *bool    `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if body.Name != nil {
+		existing.Name = *body.Name
+	}
+	if body.Models != nil {
+		existing.Models = body.Models
+	}
+	if body.Mode != nil {
+		existing.Mode = model.ComboMode(*body.Mode)
+	}
+	if body.Strategy != nil {
+		existing.Strategy = model.CostStrategy(*body.Strategy)
+	}
+	if body.Enabled != nil {
+		existing.Enabled = *body.Enabled
+	}
+	if err := h.store.UpdateComboModel(existing); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	_ = h.tokens.Reload()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *Handler) DeleteCombo(w http.ResponseWriter, r *http.Request) {
+	comboID, err := pathInt(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad combo id")
+		return
+	}
+	if err := h.store.DeleteComboModel(comboID); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = h.tokens.Reload()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

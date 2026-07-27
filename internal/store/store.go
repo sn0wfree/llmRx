@@ -125,6 +125,18 @@ type Store interface {
 	GetProviderDefs() ([]model.ProviderDef, error)
 	CreateProviderDef(p *model.ProviderDef) error
 	DeleteProviderDef(id int64) error
+
+	// ComboModels - per-token virtual model mappings. Each combo
+	// maps a virtual model name to a pool of underlying real model
+	// names; the combo name is what clients send in the model field.
+	GetComboModels(tokenID int64) ([]model.TokenComboModel, error)
+	GetComboModel(id int64) (*model.TokenComboModel, error)
+	// GetAllComboModels returns every enabled combo across all tokens
+	// in one query — used by tokencache.Reload() to avoid N+1.
+	GetAllComboModels() ([]model.TokenComboModel, error)
+	CreateComboModel(c *model.TokenComboModel) error
+	UpdateComboModel(c *model.TokenComboModel) error
+	DeleteComboModel(id int64) error
 }
 
 type LogStats struct {

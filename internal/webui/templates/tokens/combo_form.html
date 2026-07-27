@@ -1,0 +1,70 @@
+{{define "combo_form_body"}}<div class="mb-6">
+  <a href="/admin/tokens/{{.Token.ID}}/combos" class="text-sm text-gray-500 hover:text-gray-700">← 返回组合模型列表</a>
+  <h1 class="text-2xl font-bold text-gray-900 mt-2">
+    {{if .Combo}}编辑组合模型{{else}}新建组合模型{{end}}
+  </h1>
+  <p class="mt-1 text-sm text-gray-500">Token「{{.Token.Name}}」(#{{.Token.ID}})</p>
+</div>
+
+<form method="POST"
+      action="{{if .Combo}}/admin/tokens/{{.Token.ID}}/combos/{{.Combo.ID}}{{else}}/admin/tokens/{{.Token.ID}}/combos{{end}}"
+      class="bg-white shadow rounded-lg p-6 space-y-6 max-w-3xl">
+  {{if .Combo}}<input type="hidden" name="_method" value="PUT">{{end}}
+
+  <div>
+    <h2 class="text-lg font-medium text-gray-900 mb-4">基本信息</h2>
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700">虚拟模型名 *</label>
+        <input type="text" name="name" required value="{{if .Combo}}{{.Combo.Name}}{{end}}"
+               placeholder="smart-1"
+               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono">
+        <p class="mt-1 text-xs text-gray-500">字母数字下划线连字符，≤64 字符。不可与真实模型名冲突。</p>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700">模式</label>
+        <select name="mode" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+          <option value="load_balance" {{if or (not .Combo) (eq .Combo.Mode "load_balance")}}selected{{end}}>负载均衡（load_balance）</option>
+          <option value="serial" {{if and .Combo (eq .Combo.Mode "serial")}}selected{{end}}>串行（serial）</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <label class="block text-sm font-medium text-gray-700 mb-2">底层模型列表 *</label>
+    <textarea name="models" rows="5" required
+              placeholder="gpt-4o&#10;claude-3-5-sonnet&#10;gemini-2.5-flash"
+              class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm">{{if .Combo}}{{range .Combo.Models}}{{.}}
+{{end}}{{end}}</textarea>
+    <p class="mt-1 text-xs text-gray-500">每行一个模型名，至少 1 项，最多 100 项。</p>
+  </div>
+
+  <div>
+    <label class="block text-sm font-medium text-gray-700">策略覆盖</label>
+    <select name="strategy" class="mt-1 block w-full max-w-xs px-3 py-2 border border-gray-300 rounded-md text-sm">
+      <option value="" {{if or (not .Combo) (not .Combo.Strategy)}}selected{{end}}>继承全局</option>
+      <option value="cheapest" {{if and .Combo (eq .Combo.Strategy "cheapest")}}selected{{end}}>cheapest</option>
+      <option value="fastest" {{if and .Combo (eq .Combo.Strategy "fastest")}}selected{{end}}>fastest</option>
+      <option value="balanced" {{if and .Combo (eq .Combo.Strategy "balanced")}}selected{{end}}>balanced</option>
+    </select>
+    <p class="mt-1 text-xs text-gray-500">仅在 load_balance 模式下生效。串行模式忽略此字段。</p>
+  </div>
+
+  <div>
+    <label class="flex items-center">
+      <input type="checkbox" name="status" value="1"
+             {{if or (not .Combo) .Combo.Enabled}}checked{{end}}
+             class="rounded border-gray-300">
+      <span class="ml-2 text-sm text-gray-700">启用</span>
+    </label>
+  </div>
+
+  <div class="flex justify-end gap-3 pt-4 border-t">
+    <a href="/admin/tokens/{{.Token.ID}}/combos" class="px-4 py-2 text-gray-700 hover:text-gray-900 text-sm">取消</a>
+    <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+      {{if .Combo}}保存{{else}}创建{{end}}
+    </button>
+  </div>
+</form>
+<div id="flash"></div>{{end}}

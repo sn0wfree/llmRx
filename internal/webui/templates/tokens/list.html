@@ -59,6 +59,7 @@
     {{else}}<span class="px-2 py-0.5 text-xs bg-gray-100 text-gray-800 rounded">禁用</span>{{end}}
   </td>
   <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+    <a href="/admin/tokens/{{.ID}}/combos" class="text-green-600 hover:text-green-900 mr-3">组合模型</a>
     <a href="/admin/tokens/{{.ID}}/edit" class="text-blue-600 hover:text-blue-900 mr-3">编辑</a>
     <button hx-delete="/admin/tokens/{{.ID}}"
             hx-target="#token-row-{{.ID}}"

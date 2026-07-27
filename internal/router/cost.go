@@ -42,13 +42,23 @@ func totalPrice(ch *model.Channel) float64 {
 // Sort orders channels per the configured cost strategy. The returned
 // slice is a copy, so the input is not mutated.
 func (r *CostRouter) Sort(channels []*model.Channel) []*model.Channel {
+	return r.SortWith(channels, "")
+}
+
+// SortWith orders channels per the given strategy. If strategy is
+// empty, the global strategy (from SetStrategy) is used. This
+// avoids mutating global state when combo-level overrides are in
+// effect — each request uses its own strategy value.
+func (r *CostRouter) SortWith(channels []*model.Channel, strategy model.CostStrategy) []*model.Channel {
 	if len(channels) <= 1 {
 		return channels
 	}
 	sorted := make([]*model.Channel, len(channels))
 	copy(sorted, channels)
 
-	strategy := r.Strategy()
+	if strategy == "" {
+		strategy = r.Strategy()
+	}
 
 	switch strategy {
 	case model.StrategyCheapest:

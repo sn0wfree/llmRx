@@ -73,4 +73,11 @@ type WebuiStore interface {
 	GetProviderDefs() ([]model.ProviderDef, error)
 	CreateProviderDef(p *model.ProviderDef) error
 	DeleteProviderDef(id int64) error
+
+	// ComboModels
+	GetComboModels(tokenID int64) ([]model.TokenComboModel, error)
+	GetComboModel(id int64) (*model.TokenComboModel, error)
+	CreateComboModel(c *model.TokenComboModel) error
+	UpdateComboModel(c *model.TokenComboModel) error
+	DeleteComboModel(id int64) error
 }
