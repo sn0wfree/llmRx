@@ -22,6 +22,40 @@ func (h *Handler) TokensListPartial(w http.ResponseWriter, r *http.Request) {
 	h.tokensListPage(w, r, q)
 }
 
+// TokensHelpPage renders the standalone API usage guide for
+// bearer tokens (curl / Python examples, field reference, error
+// codes). The base URL is derived from the current request so
+// the example matches whatever scheme/host the operator sees in
+// their address bar.
+func (h *Handler) TokensHelpPage(w http.ResponseWriter, r *http.Request) {
+	data := map[string]any{
+		"Body":    "tokens_help_body",
+		"Title":   "Token 调用帮助",
+		"User":    userToView(getUser(r)),
+		"Active":  "tokens",
+		"BaseURL": requestBaseURL(r),
+	}
+	if err := h.renderer.Render(w, "tokens_help_body", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// requestBaseURL returns the scheme://host that the operator
+// should use to reach this gateway, derived from the current
+// request. The scheme is taken from r.TLS (when the listener is
+// serving TLS directly) or from X-Forwarded-Proto (when the
+// request is forwarded by a reverse proxy). Falls back to http
+// for direct-internet deployments without proxy headers.
+func requestBaseURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	} else if v := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); v != "" {
+		scheme = v
+	}
+	return scheme + "://" + r.Host
+}
+
 func (h *Handler) tokensListPage(w http.ResponseWriter, r *http.Request, query string) {
 	toks, err := h.store.GetTokens()
 	if err != nil {

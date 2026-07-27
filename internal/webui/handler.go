@@ -78,6 +78,7 @@ func (h *Handler) Routes() http.Handler {
 
 		// Tokens
 		r.Get("/tokens", h.TokensPage)
+		r.Get("/tokens/help", h.TokensHelpPage)
 		r.Get("/tokens/partial/list", h.TokensListPartial)
 		r.Get("/tokens/new", h.TokenNewForm)
 		r.Get("/tokens/{id}/edit", h.TokenEditForm)

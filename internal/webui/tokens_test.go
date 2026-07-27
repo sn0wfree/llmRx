@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -179,5 +180,106 @@ func TestTokensListPartial_Search(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "alpha") {
 		t.Errorf("body should contain alpha")
+	}
+}
+
+func TestTokensHelpPage_Renders(t *testing.T) {
+	h, st := newTestWebUI(t)
+	admin, _ := st.GetUserByUsername("admin")
+	tok := sessionCookieFor(t, st, admin)
+
+	req := httptest.NewRequest(http.MethodGet, "/tokens/help", nil)
+	req.Host = "gateway.example.com:8787"
+	req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: tok})
+	rec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	want := []string{
+		"Token 调用帮助",
+		"sk-&lt;your-token&gt;",
+		"/v1/chat/completions",
+		"openai",
+		"http://gateway.example.com:8787/v1",
+		"模型白名单",
+		"rate_limited",
+	}
+	for _, s := range want {
+		if !strings.Contains(body, s) {
+			t.Errorf("help page body missing %q", s)
+		}
+	}
+}
+
+func TestTokensHelpPage_HonorsForwardedProto(t *testing.T) {
+	h, st := newTestWebUI(t)
+	admin, _ := st.GetUserByUsername("admin")
+	tok := sessionCookieFor(t, st, admin)
+
+	req := httptest.NewRequest(http.MethodGet, "/tokens/help", nil)
+	req.Host = "gateway.example.com:8787"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: tok})
+	rec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "https://gateway.example.com:8787/v1") {
+		t.Error("help page should render https base URL when behind reverse proxy")
+	}
+}
+
+func TestTokensListPage_HasHelpLink(t *testing.T) {
+	h, st := newTestWebUI(t)
+	admin, _ := st.GetUserByUsername("admin")
+	tok := sessionCookieFor(t, st, admin)
+
+	req := httptest.NewRequest(http.MethodGet, "/tokens", nil)
+	req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: tok})
+	rec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "/admin/tokens/help") {
+		t.Error("token list page should link to /admin/tokens/help")
+	}
+}
+
+func TestRequestBaseURL(t *testing.T) {
+	tests := []struct {
+		name       string
+		host       string
+		proto      string
+		tls        bool
+		wantScheme string
+	}{
+		{"http default", "h:1", "", false, "http"},
+		{"https via TLS", "h:1", "", true, "https"},
+		{"https via proxy", "h:1", "https", false, "https"},
+		{"http via proxy", "h:1", "http", false, "http"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Host = tc.host
+			if tc.proto != "" {
+				req.Header.Set("X-Forwarded-Proto", tc.proto)
+			}
+			if tc.tls {
+				req.TLS = &tls.ConnectionState{}
+			}
+			got := requestBaseURL(req)
+			want := tc.wantScheme + "://" + tc.host
+			if got != want {
+				t.Errorf("requestBaseURL: got %q, want %q", got, want)
+			}
+		})
 	}
 }

@@ -1,0 +1,176 @@
+{{define "tokens_help_body"}}<div class="mb-6">
+  <a href="/admin/tokens" class="text-sm text-gray-500 hover:text-gray-700">← 返回 Token 列表</a>
+  <h1 class="text-2xl font-bold text-gray-900 mt-2">Token 调用帮助</h1>
+  <p class="mt-1 text-sm text-gray-500">OpenAI 兼容 API 端点使用指南</p>
+</div>
+
+<div class="space-y-6 max-w-4xl">
+
+  <section class="bg-white shadow rounded-lg p-6">
+    <h2 class="text-lg font-medium text-gray-900 mb-3">API 基础地址</h2>
+    <p class="text-sm text-gray-600 mb-3">
+      所有 OpenAI 兼容端点都通过此地址调用。如果部署在反向代理后面且当前显示的协议不对，请将 <code class="bg-gray-100 px-1 rounded">http</code> 改为 <code class="bg-gray-100 px-1 rounded">https</code>。
+    </p>
+    <code class="block bg-gray-50 px-3 py-2 rounded text-sm font-mono break-all">{{.BaseURL}}/v1</code>
+  </section>
+
+  <section class="bg-white shadow rounded-lg p-6">
+    <h2 class="text-lg font-medium text-gray-900 mb-3">cURL 非流式调用</h2>
+    <p class="text-sm text-gray-600 mb-3">最常见的命令行调用方式，等待完整响应后一次性返回。</p>
+    <pre class="bg-gray-900 text-gray-100 p-4 rounded text-xs overflow-x-auto"><code>curl -X POST {{.BaseURL}}/v1/chat/completions \
+  -H "Authorization: Bearer sk-&lt;your-token&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "MiniMax-M3",
+    "messages": [
+      {"role": "user", "content": "你好"}
+    ]
+  }'</code></pre>
+  </section>
+
+  <section class="bg-white shadow rounded-lg p-6">
+    <h2 class="text-lg font-medium text-gray-900 mb-3">cURL 流式调用（SSE）</h2>
+    <p class="text-sm text-gray-600 mb-3">
+      用 <code class="bg-gray-100 px-1 rounded">-N</code> 禁用 curl 缓冲，配合 <code class="bg-gray-100 px-1 rounded">stream: true</code> 开启 SSE 打字机效果。
+    </p>
+    <pre class="bg-gray-900 text-gray-100 p-4 rounded text-xs overflow-x-auto"><code>curl -N -X POST {{.BaseURL}}/v1/chat/completions \
+  -H "Authorization: Bearer sk-&lt;your-token&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "MiniMax-M3",
+    "stream": true,
+    "messages": [
+      {"role": "user", "content": "写一首关于中秋的诗"}
+    ]
+  }'</code></pre>
+  </section>
+
+  <section class="bg-white shadow rounded-lg p-6">
+    <h2 class="text-lg font-medium text-gray-900 mb-3">Python (openai SDK)</h2>
+    <p class="text-sm text-gray-600 mb-3">
+      直接用 <code class="bg-gray-100 px-1 rounded">openai</code> 官方 SDK，<code class="bg-gray-100 px-1 rounded">base_url</code> 指向本服务即可，其它参数与官方 OpenAI 用法完全一致。
+    </p>
+    <pre class="bg-gray-900 text-gray-100 p-4 rounded text-xs overflow-x-auto"><code>from openai import OpenAI
+
+client = OpenAI(
+    api_key="sk-&lt;your-token&gt;",
+    base_url="{{.BaseURL}}/v1"
+)
+
+resp = client.chat.completions.create(
+    model="MiniMax-M3",
+    messages=[{"role": "user", "content": "你好"}]
+)
+print(resp.choices[0].message.content)
+
+# 流式：
+# for chunk in client.chat.completions.create(
+#     model="MiniMax-M3", stream=True,
+#     messages=[{"role": "user", "content": "你好"}],
+# ):
+#     print(chunk.choices[0].delta.content or "", end="")</code></pre>
+  </section>
+
+  <section class="bg-white shadow rounded-lg p-6">
+    <h2 class="text-lg font-medium text-gray-900 mb-3">Token 字段含义</h2>
+    <table class="min-w-full text-sm">
+      <thead class="bg-gray-50">
+        <tr>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">字段</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">说明</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-200">
+        <tr>
+          <td class="px-4 py-2 font-mono whitespace-nowrap">名称</td>
+          <td class="px-4 py-2 text-gray-700">内部标识，仅用于在管理界面区分 token，不影响 API 调用。</td>
+        </tr>
+        <tr>
+          <td class="px-4 py-2 font-mono whitespace-nowrap">关联 Plan</td>
+          <td class="px-4 py-2 text-gray-700">绑定计费计划，会在 channel 价格之上叠加 plan 的 <code class="bg-gray-100 px-1 rounded">markup_ratio</code>。</td>
+        </tr>
+        <tr>
+          <td class="px-4 py-2 font-mono whitespace-nowrap">RPM</td>
+          <td class="px-4 py-2 text-gray-700">每分钟请求数上限。<code class="bg-gray-100 px-1 rounded">0</code> = llmRx 不限（上游 provider 仍可能有自己的限流）。</td>
+        </tr>
+        <tr>
+          <td class="px-4 py-2 font-mono whitespace-nowrap">TPM</td>
+          <td class="px-4 py-2 text-gray-700">每分钟 token 数上限（输入 + 输出）。<code class="bg-gray-100 px-1 rounded">0</code> = llmRx 不限。</td>
+        </tr>
+        <tr>
+          <td class="px-4 py-2 font-mono whitespace-nowrap">模型白名单</td>
+          <td class="px-4 py-2 text-gray-700">每行一个模型名。留空 = 不限；<code class="bg-gray-100 px-1 rounded">*</code> = 通配所有模型。</td>
+        </tr>
+        <tr>
+          <td class="px-4 py-2 font-mono whitespace-nowrap">IP 白名单</td>
+          <td class="px-4 py-2 text-gray-700">每行一个 IP 或 CIDR（如 <code class="bg-gray-100 px-1 rounded">192.168.1.0/24</code>）。留空 = 不限；<code class="bg-gray-100 px-1 rounded">*</code> = 通配。</td>
+        </tr>
+        <tr>
+          <td class="px-4 py-2 font-mono whitespace-nowrap">过期天数</td>
+          <td class="px-4 py-2 text-gray-700"><code class="bg-gray-100 px-1 rounded">0</code> = 永不过期；否则按创建时间 + N 天后失效。</td>
+        </tr>
+        <tr>
+          <td class="px-4 py-2 font-mono whitespace-nowrap">启用</td>
+          <td class="px-4 py-2 text-gray-700">勾选时 token 可用；取消后所有使用该 token 的请求会返回 <code class="bg-gray-100 px-1 rounded">403</code>。</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="bg-white shadow rounded-lg p-6">
+    <h2 class="text-lg font-medium text-gray-900 mb-3">常见错误码</h2>
+    <table class="min-w-full text-sm">
+      <thead class="bg-gray-50">
+        <tr>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">HTTP</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">code</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">原因</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-200 font-mono">
+        <tr>
+          <td class="px-4 py-2">401</td>
+          <td class="px-4 py-2 text-gray-500">missing_authorization / invalid_authorization</td>
+          <td class="px-4 py-2 font-sans text-gray-700">Authorization 头缺失或格式不对（必须为 <code class="bg-gray-100 px-1 rounded">Bearer sk-...</code>）。</td>
+        </tr>
+        <tr>
+          <td class="px-4 py-2">403</td>
+          <td class="px-4 py-2 text-gray-500">invalid_token</td>
+          <td class="px-4 py-2 font-sans text-gray-700">token 不存在或已禁用。</td>
+        </tr>
+        <tr>
+          <td class="px-4 py-2">403</td>
+          <td class="px-4 py-2 text-gray-500">token_expired</td>
+          <td class="px-4 py-2 font-sans text-gray-700">token 已过期。</td>
+        </tr>
+        <tr>
+          <td class="px-4 py-2">403</td>
+          <td class="px-4 py-2 text-gray-500">model_not_allowed</td>
+          <td class="px-4 py-2 font-sans text-gray-700">请求的 model 不在该 token 的模型白名单内。</td>
+        </tr>
+        <tr>
+          <td class="px-4 py-2">403</td>
+          <td class="px-4 py-2 text-gray-500">ip_not_allowed</td>
+          <td class="px-4 py-2 font-sans text-gray-700">客户端 IP 不在该 token 的 IP 白名单内。</td>
+        </tr>
+        <tr>
+          <td class="px-4 py-2">429</td>
+          <td class="px-4 py-2 text-gray-500">rate_limited</td>
+          <td class="px-4 py-2 font-sans text-gray-700">触发 RPM / TPM 上限。等待重置或调高限额。</td>
+        </tr>
+        <tr>
+          <td class="px-4 py-2">402</td>
+          <td class="px-4 py-2 text-gray-500">budget_exceeded</td>
+          <td class="px-4 py-2 font-sans text-gray-700">关联 Plan 的 USD 预算已用完。</td>
+        </tr>
+        <tr>
+          <td class="px-4 py-2">503</td>
+          <td class="px-4 py-2 text-gray-500">no_channel</td>
+          <td class="px-4 py-2 font-sans text-gray-700">没有可用的 channel 路由该模型（检查 channels 配置和模型白名单）。</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+</div>
+<div id="flash"></div>{{end}}
