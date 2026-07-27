@@ -76,11 +76,36 @@ func lookupTokenInfo(ctx context.Context) (middleware.TokenInfo, bool) {
 
 // providerFor returns the provider matching channel.Protocol,
 // falling back to the default OpenAI provider if unknown.
-func (h *Handler) providerFor(channelProtocol string) provider.Provider {
-	if p, ok := h.providers[channelProtocol]; ok {
+// When streaming is false and retry/timeout are configured, the
+// returned provider is wrapped with RetryingProvider for automatic
+// retry + timeout. When streaming is true, the raw provider is
+// returned so the streaming handler can correctly detect whether
+// StreamingProvider is supported.
+func (h *Handler) providerFor(channelProtocol string, streaming bool) provider.Provider {
+	var p provider.Provider
+	if pp, ok := h.providers[channelProtocol]; ok {
+		p = pp
+	} else {
+		p = h.provider
+	}
+
+	// For streaming requests, return the raw provider so the
+	// type assertion to StreamingProvider works correctly.
+	if streaming {
 		return p
 	}
-	return h.provider
+
+	// Wrap with retry + timeout when configured.
+	retries := h.rt.MaxRetries()
+	if retries <= 0 && h.rt.RequestTimeoutSec() <= 0 {
+		return p
+	}
+	cfg := provider.RetryConfig{
+		MaxRetries: int(retries),
+		BaseDelay:  time.Duration(h.rt.RetryBaseDelayMs()) * time.Millisecond,
+		Timeout:    time.Duration(h.rt.RequestTimeoutSec()) * time.Second,
+	}
+	return provider.NewRetryingProvider(p, cfg)
 }
 
 // Markup returns the current per-request billing multiplier.
@@ -195,7 +220,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prov := h.providerFor(route.Channel.Protocol)
+	prov := h.providerFor(route.Channel.Protocol, false)
 	start := time.Now()
 	resp, statusCode, err := prov.Chat(r.Context(), &req, route.KeyValue, route.Channel.BaseURL)
 	duration := time.Since(start).Milliseconds()
@@ -247,7 +272,7 @@ func (h *Handler) handleLoadBalanceCombo(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	prov := h.providerFor(route.Channel.Protocol)
+	prov := h.providerFor(route.Channel.Protocol, false)
 	start := time.Now()
 	resp, statusCode, err := prov.Chat(r.Context(), req, route.KeyValue, route.Channel.BaseURL)
 	duration := time.Since(start).Milliseconds()
@@ -281,7 +306,7 @@ func (h *Handler) handleSerialCombo(w http.ResponseWriter, r *http.Request, req 
 		}
 
 		// Attempt the actual chat.
-		prov := h.providerFor(route.Channel.Protocol)
+		prov := h.providerFor(route.Channel.Protocol, false)
 		start := time.Now()
 		resp, statusCode, err := prov.Chat(r.Context(), req, route.KeyValue, route.Channel.BaseURL)
 		duration := time.Since(start).Milliseconds()
@@ -573,7 +598,7 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusServiceUnavailable, "no available channel: "+err.Error(), "no_channel")
 		return
 	}
-	prov := h.providerFor(route.Channel.Protocol)
+	prov := h.providerFor(route.Channel.Protocol, true)
 	sp, ok := prov.(provider.StreamingProvider)
 	if !ok {
 		writeError(w, http.StatusNotImplemented, "streaming not supported by protocol "+route.Channel.Protocol, "stream_unsupported")

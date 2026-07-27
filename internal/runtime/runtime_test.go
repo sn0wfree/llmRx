@@ -157,6 +157,9 @@ func TestSnapshotRoundtrip(t *testing.T) {
 		StreamMaxBodyBytes: 16 * 1024 * 1024,
 		MaxLogSubscribers:  64,
 		LogLevel:           2,
+		RequestTimeoutSec:  60,
+		MaxRetries:         0,
+		RetryBaseDelayMs:   500,
 	}
 	if snap != want {
 		t.Fatalf("snapshot roundtrip:\n got %+v\nwant %+v", snap, want)

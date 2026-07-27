@@ -29,6 +29,10 @@ type Defaults struct {
 	maxLogSubscribers     int64
 	logLevelBits          uint64 // slog.Level int64 bits
 
+	requestTimeoutSec int64
+	maxRetries        int64
+	retryBaseDelayMs  int64
+
 	costStrategy atomic.Value // string
 }
 
@@ -42,6 +46,9 @@ func New() *Defaults {
 	atomic.StoreInt64(&d.streamTimeoutSec, 300)
 	atomic.StoreInt64(&d.streamMaxBodyBytes, 32*1024*1024)
 	atomic.StoreInt64(&d.maxLogSubscribers, 0)
+	atomic.StoreInt64(&d.requestTimeoutSec, 60)
+	atomic.StoreInt64(&d.maxRetries, 0)
+	atomic.StoreInt64(&d.retryBaseDelayMs, 500)
 	atomic.StoreUint64(&d.logLevelBits, uint64(0)) // slog.LevelInfo
 	d.SetMarkupRatio(1.0)
 	d.SetCostStrategy("cheapest")
@@ -222,6 +229,68 @@ func (d *Defaults) SetMaxLogSubscribers(n int64) {
 	atomic.StoreInt64(&d.maxLogSubscribers, n)
 }
 
+// ---- RequestTimeoutSec ----
+
+// RequestTimeoutSec returns the per-upstream-call timeout for
+// non-streaming requests in seconds. 0 disables (uses chi 120s).
+// Default 60.
+func (d *Defaults) RequestTimeoutSec() int64 {
+	return atomic.LoadInt64(&d.requestTimeoutSec)
+}
+
+// SetRequestTimeoutSec updates the timeout. Values < 0 floor to 0;
+// values > 300 capped to 300 (5 min).
+func (d *Defaults) SetRequestTimeoutSec(sec int64) {
+	if sec < 0 {
+		sec = 0
+	}
+	if sec > 300 {
+		sec = 300
+	}
+	atomic.StoreInt64(&d.requestTimeoutSec, sec)
+}
+
+// ---- MaxRetries ----
+
+// MaxRetries returns the maximum number of retry attempts for
+// failed upstream calls. Default 0 (disabled).
+func (d *Defaults) MaxRetries() int64 {
+	return atomic.LoadInt64(&d.maxRetries)
+}
+
+// SetMaxRetries updates the retry count. Values < 0 floor to 0;
+// values > 10 capped to 10.
+func (d *Defaults) SetMaxRetries(n int64) {
+	if n < 0 {
+		n = 0
+	}
+	if n > 10 {
+		n = 10
+	}
+	atomic.StoreInt64(&d.maxRetries, n)
+}
+
+// ---- RetryBaseDelayMs ----
+
+// RetryBaseDelayMs returns the base delay for exponential backoff
+// in milliseconds. Actual delay = base * 2^attempt, capped at 30s.
+// Default 500.
+func (d *Defaults) RetryBaseDelayMs() int64 {
+	return atomic.LoadInt64(&d.retryBaseDelayMs)
+}
+
+// SetRetryBaseDelayMs updates the base delay. Values < 100 floor
+// to 100; values > 10000 capped to 10000.
+func (d *Defaults) SetRetryBaseDelayMs(ms int64) {
+	if ms < 100 {
+		ms = 100
+	}
+	if ms > 10000 {
+		ms = 10000
+	}
+	atomic.StoreInt64(&d.retryBaseDelayMs, ms)
+}
+
 // ---- LogLevel ----
 
 // LogLevel returns the active log filter: 0=debug, 1=info, 2=warn,
@@ -304,6 +373,9 @@ type Snapshot struct {
 	StreamMaxBodyBytes int64   `json:"stream_max_body_bytes"`
 	MaxLogSubscribers  int64   `json:"max_log_subscribers"`
 	LogLevel           int64   `json:"log_level"`
+	RequestTimeoutSec  int64   `json:"request_timeout_sec"`
+	MaxRetries         int64   `json:"max_retries"`
+	RetryBaseDelayMs   int64   `json:"retry_base_delay_ms"`
 }
 
 // Snapshot returns the current effective values. Safe to call
@@ -320,6 +392,9 @@ func (d *Defaults) Snapshot() Snapshot {
 		StreamMaxBodyBytes: d.StreamMaxBodyBytes(),
 		MaxLogSubscribers:  d.MaxLogSubscribers(),
 		LogLevel:           d.LogLevel(),
+		RequestTimeoutSec:  d.RequestTimeoutSec(),
+		MaxRetries:         d.MaxRetries(),
+		RetryBaseDelayMs:   d.RetryBaseDelayMs(),
 	}
 }
 
@@ -351,6 +426,9 @@ func (d *Defaults) Apply(s Snapshot) {
 	d.SetStreamMaxBodyBytes(s.StreamMaxBodyBytes)
 	d.SetMaxLogSubscribers(s.MaxLogSubscribers)
 	d.SetLogLevel(s.LogLevel)
+	d.SetRequestTimeoutSec(s.RequestTimeoutSec)
+	d.SetMaxRetries(s.MaxRetries)
+	d.SetRetryBaseDelayMs(s.RetryBaseDelayMs)
 }
 
 // Marshal returns the JSON representation of the current snapshot.

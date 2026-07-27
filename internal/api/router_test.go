@@ -73,7 +73,7 @@ func TestHandler_ProviderFor_Default(t *testing.T) {
 	lb := broker.New[*model.Log](16)
 	h := New(cfg, eng, cp, st, lb, rt)
 
-	p := h.providerFor("nonexistent-protocol")
+	p := h.providerFor("nonexistent-protocol", false)
 	if p == nil {
 		t.Fatal("providerFor should fall back to default")
 	}

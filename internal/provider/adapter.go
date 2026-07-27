@@ -5,12 +5,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 )
+
+// ErrStreamUnsupported is returned by providers that don't implement
+// the StreamingProvider interface.
+var ErrStreamUnsupported = errors.New("streaming not supported by protocol")
 
 // ChatRequest is the OpenAI-compatible request body. All fields are
 // optional except Model and Messages. Anything the upstream supports

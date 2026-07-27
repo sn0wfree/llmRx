@@ -33,6 +33,20 @@ type ServerConfig struct {
 	StreamTimeoutSec   int     `yaml:"stream_timeout_sec"`    // 0 = disable streaming timeout
 	StreamMaxBodyBytes int     `yaml:"stream_max_body_bytes"` // soft cap on bytes sent to client
 
+	// RequestTimeoutSec is the per-upstream-call timeout for
+	// non-streaming requests. Default 60. Set to 0 to disable
+	// (uses chi global 120s timeout).
+	RequestTimeoutSec int `yaml:"request_timeout_sec"`
+
+	// MaxRetries is the maximum number of retry attempts for
+	// failed upstream calls (5xx, timeout, 429). Default 0
+	// (retries disabled). LiteLLM/Portkey default to 5.
+	MaxRetries int `yaml:"max_retries"`
+
+	// RetryBaseDelayMs is the base delay for exponential backoff.
+	// Actual delay = base * 2^attempt, capped at 30s. Default 500.
+	RetryBaseDelayMs int `yaml:"retry_base_delay_ms"`
+
 	// AllowDefaultAdminPassword, when true, lets the gateway
 	// start with the well-known admin/admin credential. Off by
 	// default so production deployments refuse to bootstrap

@@ -1,58 +1,445 @@
-# Built-in provider catalog. Embedded into the binary via go:embed.
-# Operators can override entries or add new ones via config.yml
-# (providers: section) or the Admin UI (stored in the DB).
-#
-# Adding a new OpenAI-compatible provider requires only a new entry
-# here - no Go code changes needed.
-#
-# Fields:
-#   name         - unique identifier (used in channel.provider)
-#   display_name - human-readable label for the admin UI
-#   protocol     - which protocol adapter to use (openai|anthropic|gemini)
-#   base_url     - default upstream API base URL
+# Built-in provider catalog. Embedded via go:embed.
+# Adding a new OpenAI-compatible provider only requires a new entry here.
 
 providers:
+  # ── Core protocols ─────────────────────────────────────────────
   - name: openai
     display_name: OpenAI
     protocol: openai
     base_url: https://api.openai.com/v1
-
   - name: anthropic
     display_name: Anthropic
     protocol: anthropic
     base_url: https://api.anthropic.com
-
   - name: gemini
     display_name: Google Gemini
     protocol: gemini
     base_url: https://generativelanguage.googleapis.com
 
+  # ── Cloud providers (OpenAI-compatible endpoints) ───────────────
+  - name: azure
+    display_name: Azure OpenAI
+    protocol: openai
+    base_url: https://YOUR_RESOURCE.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT
+  - name: bedrock
+    display_name: AWS Bedrock (OpenAI-compat)
+    protocol: openai
+    base_url: https://bedrock-runtime.us-east-1.amazonaws.com/model
+  - name: vertex_ai
+    display_name: Google Vertex AI (OpenAI-compat)
+    protocol: openai
+    base_url: https://us-central1-aiplatform.googleapis.com/v1/projects/YOUR_PROJECT/locations/us-central1/endpoints/openapi
+  - name: cloudflare
+    display_name: Cloudflare Workers AI
+    protocol: openai
+    base_url: https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT/ai/v1
+  - name: oci
+    display_name: Oracle OCI
+    protocol: openai
+    base_url: https://inference.generativeai.us-ashburn-1.oci.oraclecloud.com/20231130/actions/chatCompletions
+
+  # ── International providers ────────────────────────────────────
+  - name: together
+    display_name: Together AI
+    protocol: openai
+    base_url: https://api.together.xyz/v1
+  - name: groq
+    display_name: Groq
+    protocol: openai
+    base_url: https://api.groq.com/openai/v1
+  - name: fireworks
+    display_name: Fireworks AI
+    protocol: openai
+    base_url: https://api.fireworks.ai/inference/v1
+  - name: mistral
+    display_name: Mistral AI
+    protocol: openai
+    base_url: https://api.mistral.ai/v1
+  - name: cohere
+    display_name: Cohere
+    protocol: openai
+    base_url: https://api.cohere.com/v2
+  - name: perplexity
+    display_name: Perplexity AI
+    protocol: openai
+    base_url: https://api.perplexity.ai
+  - name: xai
+    display_name: xAI (Grok)
+    protocol: openai
+    base_url: https://api.x.ai/v1
+  - name: openrouter
+    display_name: OpenRouter
+    protocol: openai
+    base_url: https://openrouter.ai/api/v1
+  - name: huggingface
+    display_name: HuggingFace Inference
+    protocol: openai
+    base_url: https://api-inference.huggingface.co/v1
+  - name: replicate
+    display_name: Replicate
+    protocol: openai
+    base_url: https://api.replicate.com/v1
+  - name: deepinfra
+    display_name: DeepInfra
+    protocol: openai
+    base_url: https://api.deepinfra.com/v1/openai
+  - name: cerebras
+    display_name: Cerebras
+    protocol: openai
+    base_url: https://api.cerebras.ai/v1
+  - name: sambanova
+    display_name: SambaNova
+    protocol: openai
+    base_url: https://api.sambanova.ai/v1
+  - name: lambda
+    display_name: Lambda AI
+    protocol: openai
+    base_url: https://api.lambdalabs.com/v1
+  - name: nebius
+    display_name: Nebius AI Studio
+    protocol: openai
+    base_url: https://api.studio.nebius.com/v1
+  - name: novita
+    display_name: Novita AI
+    protocol: openai
+    base_url: https://api.novita.ai/v3/openai
+  - name: anyscale
+    display_name: Anyscale
+    protocol: openai
+    base_url: https://api.endpoints.anyscale.com/v1
+  - name: friendli
+    display_name: FriendliAI
+    protocol: openai
+    base_url: https://inference.friendli.ai/v1
+  - name: lepton
+    display_name: Lepton AI
+    protocol: openai
+    base_url: https://api.lepton.ai/v1
+  - name: predibase
+    display_name: Predibase
+    protocol: openai
+    base_url: https://inference.predibase.com/v1
+  - name: wandb
+    display_name: W&B Inference
+    protocol: openai
+    base_url: https://api.wandb.ai/v1
+  - name: topaz
+    display_name: Topaz
+    protocol: openai
+    base_url: https://api.topaz.ai/v1
+  - name: triton
+    display_name: Triton Inference Server
+    protocol: openai
+    base_url: http://localhost:8000/v2/models
+  - name: hosted_vllm
+    display_name: Hosted vLLM
+    protocol: openai
+    base_url: http://localhost:8000/v1
+  - name: llamafile
+    display_name: Llamafile
+    protocol: openai
+    base_url: http://localhost:8080/v1
+  - name: lm_studio
+    display_name: LM Studio
+    protocol: openai
+    base_url: http://localhost:1234/v1
+  - name: ollama
+    display_name: Ollama
+    protocol: openai
+    base_url: http://localhost:11434/v1
+  - name: xinference
+    display_name: Xinference
+    protocol: openai
+    base_url: http://localhost:9997/v1
+  - name: vllm
+    display_name: vLLM
+    protocol: openai
+    base_url: http://localhost:8000/v1
+  - name: nvidia_nim
+    display_name: NVIDIA NIM
+    protocol: openai
+    base_url: http://localhost:8080/v1
+
+  # ── Chinese providers ──────────────────────────────────────────
   - name: minimax
     display_name: MiniMax
     protocol: openai
     base_url: https://api.minimax.io/v1
-
   - name: deepseek
     display_name: DeepSeek
     protocol: openai
     base_url: https://api.deepseek.com/v1
-
   - name: moonshot
     display_name: Moonshot (Kimi)
     protocol: openai
     base_url: https://api.moonshot.cn/v1
-
   - name: qwen
     display_name: Qwen (通义千问)
     protocol: openai
     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-
   - name: zhipu
     display_name: Zhipu (智谱)
     protocol: openai
     base_url: https://open.bigmodel.cn/api/paas/v4
-
   - name: volcengine
     display_name: 火山引擎 (豆包)
     protocol: openai
     base_url: https://ark.cn-beijing.volces.com/api/v3
+  - name: siliconflow
+    display_name: SiliconFlow (硅基流动)
+    protocol: openai
+    base_url: https://api.siliconflow.cn/v1
+  - name: dashscope
+    display_name: DashScope (阿里百炼)
+    protocol: openai
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  - name: hunyuan
+    display_name: Tencent Hunyuan (腾讯混元)
+    protocol: openai
+    base_url: https://hunyuan.tencentcloudapi.com/v1
+  - name: baidu
+    display_name: Baidu ERNIE (百度文心)
+    protocol: openai
+    base_url: https://aip.baidublpc.com/rpc/2.0/ai_custom/v1/wenxinworkshop
+  - name: iflytek
+    display_name: iFlytek Spark (讯飞星火)
+    protocol: openai
+    base_url: https://spark-api-open.xf-yun.com/v1
+  - name: baichuan
+    display_name: Baichuan (百川)
+    protocol: openai
+    base_url: https://api.baichuan-ai.com/v1
+  - name: yi
+    display_name: Yi (零一万物)
+    protocol: openai
+    base_url: https://api.lingyiwanwu.com/v1
+  - name: stepfun
+    display_name: StepFun (阶跃星辰)
+    protocol: openai
+    base_url: https://api.stepfun.com/v1
+  - name: minimax_pro
+    display_name: MiniMax Pro
+    protocol: openai
+    base_url: https://api.minimax.chat/v1
+  - name: doubao
+    display_name: Doubao (豆包)
+    protocol: openai
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+
+  # ── Misc / self-hosted ─────────────────────────────────────────
+  - name: nlp_cloud
+    display_name: NLP Cloud
+    protocol: openai
+    base_url: https://api.nlpcloud.io/v1
+  - name: petals
+    display_name: Petals
+    protocol: openai
+    base_url: http://localhost:5000/v1
+  - name: deepgram
+    display_name: Deepgram
+    protocol: openai
+    base_url: https://api.deepgram.com/v1
+  - name: assemblyai
+    display_name: AssemblyAI
+    protocol: openai
+    base_url: https://api.assemblyai.com/v2
+  - name: elevenlabs
+    display_name: ElevenLabs
+    protocol: openai
+    base_url: https://api.elevenlabs.io/v1
+  - name: maritalk
+    display_name: Maritalk
+    protocol: openai
+    base_url: https://api.maritalk.com/v1
+  - name: recraft
+    display_name: Recraft
+    protocol: openai
+    base_url: https://api.recraft.ai/v1
+  - name: modelscope
+    display_name: ModelScope
+    protocol: openai
+    base_url: https://api-inference.modelscope.cn/v1
+  - name: abacus
+    display_name: Abacus.AI
+    protocol: openai
+    base_url: https://api.abacus.ai/v1
+  - name: kimi
+    display_name: Kimi (Moonshot)
+    protocol: openai
+    base_url: https://api.moonshot.cn/v1
+  - name: clarifai
+    display_name: Clarifai
+    protocol: openai
+    base_url: https://api.clarifai.com/v2/models
+  - name: databricks
+    display_name: Databricks
+    protocol: openai
+    base_url: https://YOUR_HOST/serving-endpoints/chat/completions
+  - name: baseten
+    display_name: Baseten
+    protocol: openai
+    base_url: https://YOUR_HOST/v1
+  - name: sagemaker
+    display_name: AWS SageMaker
+    protocol: openai
+    base_url: https://YOUR_ENDPOINT/v1
+  - name: sagemaker_chat
+    display_name: AWS SageMaker Chat
+    protocol: openai
+    base_url: https://YOUR_ENDPOINT/chat/completions
+  - name: snowflake
+    display_name: Snowflake
+    protocol: openai
+    base_url: https://YOUR_ACCOUNT.snowflakecomputing.com/api/v2/cortex/chat/completions
+  - name: heroku
+    display_name: Heroku
+    protocol: openai
+    base_url: https://YOUR_APP_NAME.herokuapp.com/v1
+  - name: google_ai_studio
+    display_name: Google AI Studio
+    protocol: openai
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+  - name: github
+    display_name: GitHub Models
+    protocol: openai
+    base_url: https://models.inference.ai.azure.com
+  - name: github_copilot
+    display_name: GitHub Copilot
+    protocol: openai
+    base_url: https://api.githubcopilot.com/v1
+  - name: aiml
+    display_name: AI/ML API
+    protocol: openai
+    base_url: https://api.aimlapi.ai/v1
+  - name: ai21
+    display_name: AI21
+    protocol: openai
+    base_url: https://api.ai21.com/v1
+  - name: aleph_alpha
+    display_name: Aleph Alpha
+    protocol: openai
+    base_url: https://api.aleph-alpha.com/v1
+  - name: cloudflare_workers
+    display_name: Cloudflare Workers
+    protocol: openai
+    base_url: https://YOUR_ACCOUNT_ID.workers.dev/v1
+  - name: featherless
+    display_name: Featherless AI
+    protocol: openai
+    base_url: https://api.featherless.ai/v1
+  - name: gradient_ai
+    display_name: Gradient AI
+    protocol: openai
+    base_url: https://api.gradient.ai/v1
+  - name: hyperbolic
+    display_name: Hyperbolic
+    protocol: openai
+    base_url: https://api.hyperbolic.xyz/v1
+  - name: novita_ai
+    display_name: Novita AI (alt)
+    protocol: openai
+    base_url: https://api.novita.ai/v3/openai
+  - name: nscale
+    display_name: Nscale
+    protocol: openai
+    base_url: https://api.nscale.com/v1
+  - name: ovhcloud
+    display_name: OVHcloud AI
+    protocol: openai
+    base_url: https://integrate.api.novita.ai/v3/openai
+  - name: jina_ai
+    display_name: Jina AI
+    protocol: openai
+    base_url: https://api.jina.ai/v1
+  - name: voyage
+    display_name: Voyage AI
+    protocol: openai
+    base_url: https://api.voyageai.com/v1
+  - name: ibm_watsonx
+    display_name: IBM watsonx.ai
+    protocol: openai
+    base_url: https://YOUR_WATSONX.ai/api/v1
+  - name: watsonx_text
+    display_name: IBM watsonx Text
+    protocol: openai
+    base_url: https://YOUR_WATSONX.ai/api/v1
+  - name: lemonade
+    display_name: Lemonade
+    protocol: openai
+    base_url: http://localhost:8000/v1
+  - name: morph
+    display_name: Morph
+    protocol: openai
+    base_url: https://api.morph.so/v1
+  - name: v0
+    display_name: V0 (Vercel)
+    protocol: openai
+    base_url: https://api.v0.dev/v1
+  - name: pinstripes
+    display_name: Pinstripes
+    protocol: openai
+    base_url: https://api.pinstripes.ai/v1
+  - name: bytez
+    display_name: Bytez
+    protocol: openai
+    base_url: https://api.bytez.com/v1
+  - name: galadriel
+    display_name: Galadriel
+    protocol: openai
+    base_url: https://api.galadriel.com/v1
+  - name: empower
+    display_name: Empower
+    protocol: openai
+    base_url: https://api.empower.dev/v1
+  - name: abliteration
+    display_name: Abliteration
+    protocol: openai
+    base_url: http://localhost:5000/v1
+  - name: compactifai
+    display_name: CompactifAI
+    protocol: openai
+    base_url: https://api.compactifai.com/v1
+  - name: cometapi
+    display_name: CometAPI
+    protocol: openai
+    base_url: https://api.cometapi.com/v1
+  - name: ai21_chat
+    display_name: AI21 Chat
+    protocol: openai
+    base_url: https://api.ai21.com/v1
+  - name: codestral
+    display_name: Codestral (Mistral)
+    protocol: openai
+    base_url: https://api.mistral.ai/v1
+  - name: text_completion_openai
+    display_name: Text Completion OpenAI
+    protocol: openai
+    base_url: https://api.openai.com/v1
+  - name: text_completion_codestral
+    display_name: Text Completion Codestral
+    protocol: openai
+    base_url: https://api.mistral.ai/v1
+  - name: oobabooga
+    display_name: Oobabooga
+    protocol: openai
+    base_url: http://localhost:5000/v1
+  - name: openai_like
+    display_name: OpenAI-like
+    protocol: openai
+    base_url: http://localhost:8000/v1
+  - name: custom
+    display_name: Custom
+    protocol: openai
+    base_url: http://localhost:8000/v1
+  - name: custom_openai
+    display_name: Custom OpenAI
+    protocol: openai
+    base_url: http://localhost:8000/v1
+  - name: litellm_proxy
+    display_name: LiteLLM Proxy
+    protocol: openai
+    base_url: http://localhost:4000/v1
+  - name: vercel_ai
+    display_name: Vercel AI Gateway
+    protocol: openai
+    base_url: http://localhost:3000/v1
