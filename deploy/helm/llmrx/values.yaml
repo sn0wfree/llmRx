@@ -1,0 +1,125 @@
+# Default values for llmRx Helm chart.
+# See https://github.com/sn0wfree/llmRx
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/sn0wfree/llmrx
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: false
+  name: ""
+
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Service
+service:
+  type: ClusterIP
+  port: 8787
+
+# Health probes
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Graceful shutdown
+terminationGracePeriodSeconds: 35
+
+# Persistence for SQLite DB, config, keys, logs, thompson state
+persistence:
+  enabled: true
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  mountPath: /data
+
+# llmRx configuration (rendered as config.yml ConfigMap)
+config:
+  server:
+    port: 8787
+    log_level: info
+    trust_proxy_headers: true
+    trusted_proxy_cidrs: []
+    allow_default_admin_password: false
+    cors_allowed_origins: []
+    markup_ratio: 0
+    breaker_max_failures: 5
+    breaker_reset_timeout_ms: 60000
+    log_retention_days: 30
+    stream_timeout_sec: 300
+    stream_max_body_bytes: 33554432
+    request_timeout_sec: 60
+    max_retries: 0
+    retry_base_delay_ms: 500
+  strategy:
+    cost_strategy: cheapest
+  secrets:
+    dev_allow_plaintext_keys: false
+  tokens: []
+  channels: []
+  providers: []
+
+# Secrets (LLMRX_KEY_MASTER + provider API keys)
+secrets:
+  existingSecret: ""
+  masterKey: ""
+
+providerKeys: {}
+  # DEEPSEEK_API_KEY: ""
+  # MINIMAX_API_KEY: ""
+  # OPENAI_API_KEY: ""
+  # ANTHROPIC_API_KEY: ""
+
+# HPA (disabled by default — SQLite only supports single writer)
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+# Ingress
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: llmrx.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Resource limits
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi

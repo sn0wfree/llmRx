@@ -1,0 +1,24 @@
+llmRx has been deployed!
+
+{{- if .Values.persistence.enabled }}
+✓ Persistent volume claim {{ include "llmrx.fullname" . }}-data is mounted at /data
+  All data (SQLite DB, config, keys, logs, Thompson state) is persisted.
+{{- end }}
+
+Access the admin UI:
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- else }}
+  kubectl port-forward svc/{{ include "llmrx.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  Then open: http://localhost:{{ .Values.service.port }}/admin
+{{- end }}
+
+Default credentials: admin / admin (change immediately in production)
+
+API usage:
+  curl -X POST http://localhost:{{ .Values.service.port }}/v1/chat/completions \
+    -H "Authorization: Bearer <your-token>" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}'

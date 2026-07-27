@@ -1,0 +1,16 @@
+apiVersion: v2
+name: llmrx
+description: llmRx — LLM API gateway with smart routing
+type: application
+version: 0.1.0
+appVersion: "latest"
+maintainers:
+  - name: llmrx
+keywords:
+  - llm
+  - gateway
+  - api
+  - proxy
+  - openai
+  - anthropic
+  - gemini
