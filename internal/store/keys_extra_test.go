@@ -171,3 +171,139 @@ func TestBYOK_NotImplemented(t *testing.T) {
 		t.Fatalf("DeleteBYOKChannel: expected errNotImplemented, got %v", err)
 	}
 }
+
+// --- WipeKeys extra coverage ---
+
+func TestWipeKeys_EmptyDB2(t *testing.T) {
+	s, _ := openTempWithSecrets(t)
+	n, err := s.WipeKeys()
+	if err != nil {
+		t.Fatalf("WipeKeys: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("count = %d, want 0", n)
+	}
+}
+
+func TestWipeKeys_WithKeys2(t *testing.T) {
+	s, _ := openTempWithSecrets(t)
+	seedEncryptedKey(t, s, s.Secrets, "sk-aaaaaaaaaaaaaaaaaaaa", "c1")
+	seedEncryptedKey(t, s, s.Secrets, "sk-bbbbbbbbbbbbbbbbbbbb", "c2")
+	seedEncryptedKey(t, s, s.Secrets, "sk-cccccccccccccccccccc", "c3")
+
+	n, err := s.WipeKeys()
+	if err != nil {
+		t.Fatalf("WipeKeys: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("count = %d, want 3", n)
+	}
+	var count int
+	row := s.db.QueryRow(`SELECT COUNT(*) FROM keys WHERE key != '' OR key_ciphertext != ''`)
+	if err := row.Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("rows with content = %d, want 0", count)
+	}
+}
+
+func TestWipeKeys_Idempotent2(t *testing.T) {
+	s, _ := openTempWithSecrets(t)
+	seedEncryptedKey(t, s, s.Secrets, "sk-test", "c1")
+	if _, err := s.WipeKeys(); err != nil {
+		t.Fatalf("first wipe: %v", err)
+	}
+	n, err := s.WipeKeys()
+	if err != nil {
+		t.Fatalf("second wipe: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("second wipe count = %d, want 0", n)
+	}
+}
+
+// --- ReencryptAllKeys extra coverage ---
+
+func TestReencryptAllKeys_MultipleKeys2(t *testing.T) {
+	s, _ := openTempWithSecrets(t)
+	mgr1 := s.Secrets
+	seedEncryptedKey(t, s, mgr1, "sk-key-1-aaaaaaaaaaaaaaaa", "c1")
+	seedEncryptedKey(t, s, mgr1, "sk-key-2-bbbbbbbbbbbbbbbb", "c2")
+
+	mgr2, _ := secrets.FromBytes(differentBytesKeys())
+	n, err := s.ReencryptAllKeys(mgr1, mgr2)
+	if err != nil {
+		t.Fatalf("ReencryptAllKeys: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("count = %d, want 2", n)
+	}
+	s.Secrets = mgr2
+	chs, _ := s.GetChannels()
+	for _, ch := range chs {
+		ks, _ := s.GetKeys(ch.ID)
+		for _, k := range ks {
+			if k.Key == "" {
+				t.Errorf("key %d not decrypted", k.ID)
+			}
+		}
+	}
+}
+
+func TestReencryptAllKeys_EmptyDB2(t *testing.T) {
+	s, _ := openTempWithSecrets(t)
+	mgr1 := s.Secrets
+	mgr2, _ := secrets.FromBytes(differentBytesKeys())
+	n, err := s.ReencryptAllKeys(mgr1, mgr2)
+	if err != nil {
+		t.Fatalf("ReencryptAllKeys empty: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("count = %d, want 0", n)
+	}
+}
+
+func TestReencryptAllKeys_WrongOldKey2(t *testing.T) {
+	s, _ := openTempWithSecrets(t)
+	mgrA := s.Secrets
+	seedEncryptedKey(t, s, mgrA, "sk-secret-key-aaaaaaaaaaaaaa", "c1")
+
+	mgrWrong, _ := secrets.FromBytes(differentBytesKeys())
+	mgrNew, _ := secrets.FromBytes(make([]byte, 32))
+	_, err := s.ReencryptAllKeys(mgrWrong, mgrNew)
+	if err == nil {
+		t.Fatal("expected error when old key mismatches cipher")
+	}
+}
+
+// seedEncryptedKey creates a channel + a key whose key_ciphertext is
+// encrypted with the given manager. The plaintext is recoverable
+// via GetKeys/Decrypt.
+func seedEncryptedKey(t *testing.T, s *SQLite, mgr *secrets.Manager, plain, name string) *model.Key {
+	t.Helper()
+	ch := &model.Channel{
+		Name: name, Provider: "openai", Protocol: "openai",
+		BaseURL: "https://x", Models: []string{"m"},
+		Status: model.ChannelEnabled,
+	}
+	if err := s.CreateChannel(ch); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	k := &model.Key{
+		ChannelID: ch.ID, Key: plain, KeyMasked: secrets.Mask(plain),
+		Status: model.KeyActive,
+	}
+	if err := s.CreateKey(k); err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+	return k
+}
+
+func differentBytesKeys() []byte {
+	b := make([]byte, 32)
+	for i := range b {
+		b[i] = 0xff
+	}
+	return b
+}
