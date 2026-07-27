@@ -137,6 +137,16 @@ type Store interface {
 	CreateComboModel(c *model.TokenComboModel) error
 	UpdateComboModel(c *model.TokenComboModel) error
 	DeleteComboModel(id int64) error
+
+	// Guardrails
+	GetEnabledGuardrailRules() ([]model.GuardrailRule, error)
+	GetGuardrailRules() ([]model.GuardrailRule, error)
+	GetGuardrailRule(id int64) (*model.GuardrailRule, error)
+	CreateGuardrailRule(r *model.GuardrailRule) error
+	UpdateGuardrailRule(r *model.GuardrailRule) error
+	DeleteGuardrailRule(id int64) error
+	CreateGuardrailEvent(e *model.GuardrailEvent) error
+	GetGuardrailEvents(tokenID int64, limit int) ([]model.GuardrailEvent, error)
 }
 
 type LogStats struct {

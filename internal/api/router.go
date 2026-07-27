@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/config"
+	"github.com/sn0wfree/llmRx/internal/guardrail"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/observability"
@@ -35,6 +36,7 @@ type Handler struct {
 	logBroker *broker.Broker[*model.Log]
 	rt        *runtime.Defaults
 	limits    *ratelimit.Limiter
+	guardrails *guardrail.GuardrailEngine
 }
 
 func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Handler {
@@ -52,6 +54,7 @@ func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st 
 		logBroker: lb,
 		rt:        rt,
 		limits:    ratelimit.New(),
+		guardrails: guardrail.New(st),
 	}
 }
 
@@ -208,6 +211,12 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			h.handleCombo(w, r, &req, combo, info)
 			return
 		}
+	}
+
+	// Input guardrails: check request messages before routing.
+	if gr := h.checkInputGuardrails(r, &req); gr != nil {
+		writeError(w, http.StatusUnprocessableEntity, gr.Message, "guardrail_violated")
+		return
 	}
 
 	if req.Stream {
@@ -755,4 +764,18 @@ func lastUserText(msgs []provider.Message) string {
 		}
 	}
 	return ""
+}
+
+// checkInputGuardrails evaluates input guardrail rules against the
+// request messages. Returns nil if all pass, or a Result on failure.
+func (h *Handler) checkInputGuardrails(r *http.Request, req *provider.ChatRequest) *guardrail.Result {
+	if h.guardrails == nil {
+		return nil
+	}
+	var texts []string
+	for _, m := range req.Messages {
+		texts = append(texts, m.ContentString())
+	}
+	tokenID := lookupTokenID(r.Context(), h.store)
+	return h.guardrails.CheckInput(r.Context(), texts, tokenID)
 }

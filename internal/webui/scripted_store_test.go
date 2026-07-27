@@ -94,6 +94,16 @@ type ScriptedStore struct {
 	CreateComboModelFunc  func(c *model.TokenComboModel) error
 	UpdateComboModelFunc  func(c *model.TokenComboModel) error
 	DeleteComboModelFunc  func(id int64) error
+
+	// Guardrails
+	GetEnabledGuardrailRulesFunc func() ([]model.GuardrailRule, error)
+	GetGuardrailRulesFunc        func() ([]model.GuardrailRule, error)
+	GetGuardrailRuleFunc         func(id int64) (*model.GuardrailRule, error)
+	CreateGuardrailRuleFunc      func(r *model.GuardrailRule) error
+	UpdateGuardrailRuleFunc      func(r *model.GuardrailRule) error
+	DeleteGuardrailRuleFunc      func(id int64) error
+	CreateGuardrailEventFunc     func(e *model.GuardrailEvent) error
+	GetGuardrailEventsFunc       func(tokenID int64, limit int) ([]model.GuardrailEvent, error)
 }
 
 func NewScriptedStore(underlying store.Store) *ScriptedStore {
@@ -387,4 +397,36 @@ func (s *ScriptedStore) UpdateComboModel(c *model.TokenComboModel) error {
 func (s *ScriptedStore) DeleteComboModel(id int64) error {
 	if s.DeleteComboModelFunc != nil { return s.DeleteComboModelFunc(id) }
 	return s.underlying.DeleteComboModel(id)
+}
+func (s *ScriptedStore) GetEnabledGuardrailRules() ([]model.GuardrailRule, error) {
+	if s.GetEnabledGuardrailRulesFunc != nil { return s.GetEnabledGuardrailRulesFunc() }
+	return s.underlying.GetEnabledGuardrailRules()
+}
+func (s *ScriptedStore) GetGuardrailRules() ([]model.GuardrailRule, error) {
+	if s.GetGuardrailRulesFunc != nil { return s.GetGuardrailRulesFunc() }
+	return s.underlying.GetGuardrailRules()
+}
+func (s *ScriptedStore) GetGuardrailRule(id int64) (*model.GuardrailRule, error) {
+	if s.GetGuardrailRuleFunc != nil { return s.GetGuardrailRuleFunc(id) }
+	return s.underlying.GetGuardrailRule(id)
+}
+func (s *ScriptedStore) CreateGuardrailRule(r *model.GuardrailRule) error {
+	if s.CreateGuardrailRuleFunc != nil { return s.CreateGuardrailRuleFunc(r) }
+	return s.underlying.CreateGuardrailRule(r)
+}
+func (s *ScriptedStore) UpdateGuardrailRule(r *model.GuardrailRule) error {
+	if s.UpdateGuardrailRuleFunc != nil { return s.UpdateGuardrailRuleFunc(r) }
+	return s.underlying.UpdateGuardrailRule(r)
+}
+func (s *ScriptedStore) DeleteGuardrailRule(id int64) error {
+	if s.DeleteGuardrailRuleFunc != nil { return s.DeleteGuardrailRuleFunc(id) }
+	return s.underlying.DeleteGuardrailRule(id)
+}
+func (s *ScriptedStore) CreateGuardrailEvent(e *model.GuardrailEvent) error {
+	if s.CreateGuardrailEventFunc != nil { return s.CreateGuardrailEventFunc(e) }
+	return s.underlying.CreateGuardrailEvent(e)
+}
+func (s *ScriptedStore) GetGuardrailEvents(tokenID int64, limit int) ([]model.GuardrailEvent, error) {
+	if s.GetGuardrailEventsFunc != nil { return s.GetGuardrailEventsFunc(tokenID, limit) }
+	return s.underlying.GetGuardrailEvents(tokenID, limit)
 }

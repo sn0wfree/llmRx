@@ -243,6 +243,34 @@ func (s *SQLite) migrate() error {
 			UNIQUE(token_id, name)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_combo_token ON token_combo_models(token_id)`,
+		`CREATE TABLE IF NOT EXISTS guardrails (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			type TEXT NOT NULL,
+			hook TEXT NOT NULL DEFAULT 'input',
+			on_failure TEXT NOT NULL DEFAULT 'deny',
+			config TEXT NOT NULL DEFAULT '{}',
+			priority INTEGER NOT NULL DEFAULT 100,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_guardrails_enabled ON guardrails(enabled, priority)`,
+		`CREATE TABLE IF NOT EXISTS guardrail_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			token_id INTEGER NOT NULL,
+			rule_id INTEGER NOT NULL,
+			rule_name TEXT NOT NULL DEFAULT '',
+			rule_type TEXT NOT NULL DEFAULT '',
+			hook TEXT NOT NULL DEFAULT '',
+			verdict INTEGER NOT NULL DEFAULT 1,
+			action TEXT NOT NULL DEFAULT '',
+			detail TEXT NOT NULL DEFAULT '',
+			request_ip TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_gr_events_token ON guardrail_events(token_id, created_at DESC)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
@@ -1711,4 +1739,136 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// ---------- Guardrails ----------
+
+func (s *SQLite) scanGuardrailRow(r interface{ Scan(dest ...any) error }) (*model.GuardrailRule, error) {
+	var g model.GuardrailRule
+	var hook, onFailure, config string
+	var enabled int
+	var created, updated int64
+	if err := r.Scan(&g.ID, &g.Name, &g.Description, &g.Type, &hook, &onFailure, &config, &g.Priority, &enabled, &created, &updated); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	g.Hook = model.GuardrailHook(hook)
+	g.OnFailure = model.GuardrailAction(onFailure)
+	g.Config = config
+	g.Enabled = enabled == 1
+	g.CreatedAt = fromUnix(created)
+	g.UpdatedAt = fromUnix(updated)
+	return &g, nil
+}
+
+func (s *SQLite) GetEnabledGuardrailRules() ([]model.GuardrailRule, error) {
+	rows, err := s.db.Query(`SELECT id, name, description, type, hook, on_failure, config, priority, enabled, created_at, updated_at FROM guardrails WHERE enabled = 1 ORDER BY priority, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.GuardrailRule
+	for rows.Next() {
+		g, err := s.scanGuardrailRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *g)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) GetGuardrailRules() ([]model.GuardrailRule, error) {
+	rows, err := s.db.Query(`SELECT id, name, description, type, hook, on_failure, config, priority, enabled, created_at, updated_at FROM guardrails ORDER BY priority, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.GuardrailRule
+	for rows.Next() {
+		g, err := s.scanGuardrailRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *g)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) GetGuardrailRule(id int64) (*model.GuardrailRule, error) {
+	row := s.db.QueryRow(`SELECT id, name, description, type, hook, on_failure, config, priority, enabled, created_at, updated_at FROM guardrails WHERE id = ?`, id)
+	return s.scanGuardrailRow(row)
+}
+
+func (s *SQLite) CreateGuardrailRule(r *model.GuardrailRule) error {
+	now := time.Now().Unix()
+	res, err := s.db.Exec(
+		`INSERT INTO guardrails (name, description, type, hook, on_failure, config, priority, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.Name, r.Description, string(r.Type), string(r.Hook), string(r.OnFailure), r.Config, r.Priority, boolToInt(r.Enabled), now, now,
+	)
+	if err != nil {
+		return err
+	}
+	r.ID, _ = res.LastInsertId()
+	r.CreatedAt = fromUnix(now)
+	r.UpdatedAt = fromUnix(now)
+	return nil
+}
+
+func (s *SQLite) UpdateGuardrailRule(r *model.GuardrailRule) error {
+	now := time.Now().Unix()
+	_, err := s.db.Exec(
+		`UPDATE guardrails SET name=?, description=?, type=?, hook=?, on_failure=?, config=?, priority=?, enabled=?, updated_at=? WHERE id=?`,
+		r.Name, r.Description, string(r.Type), string(r.Hook), string(r.OnFailure), r.Config, r.Priority, boolToInt(r.Enabled), now, r.ID,
+	)
+	if err != nil {
+		return err
+	}
+	r.UpdatedAt = fromUnix(now)
+	return nil
+}
+
+func (s *SQLite) DeleteGuardrailRule(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM guardrails WHERE id = ?`, id)
+	return err
+}
+
+func (s *SQLite) CreateGuardrailEvent(e *model.GuardrailEvent) error {
+	now := time.Now().Unix()
+	res, err := s.db.Exec(
+		`INSERT INTO guardrail_events (token_id, rule_id, rule_name, rule_type, hook, verdict, action, detail, request_ip, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.TokenID, e.RuleID, e.RuleName, e.RuleType, e.Hook, boolToInt(e.Verdict), e.Action, e.Detail, e.RequestIP, now,
+	)
+	if err != nil {
+		return err
+	}
+	e.ID, _ = res.LastInsertId()
+	e.CreatedAt = fromUnix(now)
+	return nil
+}
+
+func (s *SQLite) GetGuardrailEvents(tokenID int64, limit int) ([]model.GuardrailEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(`SELECT id, token_id, rule_id, rule_name, rule_type, hook, verdict, action, detail, request_ip, created_at FROM guardrail_events WHERE token_id = ? ORDER BY created_at DESC LIMIT ?`, tokenID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.GuardrailEvent
+	for rows.Next() {
+		var e model.GuardrailEvent
+		var verdict int
+		var created int64
+		if err := rows.Scan(&e.ID, &e.TokenID, &e.RuleID, &e.RuleName, &e.RuleType, &e.Hook, &verdict, &e.Action, &e.Detail, &e.RequestIP, &created); err != nil {
+			return nil, err
+		}
+		e.Verdict = verdict == 1
+		e.CreatedAt = fromUnix(created)
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
