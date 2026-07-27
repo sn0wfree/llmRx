@@ -2,7 +2,6 @@ package webui
 
 import (
 	"bytes"
-	"html/template"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -10,28 +9,6 @@ import (
 
 	"github.com/sn0wfree/llmRx/internal/model"
 )
-
-// renderExec builds a renderer, then renders a small template
-// containing the given body via RenderPartial. Useful for
-// exercising template funcs without standing up a full page.
-func renderExec(t *testing.T, body string, data any) string {
-	t.Helper()
-	r, err := NewRenderer()
-	if err != nil {
-		t.Fatalf("NewRenderer: %v", err)
-	}
-	tpl := template.Must(template.New("t").Funcs(template.FuncMap{
-		"formatTime": func(a any) string {
-			return "stub"
-		},
-	}).Parse(body))
-	_ = tpl
-	var buf bytes.Buffer
-	if err := r.RenderPartial(&buf, body, data); err != nil {
-		t.Fatalf("RenderPartial: %v", err)
-	}
-	return buf.String()
-}
 
 func TestNewRenderer_Ok(t *testing.T) {
 	r, err := NewRenderer()
@@ -128,12 +105,6 @@ func TestRenderer_Flash_EscapesHTML(t *testing.T) {
 	}
 }
 
-// --- FormatTime / FormatTimePtr are exercised through the renderer's
-// templates. We assert indirectly by calling Flash statusBadge in
-// one of the embedded templates. For unit isolation, we re-execute
-// a minimal template that mimics the template func behavior.
-
-// --- page data wrapper ---
 func TestPageDataStruct(t *testing.T) {
 	pd := PageData{Title: "t", Active: "a", Data: 42}
 	if pd.Title != "t" || pd.Active != "a" {

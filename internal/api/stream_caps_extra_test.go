@@ -4,44 +4,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 )
 
-func TestNew_RuntimeSetFromProvided(t *testing.T) {
-	// When rt is provided, New() must use it as-is. We construct
-	// a Handler manually via New() with all integration concerns
-	// routed through stub stores (the SetProvider step is what
-	// matters here). For just testing that rt is forwarded as-is,
-	// we can use New() with non-nil rt and verify the pointer
-	// identity matches.
-	rt := runtime.New()
-	rt.SetMarkupRatio(2.5)
-	// Build handler via reflection-free approach: just verify
-	// that New() with nil rt falls back correctly. The rt=
-	// as-provided case is exercised by every api integration
-	// test that calls New(..., rt).
-	h := &Handler{rt: rt}
-	if h.rt != rt {
-		t.Fatal("expected provided rt to be used as-is")
-	}
-	if h.rt.MarkupRatio() != 2.5 {
-		t.Errorf("rt mark = %v, want 2.5", h.rt.MarkupRatio())
-	}
-}
-
-func TestNew_MarkupFallbackWhenRuntimeIsNil(t *testing.T) {
-	// New() must allocate a fresh Defaults when rt is nil and set
-	// the markup ratio from cfg. We replicate that logic locally
-	// because we cannot easily stub a 63-method store here; the
-	// fallback path is exercised through this code unit-level.
-	cfg := &config.Config{}
-	cfg.Server.MarkupRatio = 1.5
-	if cfg.Server.MarkupRatio != 1.5 {
-		t.Fatal("test setup invalid")
-	}
-}
-
+// TestStreamTimeout_NilRT verifies the nil-runtime fallback in
+// streamTimeout — the 5m default is hard-coded as a safety net so
+// that a misconfigured admin can't accidentally disable the cap.
 func TestStreamTimeout_NilRT(t *testing.T) {
 	h := &Handler{rt: nil}
 	if got := h.streamTimeout(); got != 5*time.Minute {

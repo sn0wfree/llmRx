@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"html"
 	"net/http"
 	"strings"
 	"time"
@@ -106,33 +107,14 @@ func MethodOverride(next http.Handler) http.Handler {
 	})
 }
 
+// escapeHTML returns s with the five HTML-significant characters
+// (&, <, >, ", ') replaced with their entity equivalents so the
+// result is safe to embed inside HTML element content or quoted
+// attribute values. Implementation is delegated to the standard
+// library so the escaping table stays in lock-step with the rest
+// of the Go ecosystem (and can't drift into a no-op via a typo).
 func escapeHTML(s string) string {
-	const (
-		lt   = "<"
-		gt   = ">"
-		amp  = "&"
-		quot = "\""
-		apos = "'"
-	)
-	var b []byte
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch c {
-		case '<':
-			b = append(b, lt...)
-		case '>':
-			b = append(b, gt...)
-		case '&':
-			b = append(b, amp...)
-		case '"':
-			b = append(b, quot...)
-		case '\'':
-			b = append(b, apos...)
-		default:
-			b = append(b, c)
-		}
-	}
-	return string(b)
+	return html.EscapeString(s)
 }
 
 // webAPIBridge is a placeholder for the admin JSON API. It is kept

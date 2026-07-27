@@ -2,6 +2,16 @@ package model
 
 import "time"
 
+// Status enum note: the legacy "active = 0" / "disabled = 1"
+// convention is preserved for Token and Key (matches the values
+// shipped in the v1 schema). Channel flipped the convention in
+// v2 — "enabled = 1, disabled = 2" — to match what most operators
+// expect when reading the admin UI. Don't normalise these without
+// a database migration; call sites encode the chosen convention
+// (e.g. the webui token form sends status="0" for active and
+// status="1" for disabled, while the channel form sends "1" for
+// enabled).
+
 type ChannelStatus int
 
 const (

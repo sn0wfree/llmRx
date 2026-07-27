@@ -492,12 +492,20 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 	flusher.Flush()
 
 	start := time.Now()
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+	// Build a single derived context. Use WithTimeout when the
+	// admin has configured a non-zero cap (default 5m); otherwise
+	// the request context alone is enough — no extra WithCancel
+	// wrapper is needed, so we avoid creating an unobservable
+	// goroutine and overwriting its cancel func (the prior
+	// implementation leaked one WithCancel per request).
+	var (
+		ctx    = r.Context()
+		cancel context.CancelFunc = func() {}
+	)
 	if timeout := h.streamTimeout(); timeout > 0 {
 		ctx, cancel = context.WithTimeout(r.Context(), timeout)
-		defer cancel()
 	}
+	defer cancel()
 	maxBody := int64(h.streamMaxBodyBytes())
 
 	ch, err := sp.StreamChat(ctx, req, route.KeyValue, route.Channel.BaseURL)

@@ -156,5 +156,10 @@ func isLegacyHash(stored string) bool {
 
 func verifyLegacy(stored, pw string) bool {
 	idx := strings.IndexByte(stored, ':')
-	return stored[idx+1:] == pw
+	// Constant-time comparison so an attacker can't time-side-
+	// channel the plaintext, character by character. The legacy
+	// format itself is plaintext (the "hash" is just "<salt>:<pw>")
+	// so this is the only defence available for the migration
+	// window during which pre-P6 hashes still exist.
+	return subtle.ConstantTimeCompare([]byte(stored[idx+1:]), []byte(pw)) == 1
 }

@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"time"
 
@@ -141,10 +142,18 @@ func (h *Handler) DeletePlan(w http.ResponseWriter, r *http.Request) {
 }
 
 // itoa is a tiny int64→string helper to keep this file free of
-// strconv noise (one usage above).
+// strconv noise (one usage above). On math.MinInt64, -n would
+// overflow back to math.MinInt64, so we short-circuit to a literal
+// to avoid an infinite loop. (In practice database IDs are always
+// positive, but the guard is cheap and prevents footguns if this
+// helper is ever reused elsewhere.)
 func itoa(n int64) string {
 	if n == 0 {
 		return "0"
+	}
+	const minInt64Str = "-9223372036854775808"
+	if n == math.MinInt64 {
+		return minInt64Str
 	}
 	neg := n < 0
 	if neg {
