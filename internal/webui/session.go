@@ -33,6 +33,15 @@ func newSessionToken() string {
 	return hex.EncodeToString(b)
 }
 
+// newAPIToken generates a bearer token with the OpenAI-style "sk-"
+// prefix. The prefix is conventional, not enforced by the auth
+// middleware, but it keeps the value consistent with the README and
+// most upstream providers, and makes masked display in the admin UI
+// read sensibly.
+func newAPIToken() string {
+	return "sk-" + newSessionToken()
+}
+
 func nowAdd(d time.Duration) time.Time {
 	return time.Now().Add(d).UTC()
 }

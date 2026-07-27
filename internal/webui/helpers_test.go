@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sn0wfree/llmRx/internal/logstore"
@@ -180,6 +181,24 @@ func TestNewSessionToken(t *testing.T) {
 	}
 	if len(tok1) != 64 {
 		t.Fatalf("token length: got %d, want 64", len(tok1))
+	}
+}
+
+func TestNewAPIToken(t *testing.T) {
+	tok1 := newAPIToken()
+	tok2 := newAPIToken()
+	if tok1 == "" || tok2 == "" {
+		t.Fatal("tokens should not be empty")
+	}
+	if tok1 == tok2 {
+		t.Fatal("tokens should be unique")
+	}
+	if !strings.HasPrefix(tok1, "sk-") {
+		t.Fatalf("api token missing sk- prefix: %q", tok1)
+	}
+	// "sk-" (3) + 64 hex chars = 67
+	if len(tok1) != 67 {
+		t.Fatalf("api token length: got %d, want 67", len(tok1))
 	}
 }
 

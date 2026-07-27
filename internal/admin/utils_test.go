@@ -3,6 +3,7 @@ package admin
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -36,6 +37,27 @@ func TestNewSessionToken(t *testing.T) {
 	}
 	if len(t1) != 48 {
 		t.Fatalf("token length: got %d, want 48", len(t1))
+	}
+}
+
+func TestNewAPIToken(t *testing.T) {
+	t1 := newAPIToken()
+	t2 := newAPIToken()
+	if t1 == "" || t2 == "" {
+		t.Fatal("tokens should not be empty")
+	}
+	if t1 == t2 {
+		t.Fatal("tokens should be unique")
+	}
+	if !strings.HasPrefix(t1, "sk-") {
+		t.Fatalf("api token missing sk- prefix: %q", t1)
+	}
+	if !strings.HasPrefix(t2, "sk-") {
+		t.Fatalf("api token missing sk- prefix: %q", t2)
+	}
+	// "sk-" (3) + 48 hex chars = 51
+	if len(t1) != 51 {
+		t.Fatalf("api token length: got %d, want 51", len(t1))
 	}
 }
 

@@ -102,7 +102,7 @@ func (h *Handler) TokenCreate(w http.ResponseWriter, r *http.Request) {
 		h.renderTokenFormError(w, r, nil, "表单解析失败", nil)
 		return
 	}
-	plain := newSessionToken()
+	plain := newAPIToken()
 	t := &model.Token{
 		Key:             plain,
 		Name:            strings.TrimSpace(r.FormValue("name")),

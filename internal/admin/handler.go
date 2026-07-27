@@ -609,7 +609,7 @@ func (h *Handler) CreateToken(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	plain := newSessionToken()
+	plain := newAPIToken()
 	t := &model.Token{
 		Key:             plain,
 		Name:            body.Name,
@@ -1363,6 +1363,15 @@ func newSessionToken() string {
 	b := make([]byte, 24)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// newAPIToken generates a bearer token with the OpenAI-style "sk-"
+// prefix. The prefix is conventional, not enforced by the auth
+// middleware, but it keeps the value consistent with the README and
+// most upstream providers, and makes masked display in the admin UI
+// read sensibly.
+func newAPIToken() string {
+	return "sk-" + newSessionToken()
 }
 
 func readCookie(r *http.Request, name string) string {
