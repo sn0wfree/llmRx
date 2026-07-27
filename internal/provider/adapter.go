@@ -298,6 +298,36 @@ type ModelLister interface {
 	ListModels(ctx context.Context, apiKey, baseURL string) ([]string, error)
 }
 
+// EmbeddingsRequest is the OpenAI-compatible embeddings request body.
+type EmbeddingsRequest struct {
+	Model          string   `json:"model"`
+	Input          any      `json:"input"` // string or []string
+	EncodingFormat string   `json:"encoding_format,omitempty"` // "float" (default) or "base64"
+	Dimensions     *int     `json:"dimensions,omitempty"`
+	User           string   `json:"user,omitempty"`
+}
+
+// Embedding is a single embedding vector entry.
+type Embedding struct {
+	Object    string    `json:"object"`
+	Embedding []float64 `json:"embedding"`
+	Index     int       `json:"index"`
+}
+
+// EmbeddingsResponse is the OpenAI-compatible embeddings response.
+type EmbeddingsResponse struct {
+	Object string      `json:"object"`
+	Data   []Embedding `json:"data"`
+	Model  string      `json:"model"`
+	Usage  Usage       `json:"usage"`
+}
+
+// EmbeddingsProvider is an optional capability for providers that
+// support the /v1/embeddings endpoint (e.g., OpenAI text-embedding-3).
+type EmbeddingsProvider interface {
+	Embeddings(ctx context.Context, req *EmbeddingsRequest, apiKey, baseURL string) (*EmbeddingsResponse, int, error)
+}
+
 type OpenAIProvider struct {
 	client *http.Client
 }
@@ -465,4 +495,42 @@ func (p *OpenAIProvider) ListModels(ctx context.Context, apiKey, baseURL string)
 		}
 	}
 	return models, nil
+}
+
+// Embeddings sends an embeddings request to the upstream API.
+func (p *OpenAIProvider) Embeddings(ctx context.Context, req *EmbeddingsRequest, apiKey, baseURL string) (*EmbeddingsResponse, int, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/embeddings", bytes.NewReader(body))
+	if err != nil {
+		return nil, 0, fmt.Errorf("create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, 0, fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, resp.StatusCode, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var embResp EmbeddingsResponse
+	if err := json.Unmarshal(respBody, &embResp); err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	return &embResp, resp.StatusCode, nil
 }

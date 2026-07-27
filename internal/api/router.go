@@ -138,6 +138,7 @@ func (h *Handler) SetProviders(m map[string]provider.Provider) {
 func (h *Handler) Routes() http.Handler {
 	r := chi.NewRouter()
 	r.Post("/chat/completions", h.ChatCompletions)
+	r.Post("/embeddings", h.Embeddings)
 	r.Get("/models", h.ListModels)
 	return r
 }
@@ -560,6 +561,66 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, modelsResp{Object: "list", Data: data})
+}
+
+// Embeddings handles POST /v1/embeddings — OpenAI-compatible embedding
+// vector generation. Follows the same routing and auth pipeline as
+// ChatCompletions but proxies an EmbeddingsRequest instead.
+func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
+	var req provider.EmbeddingsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error(), "invalid_body")
+		return
+	}
+
+	if req.Model == "" {
+		writeError(w, http.StatusBadRequest, "model is required", "missing_model")
+		return
+	}
+
+	// Per-token model whitelist + IP whitelist enforcement.
+	if info, ok := lookupTokenInfo(r.Context()); ok {
+		if !info.HasModelAccess(req.Model) {
+			writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
+			return
+		}
+		ip := h.clientIP(r)
+		if !info.HasIPAccess(ip) {
+			writeError(w, http.StatusForbidden, "ip not allowed for this token", "ip_not_allowed")
+			return
+		}
+	}
+
+	route, err := h.router.RouteWith(context.Background(), req.Model, router.RouteOptions{})
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "no available channel: "+err.Error(), "no_channel")
+		return
+	}
+
+	// Check that the upstream provider supports embeddings.
+	prov := h.providerFor(route.Channel.Protocol, false)
+	embProv, ok := prov.(provider.EmbeddingsProvider)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "upstream provider does not support embeddings", "embeddings_not_supported")
+		return
+	}
+
+	start := time.Now()
+	resp, statusCode, err := embProv.Embeddings(r.Context(), &req, route.KeyValue, route.Channel.BaseURL)
+	duration := time.Since(start).Milliseconds()
+
+	tokenID := lookupTokenID(r.Context(), h.store)
+
+	if err != nil {
+		h.router.RecordFailure(route.Channel.ID)
+		writeError(w, statusCode, "upstream error: "+err.Error(), "upstream_error")
+		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
+		return
+	}
+
+	h.router.RecordSuccess(route.Channel.ID)
+	h.emitLog(r.Context(), tokenID, req.Model, route, &resp.Usage, duration, statusCode, false, h.clientIP(r))
+	writeJSON(w, resp)
 }
 
 // calcCost returns the real USD cost of a single chat completion.
