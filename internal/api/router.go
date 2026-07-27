@@ -240,12 +240,20 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		h.router.RecordFailure(route.Channel.ID)
+		observability.RecordUpstreamError(req.Model, statusCode)
 		writeError(w, statusCode, "upstream error: "+err.Error(), "upstream_error")
 		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
 		return
 	}
 
 	h.router.RecordSuccess(route.Channel.ID)
+
+	// Output guardrails: check response content before returning.
+	if gr := h.checkOutputGuardrails(r, resp); gr != nil {
+		writeError(w, http.StatusUnprocessableEntity, gr.Message, "guardrail_violated")
+		return
+	}
+
 	h.emitLog(r.Context(), tokenID, req.Model, route, &resp.Usage, duration, statusCode, false, h.clientIP(r))
 	writeJSON(w, resp)
 }
@@ -290,6 +298,7 @@ func (h *Handler) handleLoadBalanceCombo(w http.ResponseWriter, r *http.Request,
 
 	if err != nil {
 		h.router.RecordFailure(route.Channel.ID)
+		observability.RecordUpstreamError(req.Model, statusCode)
 		writeError(w, statusCode, "upstream error: "+err.Error(), "upstream_error")
 		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
 		return
@@ -324,6 +333,7 @@ func (h *Handler) handleSerialCombo(w http.ResponseWriter, r *http.Request, req 
 
 		if err != nil || statusCode >= 500 {
 			h.router.RecordFailure(route.Channel.ID)
+			observability.RecordUpstreamError(modelName, statusCode)
 			lastErr = fmt.Errorf("model %s: status=%d err=%w", modelName, statusCode, err)
 			h.emitLog(r.Context(), tokenID, modelName, route, nil, duration, statusCode, true, h.clientIP(r))
 			continue
@@ -717,6 +727,7 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 		fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", err.Error())
 		flusher.Flush()
 		h.router.RecordFailure(route.Channel.ID)
+		observability.RecordUpstreamError(req.Model, http.StatusBadGateway)
 		h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, nil,
 			time.Since(start).Milliseconds(), http.StatusBadGateway, true, h.clientIP(r))
 		return
@@ -745,6 +756,7 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 			}
 			if ev.Err != nil {
 				h.router.RecordFailure(route.Channel.ID)
+				observability.RecordUpstreamError(req.Model, http.StatusBadGateway)
 				fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", ev.Err.Error())
 				flusher.Flush()
 				h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
@@ -839,4 +851,21 @@ func (h *Handler) checkInputGuardrails(r *http.Request, req *provider.ChatReques
 	}
 	tokenID := lookupTokenID(r.Context(), h.store)
 	return h.guardrails.CheckInput(r.Context(), texts, tokenID)
+}
+
+// checkOutputGuardrails evaluates output guardrail rules against the
+// response text. Returns nil if all pass, or a Result on failure.
+func (h *Handler) checkOutputGuardrails(r *http.Request, resp *provider.ChatResponse) *guardrail.Result {
+	if h.guardrails == nil || resp == nil {
+		return nil
+	}
+	var texts []string
+	for _, c := range resp.Choices {
+		texts = append(texts, c.Message.ContentString())
+	}
+	if len(texts) == 0 {
+		return nil
+	}
+	tokenID := lookupTokenID(r.Context(), h.store)
+	return h.guardrails.CheckOutput(r.Context(), strings.Join(texts, "\n"), tokenID)
 }

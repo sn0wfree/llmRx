@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/observability"
 )
 
 type contextKey string
@@ -215,6 +216,7 @@ func WithLimitsAndOptions(lookup TokenLookup, enforcer LimitEnforcer, onUnknown 
 					status = http.StatusPaymentRequired
 					code = "budget_exceeded"
 				}
+				observability.RecordRateLimitBlock(code)
 				writeAuthError(w, status, reason, code)
 				return
 			}

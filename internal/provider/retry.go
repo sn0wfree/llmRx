@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sn0wfree/llmRx/internal/observability"
 )
 
 // RetryConfig holds retry and timeout settings. Zero values use
@@ -75,6 +77,7 @@ func (r *RetryingProvider) Chat(ctx context.Context, req *ChatRequest, apiKey st
 		if attempt < r.config.MaxRetries {
 			delay := r.retryDelay(status, err, attempt)
 			if delay > 0 {
+				observability.RecordRetry(req.Model)
 				log.Printf("[retry] attempt %d/%d failed (status=%d), retrying in %v: %v",
 					attempt+1, r.config.MaxRetries, status, delay, err)
 				select {
