@@ -149,6 +149,10 @@ type User struct {
 	Username     string     `json:"username" gorm:"uniqueIndex;size:64"`
 	PasswordHash string     `json:"-" gorm:"size:256"`
 	Role         UserRole   `json:"role"`
+	// Permissions overrides the role's default permission set. JSON
+	// array of strings: "+perm" to grant, "-perm" to revoke. Empty
+	// means "use role defaults only".
+	Permissions  string     `json:"permissions,omitempty" gorm:"type:text"`
 	Status       int        `json:"status"`
 	SessionToken string     `json:"-" gorm:"size:128"`
 	SessionExp   *time.Time `json:"session_expires_at,omitempty"`

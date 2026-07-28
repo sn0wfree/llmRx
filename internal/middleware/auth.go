@@ -9,6 +9,7 @@ import (
 
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/observability"
+	"github.com/sn0wfree/llmRx/internal/rbac"
 )
 
 type contextKey string
@@ -288,6 +289,49 @@ func RequireRole(min model.UserRole) func(http.Handler) http.Handler {
 			}
 			next.ServeHTTP(w, r)
 		})
+	}
+}
+
+// RequirePermission gates a route by a fine-grained RBAC permission.
+// Like RequireRole, it requires a *model.User under UserKey (populated
+// by AdminOnly). The user's effective permission set is computed from
+// their role + any explicit per-user overrides.
+//
+// Map a User.Role to its rbac.Role name:
+//
+//	RoleUser  -> rbac.RoleViewer
+//	RoleAdmin -> rbac.RoleAdmin
+//	RoleRoot  -> rbac.RoleRoot
+//
+// (Operator role is reserved for the "operator" UserRole tier if/when
+// the gateway exposes one; for now we map RoleUser->viewer.)
+func RequirePermission(perm rbac.Permission) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			u, _ := r.Context().Value(UserKey).(*model.User)
+			if u == nil {
+				writeAuthError(w, http.StatusUnauthorized, "no session", "missing_session")
+				return
+			}
+			role := mapRole(u.Role)
+			perms := rbac.Resolve(role, u.Permissions)
+			if !rbac.Allow(perms, perm) {
+				writeAuthError(w, http.StatusForbidden, "permission denied", "permission_denied")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func mapRole(r model.UserRole) rbac.Role {
+	switch r {
+	case model.RoleRoot:
+		return rbac.RoleRoot
+	case model.RoleAdmin:
+		return rbac.RoleAdmin
+	default:
+		return rbac.RoleViewer
 	}
 }
 
