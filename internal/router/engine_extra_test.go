@@ -82,6 +82,8 @@ func TestRouter_SetStrategyAffectsRouting(t *testing.T) {
 	ch2.Priority = 10
 	app.Store.UpdateChannel(ch1)
 	app.Store.UpdateChannel(ch2)
+	// Priorities changed — refresh the static router snapshot.
+	app.ReloadRouter()
 
 	app.Engine.SetStrategy(model.StrategyCheapest)
 	r, _ := app.Engine.Route(context.Background(), "m")

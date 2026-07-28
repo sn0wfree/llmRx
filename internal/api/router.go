@@ -564,22 +564,19 @@ func (h *Handler) emitLog(ctx context.Context, tokenID int64, modelName string, 
 
 // billedCost returns the per-token / per-plan-adjusted billed cost.
 // Server-wide markup is applied first; if the token has a Plan with
-// a non-1.0 markup_ratio, it scales on top. Lookup is best-effort;
-// a failed plan fetch falls back to the channel markup alone.
+// a non-1.0 markup_ratio, it scales on top. The per-plan markup is
+// cached in TokenInfo.PlanMarkupRatio (populated by
+// tokencache.Reload), so the hot path is allocation-free.
 func (h *Handler) billedCost(ctx context.Context, real float64) float64 {
 	base := real * h.Markup()
-	if h.store == nil {
+	if ctx == nil {
 		return base
 	}
-	planID := planIDFromContext(ctx)
-	if planID == 0 {
+	info, ok := lookupTokenInfo(ctx)
+	if !ok || info.PlanMarkupRatio <= 0 {
 		return base
 	}
-	plan, err := h.store.GetPlan(planID)
-	if err != nil || plan == nil || plan.MarkupRatio <= 0 {
-		return base
-	}
-	return base * plan.MarkupRatio
+	return base * info.PlanMarkupRatio
 }
 
 // planIDFromContext extracts TokenInfo.PlanID from a request context.

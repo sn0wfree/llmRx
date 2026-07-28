@@ -76,10 +76,12 @@ func (e *RouterEngine) IntentBackend() string {
 }
 
 // ReloadChannel picks up new circuit-breaker settings after the
-// admin updates a channel.
+// admin updates a channel. Also refreshes the static L1 channel
+// snapshot so status changes (enable/disable) take effect.
 func (e *RouterEngine) ReloadChannel(channelID int64) {
 	e.breaker.reload(channelID)
 	e.thompson.Reset(channelID)
+	e.static.Reload()
 }
 
 // ReloadAllChannels walks every known channel ID and clears the
@@ -89,6 +91,7 @@ func (e *RouterEngine) ReloadChannel(channelID int64) {
 func (e *RouterEngine) ReloadAllChannels() {
 	e.breaker.reloadAll()
 	e.thompson.ResetAll()
+	e.static.Reload()
 }
 
 // SetStrategy swaps the cost router's strategy at runtime. The

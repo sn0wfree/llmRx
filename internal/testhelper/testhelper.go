@@ -230,7 +230,18 @@ func (a *App) AddChannelWithPrice(name, providerName, baseURL string, models []s
 	if err := a.Pool.LoadFromStore(a.Store); err != nil {
 		a.T.Fatalf("AddChannel reload pool: %v", err)
 	}
+	// Refresh the static router cache so the new channel is visible
+	// to L1 Match() / MatchAny() without a full ReloadAllChannels().
+	a.Engine.ReloadChannel(ch.ID)
 	return ch
+}
+
+// ReloadRouter refreshes the static router snapshot + breaker +
+// Thompson state. Call after mutating channels/tokens/keys in tests
+// if AddChannel helpers aren't appropriate.
+func (a *App) ReloadRouter() {
+	a.T.Helper()
+	a.Engine.ReloadAllChannels()
 }
 
 // AddToken creates an active API token.

@@ -105,7 +105,7 @@ func (c *Cache) Reload() error {
 	// the previous cache is preserved. Otherwise a transient DB
 	// blip would silently downgrade bound tokens to "unlimited"
 	// and let un-budgeted spend through.
-	budgets := map[int64][2]float64{}
+	budgets := map[int64][3]float64{}
 	referenced := map[int64]struct{}{}
 	for _, info := range next {
 		if info.PlanID == 0 {
@@ -124,12 +124,15 @@ func (c *Cache) Reload() error {
 		if p == nil {
 			return fmt.Errorf("plan %d not found (referenced by an active token)", pid)
 		}
-		budgets[pid] = [2]float64{p.BudgetUSD, p.UsedUSD}
+		// Cache [budget, used, markup] so the chat handler can compute
+		// billedCost without a per-request store.GetPlan() roundtrip.
+		budgets[pid] = [3]float64{p.BudgetUSD, p.UsedUSD, p.MarkupRatio}
 	}
 	for k, info := range next {
 		if b, ok := budgets[info.PlanID]; ok {
 			info.PlanBudgetUSD = b[0]
 			info.PlanUsedUSD = b[1]
+			info.PlanMarkupRatio = b[2]
 			next[k] = info
 		}
 	}

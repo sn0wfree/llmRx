@@ -196,8 +196,10 @@ func TestBilledCost_PlanWithZeroMarkup(t *testing.T) {
 	if err := s.CreatePlan(p); err != nil {
 		t.Fatalf("CreatePlan: %v", err)
 	}
+	// TokenInfo.PlanMarkupRatio is loaded by tokencache.Reload from
+	// the plan; here we simulate that path with the cached value.
 	ctx := context.WithValue(context.Background(), middleware.TokenInfoKey,
-		middleware.TokenInfo{PlanID: p.ID})
+		middleware.TokenInfo{PlanID: p.ID, PlanMarkupRatio: p.MarkupRatio})
 	h := &Handler{rt: runtime.New(), store: s}
 	// MarkupRatio <= 0 → return base (not multiplied by zero)
 	if got := h.billedCost(ctx, 2.0); got != 2.0 {
@@ -212,7 +214,7 @@ func TestBilledCost_PlanWithValidMarkup(t *testing.T) {
 		t.Fatalf("CreatePlan: %v", err)
 	}
 	ctx := context.WithValue(context.Background(), middleware.TokenInfoKey,
-		middleware.TokenInfo{PlanID: p.ID})
+		middleware.TokenInfo{PlanID: p.ID, PlanMarkupRatio: p.MarkupRatio})
 	h := &Handler{rt: runtime.New(), store: s}
 	// 1.0 * markup(1.0) * plan.MarkupRatio(2.5) = 2.5
 	if got := h.billedCost(ctx, 1.0); got != 2.5 {

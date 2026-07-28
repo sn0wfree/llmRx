@@ -65,6 +65,11 @@ type TokenInfo struct {
 	ExpiresAt       time.Time
 	PlanBudgetUSD   float64
 	PlanUsedUSD     float64
+	// PlanMarkupRatio is loaded alongside the budget during cache
+	// reload so billedCost() doesn't hit the store on every request.
+	// 0 (unset) means "no markup" — the cached value falls through to
+	// the same path as a missing plan.
+	PlanMarkupRatio float64
 	// ComboModels maps virtual model names to their combo definitions.
 	// Populated by tokencache.Reload() from the token_combo_models
 	// table. If a request's model field matches a key here, the
