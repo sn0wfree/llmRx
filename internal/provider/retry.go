@@ -174,6 +174,15 @@ func (r *RetryingProvider) embeddingsWithTimeout(ctx context.Context, req *Embed
 	return ep.Embeddings(ctx, req, apiKey, baseURL)
 }
 
+// ListModels delegates to the inner provider if it implements ModelLister.
+func (r *RetryingProvider) ListModels(ctx context.Context, apiKey, baseURL string) ([]string, error) {
+	ml, ok := r.inner.(ModelLister)
+	if !ok {
+		return nil, fmt.Errorf("model listing not supported by inner provider")
+	}
+	return ml.ListModels(ctx, apiKey, baseURL)
+}
+
 // retryDelay calculates the delay before the next retry attempt.
 // Returns 0 for non-retryable errors. For 429, attempts to read
 // Retry-After header from the error message.

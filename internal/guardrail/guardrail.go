@@ -54,6 +54,10 @@ func (g *GuardrailEngine) CheckInput(ctx context.Context, messages []string, tok
 		passed := evaluateRule(rule, text)
 		if !passed {
 			g.recordEvent(tokenID, rule, false, "input")
+			if rule.OnFailure == model.GuardrailActionFlag {
+				log.Printf("guardrail: rule %q flagged input (not blocked)", rule.Name)
+				continue
+			}
 			return &Result{
 				Passed:  false,
 				Message: fmt.Sprintf("guardrail %q blocked request", rule.Name),
@@ -82,6 +86,10 @@ func (g *GuardrailEngine) CheckOutput(ctx context.Context, response string, toke
 		passed := evaluateRule(rule, response)
 		if !passed {
 			g.recordEvent(tokenID, rule, false, "output")
+			if rule.OnFailure == model.GuardrailActionFlag {
+				log.Printf("guardrail: rule %q flagged output (not blocked)", rule.Name)
+				continue
+			}
 			return &Result{
 				Passed:  false,
 				Message: fmt.Sprintf("guardrail %q blocked response", rule.Name),

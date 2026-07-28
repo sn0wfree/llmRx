@@ -623,6 +623,7 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		h.router.RecordFailure(route.Channel.ID)
+		observability.RecordUpstreamError(req.Model, statusCode)
 		writeError(w, statusCode, "upstream error: "+err.Error(), "upstream_error")
 		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
 		return
@@ -736,6 +737,7 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 	var usage *provider.Usage
 	flushed := 0
 	bytesSent := int64(0)
+	var contentBuilder strings.Builder
 	for {
 		select {
 		case <-ctx.Done():
@@ -766,6 +768,10 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 			if ev.Chunk.Usage != nil {
 				usage = ev.Chunk.Usage
 			}
+			// Accumulate delta content for output guardrail check.
+			for _, c := range ev.Chunk.Choices {
+				contentBuilder.WriteString(c.Delta.ContentString())
+			}
 			payload, err := json.Marshal(ev.Chunk)
 			if err != nil {
 				continue
@@ -794,6 +800,16 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 done:
+	if h.guardrails != nil {
+		tokenID := lookupTokenID(r.Context(), h.store)
+		if gr := h.guardrails.CheckOutput(r.Context(), contentBuilder.String(), tokenID); gr != nil {
+			fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", gr.Message)
+			flusher.Flush()
+			h.emitLog(r.Context(), tokenID, req.Model, route, usage,
+				time.Since(start).Milliseconds(), http.StatusOK, true, h.clientIP(r))
+			return
+		}
+	}
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
 	h.router.RecordSuccess(route.Channel.ID)
