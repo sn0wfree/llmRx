@@ -349,16 +349,28 @@ func TestTokens_EncryptedAtRest(t *testing.T) {
 	}
 
 	var storedPlain, storedCipher string
-	if err := s.db.QueryRow(`SELECT key, key_ciphertext FROM tokens WHERE key=?`, "").Scan(&storedPlain, &storedCipher); err != nil {
-		// token row exists but plaintext column was cleared,
-		// so SELECT WHERE key='' should match it.
+	// In encrypted mode the key column holds a stable placeholder
+	// ("__enc_<id>") rather than the empty string — see the comment
+	// in CreateToken/UpdateToken. The placeholder is what the
+	// UNIQUE constraint enforces; the actual bearer plaintext
+	// lives only in key_ciphertext.
+	if err := s.db.QueryRow(`SELECT key, key_ciphertext FROM tokens WHERE id=1`).Scan(&storedPlain, &storedCipher); err != nil {
 		t.Fatalf("scan: %v", err)
 	}
-	if storedPlain != "" {
-		t.Errorf("plaintext column should be empty after encryption, got %q", storedPlain)
+	if storedPlain != "__enc_1" {
+		t.Errorf("key column should hold __enc_1 placeholder, got %q", storedPlain)
 	}
 	if storedCipher == "" {
 		t.Fatal("ciphertext column should be populated")
+	}
+	// And there should be NO row in tokens with an empty key column
+	// (would-be duplicates would all collide on UNIQUE).
+	var empties int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM tokens WHERE key=''`).Scan(&empties); err != nil {
+		t.Fatalf("count empties: %v", err)
+	}
+	if empties != 0 {
+		t.Errorf("encrypted-mode rows must not store empty key strings, got %d", empties)
 	}
 
 	// GetToken must decrypt back to the original.

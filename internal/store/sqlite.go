@@ -785,7 +785,16 @@ func (s *SQLite) CreateToken(t *model.Token) error {
 			return fmt.Errorf("encrypt token: %w", err)
 		}
 		cipher = ct
-		storedPlain = ""
+		// key column has a UNIQUE constraint but in encrypted mode
+		// every row would store the empty string, violating it after
+		// the second insert. Insert a sentinel placeholder now and
+		// swap it for the row id once SQLite has generated one —
+		// the placeholder is unique within the table so the UNIQUE
+		// check passes, and the post-insert UPDATE uses the same id
+		// to produce a stable, collision-free value (e.g.
+		// "__enc_3" for token id 3). Legacy plaintext rows are
+		// untouched and continue to dedup on the real key.
+		storedPlain = "__enc_pending__"
 	}
 	res, err := s.db.Exec(
 		`INSERT INTO tokens(plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at)
@@ -799,6 +808,14 @@ func (s *SQLite) CreateToken(t *model.Token) error {
 	}
 	id, _ := res.LastInsertId()
 	t.ID = id
+	if s.Secrets != nil {
+		// Replace the sentinel with "__enc_<id>" so it stays unique
+		// and gives a deterministic lookup if anyone wants to identify
+		// the row from its key column. scanTokenRow never reads the
+		// key column when ciphertext is present, so this is purely a
+		// UNIQUE-constraint workaround.
+		_, _ = s.db.Exec(`UPDATE tokens SET key=? WHERE id=?`, fmt.Sprintf("__enc_%d", id), id)
+	}
 	return nil
 }
 
@@ -813,7 +830,12 @@ func (s *SQLite) UpdateToken(t *model.Token) error {
 			return fmt.Errorf("encrypt token: %w", err)
 		}
 		cipher = ct
-		storedPlain = ""
+		// Same UNIQUE-constraint workaround as CreateToken: store
+		// a stable placeholder derived from the row id (which is
+		// already known for an UPDATE) rather than the empty
+		// string. Plaintext-mode updates leave storedPlain == plain
+		// unchanged and continue to dedup on the real key.
+		storedPlain = fmt.Sprintf("__enc_%d", t.ID)
 	}
 	res, err := s.db.Exec(
 		`UPDATE tokens SET plan_id=?, key=?, key_ciphertext=?, name=?, status=?, rpm=?, tpm=?, used_usd=?, models_whitelist=?, ip_whitelist=?, expires_at=? WHERE id=?`,

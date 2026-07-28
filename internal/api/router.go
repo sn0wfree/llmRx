@@ -213,6 +213,15 @@ func errorTypeFor(status int) string {
 }
 
 func writeError(w http.ResponseWriter, status int, msg, code string) {
+	// Defensive: a status of 0 means the upstream provider never
+	// produced an HTTP response (DNS failure, connection refused,
+	// TLS handshake error). The net/http package rejects
+	// WriteHeader(0) with "invalid WriteHeader code" — which
+	// otherwise surfaces as a panic recovered by chi middleware
+	// and shows up to the client as a 0-byte 200 response.
+	if status <= 0 {
+		status = http.StatusBadGateway
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	resp := errorResp{}

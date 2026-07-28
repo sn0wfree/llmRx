@@ -1,6 +1,9 @@
 package api
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/sn0wfree/llmRx/internal/broker"
@@ -142,5 +145,53 @@ func TestPromptTokens_Nil(t *testing.T) {
 func TestCompletionTokens_Nil(t *testing.T) {
 	if got := completionTokens(nil); got != 0 {
 		t.Fatalf("completionTokens(nil): got %d", got)
+	}
+}
+
+// TestWriteError_ZeroStatus covers the panic fix for
+// "invalid WriteHeader code 0" — when a provider returns (resp, 0, err)
+// because the upstream HTTP call never produced a response
+// (DNS failure, TLS handshake, context deadline), the chat
+// handler used to forward status=0 to writeError which then
+// panicked in net/http. Now writeError coerces status <= 0 to
+// 502 Bad Gateway.
+func TestWriteError_ZeroStatus(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeError(w, 0, "upstream blew up", "upstream_error")
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status: got %d, want 502", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("content-type: got %q", ct)
+	}
+	var got errorResp
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if got.Error.Code != "upstream_error" {
+		t.Fatalf("code: got %q", got.Error.Code)
+	}
+	if got.Error.Message != "upstream blew up" {
+		t.Fatalf("message: got %q", got.Error.Message)
+	}
+	if got.Error.Type != "api_error" {
+		t.Fatalf("type: got %q (should be api_error for 5xx)", got.Error.Type)
+	}
+}
+
+func TestWriteError_NormalStatus(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeError(w, http.StatusBadRequest, "bad", "bad_request")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400", w.Code)
+	}
+}
+
+func TestWriteError_NegativeStatus(t *testing.T) {
+	// Defensive: even negative statuses should not panic.
+	w := httptest.NewRecorder()
+	writeError(w, -1, "weird", "weird")
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status: got %d, want 502", w.Code)
 	}
 }
