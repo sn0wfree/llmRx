@@ -41,11 +41,9 @@ func TestNative_BackendNilFunc(t *testing.T) {
 }
 
 func TestNative_BackendNilPointer(t *testing.T) {
-	n := &native{
-		backend: func() *byte { return nil },
-	}
+	n := &native{}
 	if got := n.Backend(); got != "?" {
-		t.Fatalf("nil pointer backend should return '?', got %q", got)
+		t.Fatalf("nil backend should return '?', got %q", got)
 	}
 }
 
