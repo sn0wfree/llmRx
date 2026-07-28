@@ -183,6 +183,42 @@ func (r *RetryingProvider) ListModels(ctx context.Context, apiKey, baseURL strin
 	return ml.ListModels(ctx, apiKey, baseURL)
 }
 
+// Images delegates to the inner provider if it implements ImagesProvider.
+func (r *RetryingProvider) Images(ctx context.Context, req *ImagesRequest, apiKey, baseURL string) (*ImagesResponse, int, error) {
+	ip, ok := r.inner.(ImagesProvider)
+	if !ok {
+		return nil, 0, fmt.Errorf("images not supported by inner provider")
+	}
+	return ip.Images(ctx, req, apiKey, baseURL)
+}
+
+// Speech delegates to the inner provider if it implements AudioProvider.
+func (r *RetryingProvider) Speech(ctx context.Context, req *AudioSpeechRequest, apiKey, baseURL string) ([]byte, int, error) {
+	ap, ok := r.inner.(AudioProvider)
+	if !ok {
+		return nil, 0, fmt.Errorf("audio not supported by inner provider")
+	}
+	return ap.Speech(ctx, req, apiKey, baseURL)
+}
+
+// Transcription delegates to the inner provider if it implements AudioProvider.
+func (r *RetryingProvider) Transcription(ctx context.Context, req *AudioTranscriptionRequest, audioData []byte, audioMime, apiKey, baseURL string) (*AudioTranscriptionResponse, int, error) {
+	ap, ok := r.inner.(AudioProvider)
+	if !ok {
+		return nil, 0, fmt.Errorf("audio not supported by inner provider")
+	}
+	return ap.Transcription(ctx, req, audioData, audioMime, apiKey, baseURL)
+}
+
+// Rerank delegates to the inner provider if it implements RerankProvider.
+func (r *RetryingProvider) Rerank(ctx context.Context, req *RerankRequest, apiKey, baseURL string) (*RerankResponse, int, error) {
+	rp, ok := r.inner.(RerankProvider)
+	if !ok {
+		return nil, 0, fmt.Errorf("rerank not supported by inner provider")
+	}
+	return rp.Rerank(ctx, req, apiKey, baseURL)
+}
+
 // retryDelay calculates the delay before the next retry attempt.
 // Returns 0 for non-retryable errors. For 429, attempts to read
 // Retry-After header from the error message.

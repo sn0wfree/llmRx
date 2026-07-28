@@ -436,6 +436,48 @@ func (m *MockProvider) Embeddings(ctx context.Context, req *provider.EmbeddingsR
 	}, 200, nil
 }
 
+// Images implements ImagesProvider.
+func (m *MockProvider) Images(ctx context.Context, req *provider.ImagesRequest, apiKey, baseURL string) (*provider.ImagesResponse, int, error) {
+	return &provider.ImagesResponse{
+		Created: 1700000000,
+		Data: []provider.ImageObject{
+			{URL: "https://example.com/image.png", RevisedPrompt: req.Prompt},
+		},
+	}, 200, nil
+}
+
+// Speech implements AudioProvider Speech.
+func (m *MockProvider) Speech(ctx context.Context, req *provider.AudioSpeechRequest, apiKey, baseURL string) ([]byte, int, error) {
+	// Return a tiny fake MP3 byte payload.
+	return []byte("FAKE-MP3-DATA-" + req.Input), 200, nil
+}
+
+// Transcription implements AudioProvider Transcription.
+func (m *MockProvider) Transcription(ctx context.Context, req *provider.AudioTranscriptionRequest, audioData []byte, audioMime, apiKey, baseURL string) (*provider.AudioTranscriptionResponse, int, error) {
+	return &provider.AudioTranscriptionResponse{
+		Text:     "transcribed: " + string(audioData),
+		Language: req.Language,
+		Duration: float64(len(audioData)) / 16000.0,
+	}, 200, nil
+}
+
+// Rerank implements RerankProvider.
+func (m *MockProvider) Rerank(ctx context.Context, req *provider.RerankRequest, apiKey, baseURL string) (*provider.RerankResponse, int, error) {
+	results := make([]provider.RerankResult, len(req.Documents))
+	for i := range req.Documents {
+		results[i] = provider.RerankResult{
+			Index:          i,
+			RelevanceScore: 1.0 - float64(i)*0.1,
+			Document:       &req.Documents[i],
+		}
+	}
+	return &provider.RerankResponse{
+		Model:   req.Model,
+		Results: results,
+		Usage:   &provider.Usage{PromptTokens: len(req.Query) + len(req.Documents)*10, TotalTokens: len(req.Query) + len(req.Documents)*10},
+	}, 200, nil
+}
+
 func httpStatusAt(s []int, idx, def int) int {
 	if idx < len(s) {
 		return s[idx]

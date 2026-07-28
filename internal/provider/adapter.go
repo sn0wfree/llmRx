@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
@@ -328,6 +329,110 @@ type EmbeddingsProvider interface {
 	Embeddings(ctx context.Context, req *EmbeddingsRequest, apiKey, baseURL string) (*EmbeddingsResponse, int, error)
 }
 
+// ---------- /v1/images/generations ----------
+
+// ImagesRequest is the OpenAI-compatible image generation request.
+type ImagesRequest struct {
+	Model          string `json:"model"`
+	Prompt         string `json:"prompt"`
+	N              *int   `json:"n,omitempty"`
+	Size           string `json:"size,omitempty"`            // "1024x1024" etc.
+	Quality        string `json:"quality,omitempty"`         // "standard" / "hd"
+	Style          string `json:"style,omitempty"`           // "vivid" / "natural"
+	ResponseFormat string `json:"response_format,omitempty"` // "url" / "b64_json"
+	User           string `json:"user,omitempty"`
+}
+
+// ImageObject is a single generated image (URL or b64).
+type ImageObject struct {
+	B64JSON       string `json:"b64_json,omitempty"`
+	URL           string `json:"url,omitempty"`
+	RevisedPrompt string `json:"revised_prompt,omitempty"`
+}
+
+// ImagesResponse is the OpenAI-compatible image generation response.
+type ImagesResponse struct {
+	Created int64        `json:"created"`
+	Data    []ImageObject `json:"data"`
+	Usage   *Usage       `json:"usage,omitempty"`
+}
+
+// ImagesProvider is an optional capability for providers that support
+// image generation (OpenAI DALL-E, Stability, etc.).
+type ImagesProvider interface {
+	Images(ctx context.Context, req *ImagesRequest, apiKey, baseURL string) (*ImagesResponse, int, error)
+}
+
+// ---------- /v1/audio/speech & /v1/audio/transcriptions ----------
+
+// AudioSpeechRequest is the OpenAI-compatible TTS request.
+type AudioSpeechRequest struct {
+	Model          string  `json:"model"` // "tts-1", "tts-1-hd"
+	Input          string  `json:"input"`
+	Voice          string  `json:"voice"` // "alloy", "echo", "fable", "onyx", "nova", "shimmer"
+	ResponseFormat string  `json:"response_format,omitempty"` // "mp3", "opus", "aac", "flac"
+	Speed          float64 `json:"speed,omitempty"`
+}
+
+// AudioTranscriptionRequest is the OpenAI-compatible STT request.
+// File content is sent as multipart/form-data in the HTTP layer;
+// this struct captures the JSON metadata fields.
+type AudioTranscriptionRequest struct {
+	Model    string `json:"model"`
+	Language string `json:"language,omitempty"`
+	Prompt   string `json:"prompt,omitempty"`
+	Format   string `json:"format,omitempty"` // "json", "text", "srt", "verbose_json"
+}
+
+// AudioTranscriptionResponse is the STT response.
+type AudioTranscriptionResponse struct {
+	Text     string  `json:"text"`
+	Language string  `json:"language,omitempty"`
+	Duration float64 `json:"duration,omitempty"`
+}
+
+// AudioProvider is an optional capability for providers that support
+// TTS and/or STT (OpenAI Audio, Google Speech, etc.).
+type AudioProvider interface {
+	// Speech returns the raw audio bytes (encoded in req.ResponseFormat).
+	Speech(ctx context.Context, req *AudioSpeechRequest, apiKey, baseURL string) ([]byte, int, error)
+	// Transcription sends the audio bytes (encoded in audioMime) and
+	// returns the recognized text.
+	Transcription(ctx context.Context, req *AudioTranscriptionRequest, audioData []byte, audioMime, apiKey, baseURL string) (*AudioTranscriptionResponse, int, error)
+}
+
+// ---------- /v1/rerank ----------
+
+// RerankRequest matches the Cohere-compatible /v1/rerank contract
+// (also used by Jina, BGE-reranker, etc.).
+type RerankRequest struct {
+	Model           string   `json:"model"`
+	Query           string   `json:"query"`
+	Documents       []string `json:"documents"`
+	TopN            *int     `json:"top_n,omitempty"`
+	ReturnDocuments *bool    `json:"return_documents,omitempty"`
+}
+
+// RerankResult is one scored document.
+type RerankResult struct {
+	Index          int     `json:"index"`
+	RelevanceScore float64 `json:"relevance_score"`
+	Document       *string `json:"document,omitempty"`
+}
+
+// RerankResponse is the rerank response.
+type RerankResponse struct {
+	Model   string         `json:"model"`
+	Results []RerankResult `json:"results"`
+	Usage   *Usage         `json:"usage,omitempty"`
+}
+
+// RerankProvider is an optional capability for providers that support
+// document reranking (Cohere, Jina, BGE, etc.).
+type RerankProvider interface {
+	Rerank(ctx context.Context, req *RerankRequest, apiKey, baseURL string) (*RerankResponse, int, error)
+}
+
 type OpenAIProvider struct {
 	client *http.Client
 }
@@ -533,4 +638,165 @@ func (p *OpenAIProvider) Embeddings(ctx context.Context, req *EmbeddingsRequest,
 	}
 
 	return &embResp, resp.StatusCode, nil
+}
+
+// Images POSTs to /images/generations and returns the parsed body.
+func (p *OpenAIProvider) Images(ctx context.Context, req *ImagesRequest, apiKey, baseURL string) (*ImagesResponse, int, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("marshal request: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/images/generations", bytes.NewReader(body))
+	if err != nil {
+		return nil, 0, fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, 0, fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, resp.StatusCode, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(respBody))
+	}
+	var imgResp ImagesResponse
+	if err := json.Unmarshal(respBody, &imgResp); err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("unmarshal response: %w", err)
+	}
+	return &imgResp, resp.StatusCode, nil
+}
+
+// Speech POSTs to /audio/speech and returns the raw audio bytes.
+func (p *OpenAIProvider) Speech(ctx context.Context, req *AudioSpeechRequest, apiKey, baseURL string) ([]byte, int, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("marshal request: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/audio/speech", bytes.NewReader(body))
+	if err != nil {
+		return nil, 0, fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Accept", "audio/mpeg")
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, 0, fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+	audio, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, resp.StatusCode, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(audio))
+	}
+	return audio, resp.StatusCode, nil
+}
+
+// Transcription POSTs multipart/form-data with the audio file to
+// /audio/transcriptions. The model/language/format fields are sent as
+// form fields; the audio bytes are sent as the 'file' field.
+func (p *OpenAIProvider) Transcription(ctx context.Context, req *AudioTranscriptionRequest, audioData []byte, audioMime, apiKey, baseURL string) (*AudioTranscriptionResponse, int, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if err := mw.WriteField("model", req.Model); err != nil {
+		return nil, 0, err
+	}
+	if req.Language != "" {
+		_ = mw.WriteField("language", req.Language)
+	}
+	if req.Prompt != "" {
+		_ = mw.WriteField("prompt", req.Prompt)
+	}
+	if req.Format != "" {
+		_ = mw.WriteField("response_format", req.Format)
+	}
+	fw, err := mw.CreateFormFile("file", "audio."+extFromMime(audioMime))
+	if err != nil {
+		return nil, 0, fmt.Errorf("create form file: %w", err)
+	}
+	if _, err := fw.Write(audioData); err != nil {
+		return nil, 0, fmt.Errorf("write audio: %w", err)
+	}
+	if err := mw.Close(); err != nil {
+		return nil, 0, fmt.Errorf("close multipart: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/audio/transcriptions", &buf)
+	if err != nil {
+		return nil, 0, fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", mw.FormDataContentType())
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, 0, fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, resp.StatusCode, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(respBody))
+	}
+	var tr AudioTranscriptionResponse
+	if err := json.Unmarshal(respBody, &tr); err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("unmarshal response: %w", err)
+	}
+	return &tr, resp.StatusCode, nil
+}
+
+// Rerank POSTs to /rerank and returns the parsed body.
+func (p *OpenAIProvider) Rerank(ctx context.Context, req *RerankRequest, apiKey, baseURL string) (*RerankResponse, int, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("marshal request: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/rerank", bytes.NewReader(body))
+	if err != nil {
+		return nil, 0, fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, 0, fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, resp.StatusCode, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(respBody))
+	}
+	var rr RerankResponse
+	if err := json.Unmarshal(respBody, &rr); err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("unmarshal response: %w", err)
+	}
+	return &rr, resp.StatusCode, nil
+}
+
+func extFromMime(mime string) string {
+	switch mime {
+	case "audio/mpeg", "audio/mp3":
+		return "mp3"
+	case "audio/wav", "audio/x-wav":
+		return "wav"
+	case "audio/ogg":
+		return "ogg"
+	case "audio/webm":
+		return "webm"
+	case "audio/flac":
+		return "flac"
+	case "audio/m4a", "audio/x-m4a", "audio/mp4":
+		return "m4a"
+	}
+	return "bin"
 }
