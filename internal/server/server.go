@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -16,6 +16,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/api"
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/config"
+	"github.com/sn0wfree/llmRx/internal/logging"
 	authmw "github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
@@ -27,6 +28,13 @@ import (
 	"github.com/sn0wfree/llmRx/internal/observability"
 	"github.com/sn0wfree/llmRx/internal/webui"
 )
+
+// fatalf is the structured-replacement for log.Fatalf in startup
+// paths that exit the process. Mirrors cmd/gateway/main.go.
+func fatalf(msg string, fields ...logging.Field) {
+	logging.Error(msg, fields...)
+	os.Exit(1)
+}
 
 type Server struct {
 	cfg        *config.Config
@@ -110,7 +118,7 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	})
 	webUI, err := webui.New(s.store, webAPIBridge, s.cfgPath)
 	if err != nil {
-		log.Fatalf("webui: %v", err)
+		fatalf("webui init failed", logging.F("error", err.Error()))
 	}
 	s.engine.Mount("/admin", webUI.Routes())
 	s.engine.Mount("/admin/api/v1", adminHandler.Routes())
@@ -138,9 +146,9 @@ func (s *Server) Start(ctx context.Context) error {
 		IdleTimeout:       120 * time.Second,
 	}
 	if s.tokens != nil {
-		log.Printf("listening on %s (tokens=%d)", addr, s.tokens.Size())
+		logging.Info("listening", logging.F("addr", addr), logging.F("tokens", s.tokens.Size()))
 	} else {
-		log.Printf("listening on %s", addr)
+		logging.Info("listening", logging.F("addr", addr))
 	}
 
 	errCh := make(chan error, 1)
@@ -156,13 +164,15 @@ func (s *Server) Start(ctx context.Context) error {
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
-		log.Printf("server: shutdown signal received, draining (timeout=25s)...")
+		logging.Info("server shutdown signal received, draining",
+		logging.F("timeout_s", 25),
+	)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
 		if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
 			return fmt.Errorf("graceful shutdown: %w", err)
 		}
-		log.Printf("server: stopped cleanly")
+		logging.Info("server stopped cleanly")
 		return nil
 	}
 }
@@ -206,9 +216,9 @@ func (s *Server) StartMetricsServer(ctx context.Context) func() {
 	}
 
 	go func() {
-		log.Printf("metrics: listening on %s", addr)
+		logging.Info("metrics listening", logging.F("addr", addr))
 		if err := ms.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("metrics: %v", err)
+			logging.Warn("metrics server error", logging.F("error", err.Error()))
 		}
 	}()
 

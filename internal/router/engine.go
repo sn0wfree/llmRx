@@ -2,10 +2,10 @@ package router
 
 import (
 	"context"
-	"log"
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/intent"
+	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/router/thompson"
@@ -230,7 +230,12 @@ func (e *RouterEngine) RouteWith(ctx context.Context, modelName string, opts Rou
 		Intent:    intn,
 	}
 
-	log.Printf("[router] %s → %s (%v)", modelName, ch.Name, time.Since(start))
+	logging.Debug("route",
+		logging.F("model", modelName),
+		logging.F("channel", ch.Name),
+		logging.F("path", joinLog(logParts)),
+		logging.F("duration_ms", time.Since(start).Milliseconds()),
+	)
 	return result, nil
 }
 

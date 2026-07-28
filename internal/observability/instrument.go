@@ -1,11 +1,11 @@
 package observability
 
 import (
-	"log"
 	"net/http"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/sn0wfree/llmRx/internal/logging"
 )
 
 // Global metrics instance. Initialized by Init() at startup.
@@ -18,7 +18,7 @@ func Init() {
 		return
 	}
 	global = New()
-	log.Printf("metrics: initialized (prometheus collectors registered)")
+	logging.Info("metrics initialized (prometheus collectors registered)")
 }
 
 // Handler returns an http.Handler that serves /metrics.

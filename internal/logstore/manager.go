@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/model"
 )
 
@@ -102,7 +102,7 @@ func (m *Manager) Close() error {
 func (m *Manager) RunRetention(ctx context.Context, retentionDays func() int) {
 	cur := retentionDays()
 	if cur <= 0 {
-		log.Printf("logstore: retention disabled (retention_days <= 0)")
+		logging.Info("logstore retention disabled (retention_days <= 0)")
 		return
 	}
 
@@ -116,7 +116,7 @@ func (m *Manager) RunRetention(ctx context.Context, retentionDays func() int) {
 
 		files, err := m.driver.ListFiles()
 		if err != nil {
-			log.Printf("logstore: list files: %v", err)
+			logging.Warn("logstore list files failed", logging.F("error", err.Error()))
 			return
 		}
 
@@ -131,11 +131,13 @@ func (m *Manager) RunRetention(ctx context.Context, retentionDays func() int) {
 			return
 		}
 		if err := m.driver.DeleteFiles(toDelete); err != nil {
-			log.Printf("logstore: retention delete: %v", err)
+			logging.Warn("logstore retention delete failed", logging.F("error", err.Error()))
 			return
 		}
-		log.Printf("logstore: retention deleted %d files older than %d days",
-			len(toDelete), days)
+		logging.Info("logstore retention deleted files",
+			logging.F("files", len(toDelete)),
+			logging.F("days", days),
+		)
 	}
 
 	sweep()

@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"regexp"
 	"strings"
 
+	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/model"
 )
 
@@ -43,7 +43,7 @@ func (g *GuardrailEngine) CheckInput(ctx context.Context, messages []string, tok
 	}
 	rules, err := g.store.GetEnabledGuardrailRules()
 	if err != nil {
-		log.Printf("guardrail: load rules: %v", err)
+		logging.Warn("guardrail load rules failed", logging.F("error", err.Error()))
 		return nil
 	}
 	text := strings.Join(messages, "\n")
@@ -55,7 +55,10 @@ func (g *GuardrailEngine) CheckInput(ctx context.Context, messages []string, tok
 		if !passed {
 			g.recordEvent(tokenID, rule, false, "input")
 			if rule.OnFailure == model.GuardrailActionFlag {
-				log.Printf("guardrail: rule %q flagged input (not blocked)", rule.Name)
+				logging.Warn("guardrail flagged input",
+					logging.F("rule", rule.Name),
+					logging.F("hook", "input"),
+				)
 				continue
 			}
 			return &Result{
@@ -76,7 +79,7 @@ func (g *GuardrailEngine) CheckOutput(ctx context.Context, response string, toke
 	}
 	rules, err := g.store.GetEnabledGuardrailRules()
 	if err != nil {
-		log.Printf("guardrail: load rules: %v", err)
+		logging.Warn("guardrail load rules failed", logging.F("error", err.Error()))
 		return nil
 	}
 	for _, rule := range rules {
@@ -87,7 +90,10 @@ func (g *GuardrailEngine) CheckOutput(ctx context.Context, response string, toke
 		if !passed {
 			g.recordEvent(tokenID, rule, false, "output")
 			if rule.OnFailure == model.GuardrailActionFlag {
-				log.Printf("guardrail: rule %q flagged output (not blocked)", rule.Name)
+				logging.Warn("guardrail flagged output",
+					logging.F("rule", rule.Name),
+					logging.F("hook", "output"),
+				)
 				continue
 			}
 			return &Result{
@@ -115,7 +121,7 @@ func (g *GuardrailEngine) recordEvent(tokenID int64, rule model.GuardrailRule, p
 		Action:   string(rule.OnFailure),
 	}
 	if err := g.store.CreateGuardrailEvent(event); err != nil {
-		log.Printf("guardrail: record event: %v", err)
+		logging.Warn("guardrail record event failed", logging.F("error", err.Error()))
 	}
 }
 

@@ -10,9 +10,10 @@ package broker
 
 import (
 	"errors"
-	"log"
 	"sync"
 	"sync/atomic"
+
+	"github.com/sn0wfree/llmRx/internal/logging"
 )
 
 // BufferSize is the per-subscriber channel capacity. Slow consumers
@@ -77,7 +78,10 @@ func (b *Broker[T]) Subscribe() (<-chan T, func(), error) {
 	if cap > 0 && int64(len(b.subs)) >= cap {
 		cur := len(b.subs)
 		b.mu.Unlock()
-		log.Printf("warn: broker subscriber cap reached (%d/%d)", cur, cap)
+		logging.Warn("broker subscriber cap reached",
+			logging.F("current", cur),
+			logging.F("cap", cap),
+		)
 		return nil, func() {}, ErrTooManySubscribers
 	}
 	ch := make(chan T, BufferSize)
@@ -85,7 +89,10 @@ func (b *Broker[T]) Subscribe() (<-chan T, func(), error) {
 	count := len(b.subs)
 	b.mu.Unlock()
 	if count > 1 && count%64 == 0 {
-		log.Printf("info: broker has %d live subscribers (cap=%d)", count, cap)
+		logging.Info("broker subscribers",
+			logging.F("count", count),
+			logging.F("cap", cap),
+		)
 	}
 	return ch, func() { b.unsubscribe(ch) }, nil
 }
@@ -113,7 +120,9 @@ func (b *Broker[T]) Publish(v T) int {
 		case ch <- v:
 			delivered++
 		default:
-			log.Printf("warn: broker slow subscriber dropped (buf=%d)", BufferSize)
+			logging.Warn("broker slow subscriber dropped",
+				logging.F("buf", BufferSize),
+			)
 		}
 	}
 	return delivered

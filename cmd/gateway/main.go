@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -32,6 +31,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// fatalf emits a structured error log and exits with code 1.
+// It replaces log.Fatalf so the JSON logger still receives the
+// event before the process dies.
+func fatalf(msg string, fields ...logging.Field) {
+	logging.Error(msg, fields...)
+	os.Exit(1)
+}
+
 func main() {
 	cfgPath := flag.String("config", "config.yml", "config file path")
 	hcAddr := flag.String("healthcheck", "", "if set (e.g. 127.0.0.1:8787), probe /health and exit; used by docker HEALTHCHECK")
@@ -54,31 +61,35 @@ func main() {
 	if *wipeKeys {
 		cfg, err := config.Load(*cfgPath)
 		if err != nil {
-			log.Fatalf("wipe-keys: load config: %v", err)
+			fatalf("wipe-keys load config failed", logging.F("error", err.Error()))
 		}
 		st, err := store.OpenSQLite(cfg.Database.DSN)
 		if err != nil {
-			log.Fatalf("wipe-keys: open store: %v", err)
+			fatalf("wipe-keys open store failed", logging.F("error", err.Error()))
 		}
 		n, werr := st.WipeKeys()
 		_ = st.Close()
 		if werr != nil {
-			log.Fatalf("wipe-keys: %v", werr)
+			fatalf("wipe-keys failed", logging.F("error", werr.Error()))
 		}
-		log.Printf("wipe-keys: cleared %d key row(s). Re-enter API keys via the admin UI or by editing config.yml + restarting.", n)
+		logging.Info("wipe-keys cleared key rows", logging.F("count", n))
 		return
 	}
 
 	// If running as root (typical docker entrypoint), chown
 	// bind-mounted /data before opening the DB.
 	if err := maybeChownDataDir("/data", "llmrx"); err != nil {
-		log.Printf("secrets: chown /data: %v (continuing — DB writes may fail)", err)
+		logging.Warn("secrets chown /data failed",
+			logging.F("error", err.Error()),
+		)
 	}
 	// Write a starter config.yml if /data is fresh so that
 	// `docker compose up` works without a manual config
 	// step. Must run BEFORE config.Load.
 	if err := maybeWriteStarterConfig("/data", *cfgPath); err != nil {
-		log.Printf("config: %v (continuing — provide your own config.yml)", err)
+		logging.Warn("config starter write failed",
+			logging.F("error", err.Error()),
+		)
 	}
 
 	// Load config so we can honour dev_allow_plaintext_keys
@@ -89,23 +100,23 @@ func main() {
 	// to /data/llmrx.key so docker compose Just Works.
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		fatalf("load config failed", logging.F("error", err.Error()))
 	}
 
 	// Resolve LLMRX_KEY_MASTER (env → /data/llmrx.key). Must run
 	// BEFORE privilege drop and BEFORE secrets.FromEnv. No-op
 	// when dev_allow_plaintext_keys is set.
 	if err := bootstrapMasterKey("LLMRX_KEY_MASTER", "/data/llmrx.key", cfg.Secrets.DevAllowPlaintext); err != nil {
-		log.Fatalf("secrets: %v", err)
+		fatalf("secrets failed", logging.F("error", err.Error()))
 	}
 
 	if err := dropPrivileges("llmrx"); err != nil {
-		log.Fatalf("secrets: %v", err)
+		fatalf("secrets failed", logging.F("error", err.Error()))
 	}
 
 	st, err := store.OpenSQLite(cfg.Database.DSN)
 	if err != nil {
-		log.Fatalf("open store: %v", err)
+		fatalf("open store failed", logging.F("error", err.Error()))
 	}
 	defer st.Close()
 
@@ -115,12 +126,12 @@ func main() {
 	if !cfg.Secrets.DevAllowPlaintext {
 		sec, err := secrets.FromEnv(cfg.Secrets.KeyMasterEnv)
 		if err != nil {
-			log.Fatalf("secrets: %v", err)
+			fatalf("secrets failed", logging.F("error", err.Error()))
 		}
 		st.SetSecrets(sec)
-		log.Printf("secrets: master key loaded from %s (AES-256-GCM)", sec.EnvName())
+		logging.Info("secrets loaded master key", logging.F("env", sec.EnvName()))
 	} else {
-		log.Printf("secrets: DEV_ALLOW_PLAINTEXT_KEYS=true — channel API keys will be stored in plaintext. Do NOT use this in production.")
+		logging.Warn("DEV_ALLOW_PLAINTEXT_KEYS enabled, keys stored plaintext")
 	}
 
 	// Initialize per-date log store. LogDir defaults to "data/logs".
@@ -129,15 +140,15 @@ func main() {
 		logDir = "data/logs"
 	}
 	if err := logstore.EnsureDir(logDir); err != nil {
-		log.Fatalf("logstore: %v", err)
+		fatalf("logstore failed", logging.F("error", err.Error()))
 	}
 	logStore, err := logstore.New(logDir, nil)
 	if err != nil {
-		log.Fatalf("logstore: %v", err)
+		fatalf("logstore failed", logging.F("error", err.Error()))
 	}
 	defer logStore.Close()
 	st.SetLogStore(logStore)
-	log.Printf("logstore: initialized at %s", logDir)
+	logging.Info("logstore initialized", logging.F("path", logDir))
 
 	// Load provider descriptors from config.yml and DB into the
 	// provider registry. Built-in providers from providers.yaml are
@@ -146,7 +157,7 @@ func main() {
 	if len(cfg.Providers) > 0 {
 		yamlBytes, _ := yaml.Marshal(map[string]any{"providers": cfg.Providers})
 		if err := provider.LoadProvidersFromYAML(yamlBytes, "config"); err != nil {
-			log.Printf("provider: load config providers: %v", err)
+			logging.Warn("provider load failed", logging.F("error", err.Error()))
 		}
 	}
 	if defs, err := st.GetProviderDefs(); err == nil {
@@ -162,13 +173,13 @@ func main() {
 	}
 
 	if err := seed(st, cfg); err != nil {
-		log.Fatalf("seed: %v", err)
+		fatalf("seed failed", logging.F("error", err.Error()))
 	}
 
 	cp := pool.NewChannelPool()
 	if err := cp.LoadFromStore(st); err != nil {
-		log.Printf("hint: if this mentions 'cipher: message authentication failed', the stored keys can't be decrypted with the current LLMRX_KEY_MASTER. Run `./start.sh wipe-keys` to clear them, then re-enter API keys via the admin UI.")
-		log.Fatalf("load pool: %v", err)
+		logging.Info("hint cipher decrypt failed, run wipe-keys to recover")
+		fatalf("load pool failed", logging.F("error", err.Error()))
 	}
 
 	tokCache := tokencache.New(st)
@@ -183,7 +194,7 @@ func main() {
 	// any plan-join failure (fail-closed: a transient DB blip
 	// must NOT silently downgrade bound tokens to "unlimited").
 	if err := tokCache.Reload(); err != nil {
-		log.Fatalf("token cache reload: %v", err)
+		fatalf("token cache reload failed", logging.F("error", err.Error()))
 	}
 	eng := router.New(st, cp)
 
@@ -193,18 +204,18 @@ func main() {
 	// uniform prior and undo weeks of learned weights.
 	thompsonPath := "/data/thompson.json"
 	if err := eng.LoadThompsonState(thompsonPath); err != nil {
-		log.Fatalf("thompson: load state from %s: %v", thompsonPath, err)
+		fatalf("thompson load state failed", logging.F("path", thompsonPath), logging.F("error", err.Error()))
 	} else {
-		log.Printf("thompson: state loaded from %s", thompsonPath)
+		logging.Info("thompson state loaded", logging.F("path", thompsonPath))
 	}
 
 	// L4 Intent classifier. See loadIntentClassifier for the
 	// LLMRX_INTENT_REQUIRED fail-closed semantics.
 	if classifier, backend, err := loadIntentClassifier(); err != nil {
-		log.Fatalf("%v", err)
+		fatalf("fatal error", logging.F("error", err.Error()))
 	} else {
 		eng.SetIntentClassifier(classifier)
-		log.Printf("intent: backend=%s", backend)
+		logging.Info("intent backend", logging.F("backend", backend))
 	}
 	logBroker := broker.New[*model.Log](cfg.Server.MaxLogSubscribers)
 	defer logBroker.Close()
@@ -230,17 +241,17 @@ func main() {
 	// 2) DB override: any admin changes persisted to
 	//    runtime_settings take precedence over the YAML seeds.
 	if raw, err := st.GetRuntimeSettings(); err != nil {
-		log.Printf("runtime: read settings: %v (continuing with YAML seeds)", err)
+		logging.Warn("runtime read settings failed", logging.F("error", err.Error()))
 	} else if len(raw) > 0 {
 		var snap runtime.Snapshot
 		if err := json.Unmarshal(raw, &snap); err != nil {
-			log.Printf("runtime: parse settings: %v (continuing with YAML seeds)", err)
+			logging.Warn("runtime parse settings failed", logging.F("error", err.Error()))
 		} else {
 			rt.Apply(snap)
 			if snap.CostStrategy != "" {
 				eng.SetStrategy(model.CostStrategy(snap.CostStrategy))
 			}
-			log.Printf("runtime: applied persisted settings on top of YAML seeds")
+			logging.Info("runtime applied persisted settings on top of YAML seeds")
 		}
 	}
 	// 3) Propagate values to subsystems that need them at startup:
@@ -249,7 +260,7 @@ func main() {
 	//    level filter so admin log_level changes take effect.
 	logBroker.SetMaxSubscribers(rt.MaxLogSubscribers())
 	runtime.InstallLogFilter(rt, os.Stderr)
-	log.Printf("runtime: log level = %s", runtime.LogLevelName(rt.LogLevel()))
+	logging.Info("runtime log level", logging.F("level", runtime.LogLevelName(rt.LogLevel())))
 
 	// Wire rt into the circuit breaker so admin /runtime config
 	// writes (breaker_max_failures, breaker_reset_timeout_ms)
@@ -289,21 +300,25 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigCh
-		log.Printf("signal received: %s — initiating graceful shutdown", sig)
+		logging.Info("shutdown signal received", logging.F("signal", sig.String()))
 		// Persist L5 posteriors BEFORE the listener shuts down so
 		// the next process boots with the learned channel weights
 		// intact. Best-effort: a write error here shouldn't block
 		// the shutdown.
 		if err := eng.SaveThompsonState(thompsonPath); err != nil {
-			log.Printf("thompson: save state on shutdown: %v", err)
+			logging.Warn("thompson save state failed", logging.F("error", err.Error()))
 		} else {
-			log.Printf("thompson: state saved to %s", thompsonPath)
+			logging.Info("thompson state saved", logging.F("path", thompsonPath))
 		}
 		cancel()
 	}()
 
-	log.Printf("starting llmRx gateway on :%d (channels=%d tokens=%d db=%s)",
-		cfg.Server.Port, len(cp.GetAllChannels()), tokCache.Size(), cfg.Database.DSN)
+	logging.Info("starting llmRx gateway",
+		logging.F("port", cfg.Server.Port),
+		logging.F("channels", len(cp.GetAllChannels())),
+		logging.F("tokens", tokCache.Size()),
+		logging.F("db", cfg.Database.DSN),
+	)
 
 	// Initialize structured JSON logger + Prometheus metrics.
 	logging.Init(logging.LevelInfo, logging.FormatJSON)
@@ -316,7 +331,7 @@ func main() {
 	observability.SetTokensActive(float64(tokCache.Size()))
 
 	if err := srv.Start(ctx); err != nil {
-		log.Fatalf("server: %v", err)
+		fatalf("server failed", logging.F("error", err.Error()))
 	}
 }
 
@@ -332,9 +347,9 @@ func cleanupLoop(ctx context.Context, st store.Store) {
 			return
 		case <-t.C:
 			if n, err := st.CleanupExpiredSessions(); err != nil {
-				log.Printf("cleanup sessions: %v", err)
+				logging.Warn("cleanup sessions failed", logging.F("error", err.Error()))
 			} else if n > 0 {
-				log.Printf("cleanup: cleared %d expired admin sessions", n)
+				logging.Info("cleanup cleared expired admin sessions", logging.F("count", n))
 			}
 		}
 	}
@@ -386,8 +401,12 @@ func seedAdmin(st store.Store, cfg *config.Config) error {
 	if err := st.CreateUser(u); err != nil {
 		return err
 	}
-	log.Printf("seed: created default admin user (username=admin password_len=%d first=%q last=%q)",
-		len(pw), firstRune(pw), lastRune(pw))
+	logging.Info("seed created default admin user",
+		logging.F("username", "admin"),
+		logging.F("password_len", len(pw)),
+		logging.F("first", firstRune(pw)),
+		logging.F("last", lastRune(pw)),
+	)
 	return nil
 }
 
@@ -429,7 +448,7 @@ func seedTokens(st store.Store, cfg *config.Config) error {
 		}
 	}
 	if len(cfg.Tokens) > 0 {
-		log.Printf("seed: imported %d tokens from cfg", len(cfg.Tokens))
+		logging.Info("seed imported tokens from cfg", logging.F("count", len(cfg.Tokens)))
 	}
 	return nil
 }
@@ -477,7 +496,7 @@ func seedChannels(st store.Store, cfg *config.Config) error {
 				return err
 			}
 		}
-		log.Printf("seed: imported channel %s with %d keys", cc.Name, len(cc.Keys))
+		logging.Info("seed imported channel", logging.F("channel", cc.Name), logging.F("keys", len(cc.Keys)))
 	}
 	return nil
 }

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,6 +14,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
+	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/secrets"
@@ -519,7 +519,10 @@ func (s *SQLite) GetKeys(channelID int64) ([]model.Key, error) {
 					// to re-enter the API key. Returning an error
 					// here would take the whole gateway down and
 					// block the recovery path (no admin UI access).
-					log.Printf("store: key id=%d decrypt failed (%v) — marking disabled, re-enter via admin UI", rr.k.ID, derr)
+					logging.Warn("key decrypt failed, marking disabled",
+					logging.F("key_id", rr.k.ID),
+					logging.F("error", derr.Error()),
+				)
 					rr.k.Status = model.KeyDisabled
 					rr.k.Key = ""
 					badKeyIDs = append(badKeyIDs, rr.k.ID)
@@ -541,7 +544,9 @@ func (s *SQLite) GetKeys(channelID int64) ([]model.Key, error) {
 			// carries ciphertext we cannot decode it, so disable
 			// that key in-place rather than failing the whole load.
 			if rr.cipher != "" {
-				log.Printf("store: key id=%d has ciphertext but no secrets manager — marking disabled", rr.k.ID)
+				logging.Warn("key has ciphertext but no secrets manager, marking disabled",
+					logging.F("key_id", rr.k.ID),
+				)
 				rr.k.Status = model.KeyDisabled
 				rr.k.Key = ""
 				badKeyIDs = append(badKeyIDs, rr.k.ID)
@@ -553,7 +558,9 @@ func (s *SQLite) GetKeys(channelID int64) ([]model.Key, error) {
 		out = append(out, rr.k)
 	}
 	if len(badKeyIDs) > 0 {
-		log.Printf("store: %d key(s) failed decrypt — run './start.sh wipe-keys' to clear, then re-enter API keys via the admin UI", len(badKeyIDs))
+		logging.Warn("keys failed decrypt, action required",
+					logging.F("bad_count", len(badKeyIDs)),
+				)
 	}
 	return out, nil
 }
@@ -664,7 +671,10 @@ func (s *SQLite) RotateMasterKey(newKeyHex string) (int, error) {
 		return n, err
 	}
 	s.Secrets = m
-	log.Printf("secrets: rotated master key (%d channel keys, %d tokens)", n, tn)
+	logging.Info("secrets rotated master key",
+					logging.F("channel_keys", n),
+					logging.F("tokens", tn),
+				)
 	return n + tn, nil
 }
 
@@ -984,7 +994,10 @@ func scanTokenRow(s *SQLite, r interface {
 		if derr != nil {
 			// Master-key mismatch or tampered ciphertext: leave
 			// the token empty and let cache reload skip it.
-			log.Printf("store: token id=%d decrypt failed (%v)", t.ID, derr)
+			logging.Warn("token decrypt failed",
+					logging.F("token_id", t.ID),
+					logging.F("error", derr.Error()),
+				)
 			t.Key = ""
 		} else {
 			t.Key = string(pt)

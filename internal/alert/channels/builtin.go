@@ -1,8 +1,7 @@
 package channels
 
 import (
-	"log"
-
+	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/model"
 )
 
@@ -19,7 +18,11 @@ func (b *Builtin) Name() string { return "builtin" }
 // Deliver logs the event and returns nil. Persistence is handled
 // by the manager after the channels all run.
 func (b *Builtin) Deliver(ev *model.AlertEvent) error {
-	log.Printf("ALERT fire: id=%d name=%q type=%s payload=%s",
-		ev.AlertID, ev.AlertName, ev.AlertType, ev.Payload)
+	logging.Warn("ALERT fire",
+		logging.F("alert_id", ev.AlertID),
+		logging.F("name", ev.AlertName),
+		logging.F("type", ev.AlertType),
+		logging.F("payload", ev.Payload),
+	)
 	return nil
 }

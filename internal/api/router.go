@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -17,6 +16,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/guardrail"
+	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/observability"
@@ -547,11 +547,19 @@ func (h *Handler) emitLog(ctx context.Context, tokenID int64, modelName string, 
 	if failed {
 		status = "fail"
 	}
-	log.Printf("log status=%s model=%s channel=%s key=%s prompt=%d completion=%d cached=%d real_usd=%.6f billed_usd=%.6f duration_ms=%d code=%d path=%s",
-		status, modelName, route.Channel.Name, route.Key.KeyMasked,
-		promptTokens(usage), completionTokens(usage), cached,
-		real, billed,
-		durationMs, statusCode, route.RouterLog,
+	logging.Info("chat.completed",
+		logging.F("status", status),
+		logging.F("model", modelName),
+		logging.F("channel", route.Channel.Name),
+		logging.F("key", route.Key.KeyMasked),
+		logging.F("prompt", promptTokens(usage)),
+		logging.F("completion", completionTokens(usage)),
+		logging.F("cached", cached),
+		logging.F("real_usd", real),
+		logging.F("billed_usd", billed),
+		logging.F("duration_ms", durationMs),
+		logging.F("code", statusCode),
+		logging.F("path", route.RouterLog),
 	)
 	entry := &model.Log{
 		TokenID:         tokenID,
@@ -569,7 +577,7 @@ func (h *Handler) emitLog(ctx context.Context, tokenID int64, modelName string, 
 		RequestIP:       ip,
 	}
 	if err := h.store.CreateLog(entry); err != nil {
-		log.Printf("warn: persist log: %v", err)
+		logging.Warn("persist log failed", logging.F("error", err.Error()))
 	}
 	if h.logBroker != nil {
 		h.logBroker.Publish(entry)
@@ -585,10 +593,12 @@ func (h *Handler) emitLog(ctx context.Context, tokenID int64, modelName string, 
 	if tokenID > 0 && billed > 0 {
 		if err := h.store.RecordRequestSpend(tokenID, planID, billed); err != nil {
 			if errors.Is(err, store.ErrBudgetExceeded) {
-				log.Printf("plan %d budget exceeded by $%.6f — request rejected, token ledger untouched",
-					planID, billed)
+				logging.Warn("plan budget exceeded, token ledger untouched",
+					logging.F("plan_id", planID),
+					logging.F("billed_usd", billed),
+				)
 			} else {
-				log.Printf("warn: record request spend: %v", err)
+				logging.Warn("record request spend failed", logging.F("error", err.Error()))
 			}
 		}
 	}

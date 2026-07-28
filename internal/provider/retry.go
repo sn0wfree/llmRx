@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/observability"
 )
 
@@ -79,8 +79,13 @@ func (r *RetryingProvider) Chat(ctx context.Context, req *ChatRequest, apiKey st
 			delay := r.retryDelay(status, err, attempt)
 			if delay > 0 {
 				observability.RecordRetry(req.Model)
-				log.Printf("[retry] attempt %d/%d failed (status=%d), retrying in %v: %v",
-					attempt+1, r.config.MaxRetries, status, delay, err)
+				logging.Warn("chat retry",
+					logging.F("attempt", attempt+1),
+					logging.F("max", r.config.MaxRetries),
+					logging.F("status", status),
+					logging.F("delay_ms", delay.Milliseconds()),
+					logging.F("error", err.Error()),
+				)
 				select {
 				case <-time.After(delay):
 				case <-ctx.Done():
@@ -147,8 +152,13 @@ func (r *RetryingProvider) Embeddings(ctx context.Context, req *EmbeddingsReques
 			delay := r.retryDelay(status, err, attempt)
 			if delay > 0 {
 				observability.RecordRetry(req.Model)
-				log.Printf("[retry] embeddings attempt %d/%d failed (status=%d), retrying in %v: %v",
-					attempt+1, r.config.MaxRetries, status, delay, err)
+				logging.Warn("embeddings retry",
+					logging.F("attempt", attempt+1),
+					logging.F("max", r.config.MaxRetries),
+					logging.F("status", status),
+					logging.F("delay_ms", delay.Milliseconds()),
+					logging.F("error", err.Error()),
+				)
 				select {
 				case <-time.After(delay):
 				case <-ctx.Done():

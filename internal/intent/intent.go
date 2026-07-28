@@ -15,12 +15,13 @@ package intent
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"unsafe"
+
+	"github.com/sn0wfree/llmRx/internal/logging"
 )
 
 // Intent is the parsed L4 result.
@@ -112,7 +113,9 @@ func loadFrom(path string) (Classifier, error) {
 		backend:  be,
 		close:    cl,
 	}
-	log.Printf("intent: loaded native classifier from %s", abs)
+	logging.Info("intent loaded native classifier",
+		logging.F("path", abs),
+	)
 	return n, nil
 }
 
@@ -169,7 +172,10 @@ func (n *native) Classify(text string) Intent {
 		} `json:"debug"`
 	}
 	if err := json.Unmarshal(out[:written], &res); err != nil {
-		log.Printf("intent: parse error: %v (raw=%s)", err, strings.TrimRight(string(out[:written]), "\x00"))
+		logging.Warn("intent parse error",
+		logging.F("error", err.Error()),
+		logging.F("raw", strings.TrimRight(string(out[:written]), "\x00")),
+	)
 		return Intent{Kind: "unknown"}
 	}
 	intent := Intent{Kind: res.Label, Score: res.Score}

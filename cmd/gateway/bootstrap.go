@@ -11,7 +11,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"os/user"
@@ -22,6 +21,7 @@ import (
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/intent"
+	"github.com/sn0wfree/llmRx/internal/logging"
 )
 
 // Resolve the master key used for at-rest encryption of channel API
@@ -48,7 +48,7 @@ func bootstrapMasterKey(envName, keyFile string, allowPlaintext bool) error {
 		envName = "LLMRX_KEY_MASTER"
 	}
 	if allowPlaintext {
-		log.Printf("secrets: dev_allow_plaintext_keys=true — channel API keys will be stored in plaintext. DO NOT USE IN PRODUCTION.")
+		logging.Warn("dev_allow_plaintext_keys enabled, keys stored plaintext, NOT FOR PRODUCTION")
 		return nil
 	}
 	key := strings.TrimSpace(os.Getenv(envName))
@@ -58,7 +58,7 @@ func bootstrapMasterKey(envName, keyFile string, allowPlaintext bool) error {
 		if data, err := os.ReadFile(keyFile); err == nil {
 			key = strings.TrimSpace(string(data))
 			if key != "" {
-				log.Printf("secrets: master key loaded from %s", keyFile)
+				logging.Info("secrets loaded master key", logging.F("path", keyFile))
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("read master key from %s: %w", keyFile, err)
@@ -79,7 +79,7 @@ func bootstrapMasterKey(envName, keyFile string, allowPlaintext bool) error {
 		}
 		_ = chownIfRoot(keyFile, "llmrx")
 		key = gen
-		log.Printf("secrets: auto-generated master key and persisted to %s", keyFile)
+		logging.Info("secrets auto-generated master key", logging.F("path", keyFile))
 	}
 
 	// Validate: must be 32 bytes hex (64 chars).
@@ -133,7 +133,7 @@ func maybeChownDataDir(dir, username string) error {
 	if err := chownRecursive(dir, targetUID, targetGID); err != nil {
 		return fmt.Errorf("chown %s -> %s: %w", dir, username, err)
 	}
-	log.Printf("secrets: chowned %s -> %s (bind-mount fixup)", dir, username)
+	logging.Info("secrets chowned bind-mount", logging.F("dir", dir), logging.F("user", username))
 	return nil
 }
 
@@ -147,7 +147,7 @@ func chownRecursive(dir string, uid, gid int) error {
 			return nil // best-effort
 		}
 		if chErr := os.Chown(path, uid, gid); chErr != nil && !errors.Is(chErr, os.ErrPermission) {
-			log.Printf("chown: %s: %v", path, chErr)
+			logging.Warn("chown failed", logging.F("path", path), logging.F("error", chErr.Error()))
 		}
 		return nil
 	})
@@ -193,7 +193,7 @@ func dropPrivileges(username string) error {
 	if err := syscall.Setuid(uid); err != nil {
 		return fmt.Errorf("setuid: %w", err)
 	}
-	log.Printf("secrets: dropped privileges to %s (uid=%d gid=%d)", username, uid, gid)
+	logging.Info("secrets dropped privileges", logging.F("user", username), logging.F("uid", uid), logging.F("gid", gid))
 	return nil
 }
 
@@ -236,7 +236,7 @@ secrets:
 	if err := os.Rename(tmp, configPath); err != nil {
 		return fmt.Errorf("rename starter config: %w", err)
 	}
-	log.Printf("config: wrote starter %s (replace tokens/channels before exposing publicly)", configPath)
+	logging.Info("config wrote starter", logging.F("path", configPath))
 	return nil
 }
 
@@ -247,20 +247,20 @@ func runHealthcheck(addr string, timeout time.Duration) int {
 	client := net.Dialer{Timeout: timeout}
 	conn, err := client.Dial("tcp", addr)
 	if err != nil {
-		log.Printf("healthcheck: dial %s: %v", addr, err)
+		logging.Warn("healthcheck dial failed", logging.F("addr", addr), logging.F("error", err.Error()))
 		return 1
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(timeout))
 	req := "GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n"
 	if _, err := conn.Write([]byte(req)); err != nil {
-		log.Printf("healthcheck: write: %v", err)
+		logging.Warn("healthcheck write failed", logging.F("error", err.Error()))
 		return 1
 	}
 	buf := make([]byte, 64)
 	n, _ := conn.Read(buf)
 	if !strings.Contains(string(buf[:n]), " 200 ") {
-		log.Printf("healthcheck: bad response: %q", string(buf[:n]))
+		logging.Warn("healthcheck bad response", logging.F("response", string(buf[:n])))
 		return 1
 	}
 	return 0
@@ -285,7 +285,7 @@ func loadIntentClassifier() (intent.Classifier, string, error) {
 	case required:
 		return nil, "", fmt.Errorf("LLMRX_INTENT_REQUIRED set but load failed: %w", err)
 	default:
-		log.Printf("intent: native classifier unavailable, using Nop: %v", err)
+		logging.Warn("intent native classifier unavailable, using Nop", logging.F("error", err.Error()))
 		return intent.Nop{}, "disabled", nil
 	}
 }

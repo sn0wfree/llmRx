@@ -2,9 +2,9 @@ package alert
 
 import (
 	"fmt"
-	"log"
 	"time"
 
+	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/store"
 )
@@ -129,9 +129,16 @@ func evalCostSpike(r *model.Alert, now time.Time, st store.Store) (bool, map[str
 	if 2*w > 8*24*time.Hour {
 		reason := fmt.Sprintf("cost_spike window %ds exceeds 4-day safe limit (2*window must be <= 8 days)", r.WindowSec)
 		if derr := st.DisableAlert(r.ID, reason); derr != nil {
-			log.Printf("alert: auto-disable rule %d: %v", r.ID, derr)
+			logging.Warn("alert auto-disable failed",
+					logging.F("rule_id", r.ID),
+					logging.F("error", derr.Error()),
+				)
 		} else {
-			log.Printf("alert: auto-disabled rule %d (%q): %s", r.ID, r.Name, reason)
+			logging.Info("alert auto-disabled rule",
+					logging.F("rule_id", r.ID),
+					logging.F("name", r.Name),
+					logging.F("reason", reason),
+				)
 		}
 		return false, nil, nil
 	}

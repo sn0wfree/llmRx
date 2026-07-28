@@ -12,10 +12,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
+	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
@@ -78,7 +78,7 @@ func NewManager(st store.Store, chans []Channel, cfg Config) *Manager {
 // is cancelled.
 func (m *Manager) Start(ctx context.Context) {
 	if err := m.reload(); err != nil {
-		log.Printf("alert: initial reload: %v", err)
+		logging.Warn("alert initial reload failed", logging.F("error", err.Error()))
 	}
 	t := time.NewTicker(m.tickInterval)
 	defer t.Stop()
@@ -88,7 +88,7 @@ func (m *Manager) Start(ctx context.Context) {
 			return
 		case <-t.C:
 			if err := m.reload(); err != nil {
-				log.Printf("alert: reload: %v", err)
+				logging.Warn("alert reload failed", logging.F("error", err.Error()))
 				continue
 			}
 			m.evaluate(ctx)
@@ -141,14 +141,20 @@ func (m *Manager) evaluate(ctx context.Context) {
 		}
 		fired, payload, err := Evaluate(&r, now, m.st)
 		if err != nil {
-			log.Printf("alert: eval %s: %v", r.Name, err)
+			logging.Warn("alert eval failed",
+				logging.F("rule", r.Name),
+				logging.F("error", err.Error()),
+			)
 			continue
 		}
 		if !fired {
 			continue
 		}
 		if err := m.fire(ctx, &r, payload, now); err != nil {
-			log.Printf("alert: fire %s: %v", r.Name, err)
+			logging.Warn("alert fire failed",
+				logging.F("rule", r.Name),
+				logging.F("error", err.Error()),
+			)
 		}
 	}
 }
@@ -178,7 +184,10 @@ func (m *Manager) fire(ctx context.Context, r *model.Alert, payload map[string]a
 			if err := c.Deliver(ev); err == nil {
 				delivered = true
 			} else {
-				log.Printf("alert: webhook %s: %v", r.Name, err)
+				logging.Warn("alert webhook failed",
+					logging.F("rule", r.Name),
+					logging.F("error", err.Error()),
+				)
 			}
 		}
 	}
