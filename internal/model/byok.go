@@ -18,5 +18,6 @@ type BYOKChannel struct {
 	Status        int       // 1 = active
 	LastUsedAt    time.Time
 	UseCount      int64
+	ExpiresAt     time.Time // optional TTL (BYOKConfig.TTLDays)
 	CreatedAt     time.Time
 }

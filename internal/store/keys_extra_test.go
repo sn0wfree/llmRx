@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"encoding/hex"
-	"errors"
 	"testing"
 
 	"github.com/sn0wfree/llmRx/internal/model"
@@ -150,25 +149,35 @@ func TestRotateMasterKey(t *testing.T) {
 	}
 }
 
-func TestBYOK_NotImplemented(t *testing.T) {
+func TestBYOK_CRUD(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
 
-	_, err := s.CreateBYOKChannel(ctx, &model.BYOKChannel{})
-	if !errors.Is(err, errNotImplemented) {
-		t.Fatalf("CreateBYOKChannel: expected errNotImplemented, got %v", err)
+	ch := &model.BYOKChannel{
+		Provider:      "openai",
+		KeyCiphertext: "ct",
+		KeyMasked:     "sk-***xyz",
+		OwnerIP:       "10.0.0.1",
+		Status:        1,
 	}
-	_, err = s.ListBYOKChannels(ctx)
-	if !errors.Is(err, errNotImplemented) {
-		t.Fatalf("ListBYOKChannels: expected errNotImplemented, got %v", err)
+	id, err := s.CreateBYOKChannel(ctx, ch)
+	if err != nil {
+		t.Fatalf("CreateBYOKChannel: %v", err)
 	}
-	_, err = s.GetBYOKChannel(ctx, 1)
-	if !errors.Is(err, errNotImplemented) {
-		t.Fatalf("GetBYOKChannel: expected errNotImplemented, got %v", err)
+	if id == 0 {
+		t.Fatal("id=0")
 	}
-	err = s.DeleteBYOKChannel(ctx, 1)
-	if !errors.Is(err, errNotImplemented) {
-		t.Fatalf("DeleteBYOKChannel: expected errNotImplemented, got %v", err)
+	if _, err := s.GetBYOKChannel(ctx, id); err != nil {
+		t.Fatalf("GetBYOKChannel: %v", err)
+	}
+	if _, err := s.GetBYOKChannelByIP(ctx, "10.0.0.1"); err != nil {
+		t.Fatalf("GetBYOKChannelByIP: %v", err)
+	}
+	if err := s.TouchBYOKChannel(ctx, id); err != nil {
+		t.Fatalf("TouchBYOKChannel: %v", err)
+	}
+	if err := s.DeleteBYOKChannel(ctx, id); err != nil {
+		t.Fatalf("DeleteBYOKChannel: %v", err)
 	}
 }
 

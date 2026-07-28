@@ -110,13 +110,15 @@ type Store interface {
 	SetSecrets(m *secrets.Manager)
 	RotateMasterKey(newKeyHex string) (int, error)
 
-	// BYOK (Phase 1.5 reserved — see docs/BYOK.md). Implementations
-	// should return ErrNotImplemented until the BYOK feature ships.
-	// The interface is in place so the router and admin pages can
-	// reference BYOK paths without future refactoring.
+// BYOK (Bring Your Own Key) — consumer-supplied upstream keys.
 	CreateBYOKChannel(ctx context.Context, ch *model.BYOKChannel) (int64, error)
 	ListBYOKChannels(ctx context.Context) ([]*model.BYOKChannel, error)
 	GetBYOKChannel(ctx context.Context, id int64) (*model.BYOKChannel, error)
+	// GetBYOKChannelByIP finds the most recently created active row
+	// for a given client IP — used by the UnknownTokenHook path.
+	GetBYOKChannelByIP(ctx context.Context, ownerIP string) (*model.BYOKChannel, error)
+	// TouchBYOKChannel records a successful use of a BYOK channel.
+	TouchBYOKChannel(ctx context.Context, id int64) error
 	DeleteBYOKChannel(ctx context.Context, id int64) error
 
 	// ProviderDefs - user-defined provider descriptors created via

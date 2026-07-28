@@ -271,6 +271,20 @@ func (s *SQLite) migrate() error {
 			created_at INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_gr_events_token ON guardrail_events(token_id, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS byok_channels (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			provider TEXT NOT NULL DEFAULT 'openai',
+			key_ciphertext TEXT NOT NULL DEFAULT '',
+			key_masked TEXT NOT NULL DEFAULT '',
+			owner_ip TEXT NOT NULL DEFAULT '',
+			owner_email TEXT NOT NULL DEFAULT '',
+			status INTEGER NOT NULL DEFAULT 1,
+			last_used_at INTEGER NOT NULL DEFAULT 0,
+			use_count INTEGER NOT NULL DEFAULT 0,
+			expires_at INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_byok_owner_ip ON byok_channels(owner_ip, status)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
@@ -1523,27 +1537,126 @@ func (s *SQLite) SetRuntimeSettings(payload []byte) error {
 	return err
 }
 
-// ---------- BYOK (Phase 1.5 reserved) ----------
+// ---------- BYOK (Bring Your Own Key) ----------
 //
-// The four methods below are interface stubs. They return
-// ErrNotImplemented until the BYOK feature ships, keeping the
-// Store contract stable so router and admin code can reference
-// the BYOK path without future refactoring. See docs/BYOK.md.
+// Consumer-supplied upstream API keys. When a request arrives with a
+// bearer token that isn't in our cache AND the token looks like an
+// upstream-provider key (prefix match), the BYOK hook verifies the
+// key against the upstream, stores the encrypted ciphertext, and
+// proceeds with the request using the consumer's key.
 
 func (s *SQLite) CreateBYOKChannel(ctx context.Context, ch *model.BYOKChannel) (int64, error) {
-	return 0, errNotImplemented
+	if ch.Provider == "" {
+		return 0, errors.New("provider is required")
+	}
+	if ch.KeyCiphertext == "" && ch.KeyMasked == "" {
+		return 0, errors.New("key is required")
+	}
+	now := time.Now().Unix()
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO byok_channels
+		  (provider, key_ciphertext, key_masked, owner_ip, owner_email,
+		   status, last_used_at, use_count, expires_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ch.Provider, ch.KeyCiphertext, ch.KeyMasked, ch.OwnerIP, ch.OwnerEmail,
+		ch.Status, ch.LastUsedAt.Unix(), ch.UseCount, ch.ExpiresAt.Unix(), now)
+	if err != nil {
+		return 0, fmt.Errorf("insert byok channel: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return id, nil
 }
 
 func (s *SQLite) ListBYOKChannels(ctx context.Context) ([]*model.BYOKChannel, error) {
-	return nil, errNotImplemented
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, provider, key_ciphertext, key_masked, owner_ip, owner_email,
+		       status, last_used_at, use_count, expires_at, created_at
+		FROM byok_channels
+		ORDER BY id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("query byok channels: %w", err)
+	}
+	defer rows.Close()
+	var out []*model.BYOKChannel
+	for rows.Next() {
+		c, err := scanBYOKRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 func (s *SQLite) GetBYOKChannel(ctx context.Context, id int64) (*model.BYOKChannel, error) {
-	return nil, errNotImplemented
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, provider, key_ciphertext, key_masked, owner_ip, owner_email,
+		       status, last_used_at, use_count, expires_at, created_at
+		FROM byok_channels WHERE id = ?`, id)
+	c, err := scanBYOKRow(row)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	return c, err
+}
+
+// GetBYOKChannelByIP looks up an active BYOK row by client IP. Used
+// by the UnknownTokenHook to find a previously registered consumer key.
+func (s *SQLite) GetBYOKChannelByIP(ctx context.Context, ownerIP string) (*model.BYOKChannel, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, provider, key_ciphertext, key_masked, owner_ip, owner_email,
+		       status, last_used_at, use_count, expires_at, created_at
+		FROM byok_channels
+		WHERE owner_ip = ? AND status = 1
+		ORDER BY id DESC LIMIT 1`, ownerIP)
+	c, err := scanBYOKRow(row)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	return c, err
+}
+
+// TouchBYOKChannel increments use_count and updates last_used_at.
+func (s *SQLite) TouchBYOKChannel(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE byok_channels
+		   SET use_count = use_count + 1, last_used_at = ?
+		 WHERE id = ?`, time.Now().Unix(), id)
+	return err
 }
 
 func (s *SQLite) DeleteBYOKChannel(ctx context.Context, id int64) error {
-	return errNotImplemented
+	res, err := s.db.ExecContext(ctx, `DELETE FROM byok_channels WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete byok channel: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// scanBYOKRow scans one row into a BYOKChannel. Accepts any type
+// implementing Scan (both *sql.Row and *sql.Rows).
+func scanBYOKRow(r interface {
+	Scan(dest ...any) error
+}) (*model.BYOKChannel, error) {
+	var (
+		c         model.BYOKChannel
+		lastUsed  int64
+		expiresAt int64
+		createdAt int64
+	)
+	err := r.Scan(&c.ID, &c.Provider, &c.KeyCiphertext, &c.KeyMasked,
+		&c.OwnerIP, &c.OwnerEmail, &c.Status, &lastUsed, &c.UseCount,
+		&expiresAt, &createdAt)
+	if err != nil {
+		return nil, err
+	}
+	c.LastUsedAt = time.Unix(lastUsed, 0)
+	c.ExpiresAt = time.Unix(expiresAt, 0)
+	c.CreatedAt = time.Unix(createdAt, 0)
+	return &c, nil
 }
 
 // ---------- ProviderDefs ----------

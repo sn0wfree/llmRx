@@ -108,10 +108,12 @@ type ScriptedStore struct {
 	CloseFunc func() error
 
 	// BYOK
-	CreateBYOKChannelFunc   func(ctx context.Context, ch *model.BYOKChannel) (int64, error)
-	ListBYOKChannelsFunc    func(ctx context.Context) ([]*model.BYOKChannel, error)
-	GetBYOKChannelFunc      func(ctx context.Context, id int64) (*model.BYOKChannel, error)
-	DeleteBYOKChannelFunc   func(ctx context.Context, id int64) error
+	CreateBYOKChannelFunc    func(ctx context.Context, ch *model.BYOKChannel) (int64, error)
+	ListBYOKChannelsFunc     func(ctx context.Context) ([]*model.BYOKChannel, error)
+	GetBYOKChannelFunc       func(ctx context.Context, id int64) (*model.BYOKChannel, error)
+	GetBYOKChannelByIPFunc   func(ctx context.Context, ownerIP string) (*model.BYOKChannel, error)
+	TouchBYOKChannelFunc     func(ctx context.Context, id int64) error
+	DeleteBYOKChannelFunc    func(ctx context.Context, id int64) error
 
 	// ProviderDefs
 	GetProviderDefsFunc  func() ([]model.ProviderDef, error)
@@ -553,6 +555,20 @@ func (s *ScriptedStore) GetBYOKChannel(ctx context.Context, id int64) (*model.BY
 		return s.GetBYOKChannelFunc(ctx, id)
 	}
 	return s.underlying.GetBYOKChannel(ctx, id)
+}
+
+func (s *ScriptedStore) GetBYOKChannelByIP(ctx context.Context, ownerIP string) (*model.BYOKChannel, error) {
+	if s.GetBYOKChannelByIPFunc != nil {
+		return s.GetBYOKChannelByIPFunc(ctx, ownerIP)
+	}
+	return s.underlying.GetBYOKChannelByIP(ctx, ownerIP)
+}
+
+func (s *ScriptedStore) TouchBYOKChannel(ctx context.Context, id int64) error {
+	if s.TouchBYOKChannelFunc != nil {
+		return s.TouchBYOKChannelFunc(ctx, id)
+	}
+	return s.underlying.TouchBYOKChannel(ctx, id)
 }
 func (s *ScriptedStore) DeleteBYOKChannel(ctx context.Context, id int64) error {
 	if s.DeleteBYOKChannelFunc != nil {
