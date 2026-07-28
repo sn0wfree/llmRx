@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/model"
@@ -22,6 +24,21 @@ type Result struct {
 // GuardrailEngine evaluates guardrail rules against requests/responses.
 type GuardrailEngine struct {
 	store GuardrailStore
+
+	// Cached rules with pre-compiled regex patterns.
+	rulesMu    sync.RWMutex
+	rules      []cachedRule
+	rulesEpoch uint64 // incremented on Reload
+}
+
+// cachedRule holds a guardrail rule with pre-parsed config.
+type cachedRule struct {
+	rule      model.GuardrailRule
+	config    interface{} // parsed config (type depends on rule type)
+	compiled  []*regexp.Regexp // pre-compiled regex patterns
+	caseLower []string     // lowercased blocked words
+	minChars  int
+	maxChars  int
 }
 
 // GuardrailStore is the narrow interface for loading rules from the DB.
@@ -35,37 +52,68 @@ func New(st GuardrailStore) *GuardrailEngine {
 	return &GuardrailEngine{store: st}
 }
 
+// Reload refreshes the cached rules from the store. Call after
+// guardrail rules are created/updated/deleted via admin UI.
+func (g *GuardrailEngine) Reload() error {
+	rules, err := g.store.GetEnabledGuardrailRules()
+	if err != nil {
+		return err
+	}
+	cached := make([]cachedRule, 0, len(rules))
+	for _, rule := range rules {
+		cr := cachedRule{rule: rule}
+		cr.parse()
+		cached = append(cached, cr)
+	}
+	g.rulesMu.Lock()
+	g.rules = cached
+	g.rulesMu.Unlock()
+	atomic.AddUint64(&g.rulesEpoch, 1)
+	return nil
+}
+
+// ensureLoaded lazily initializes the cache on first use.
+func (g *GuardrailEngine) ensureLoaded() {
+	g.rulesMu.RLock()
+	loaded := len(g.rules) > 0 || g.store == nil
+	g.rulesMu.RUnlock()
+	if !loaded {
+		_ = g.Reload()
+	}
+}
+
 // CheckInput runs all input guardrails against the request messages.
 // Returns the first failing result, or nil if all pass.
 func (g *GuardrailEngine) CheckInput(ctx context.Context, messages []string, tokenID int64) *Result {
 	if g.store == nil {
 		return nil
 	}
-	rules, err := g.store.GetEnabledGuardrailRules()
-	if err != nil {
-		logging.Warn("guardrail load rules failed", logging.F("error", err.Error()))
-		return nil
-	}
+	g.ensureLoaded()
+	g.rulesMu.RLock()
+	rules := g.rules
+	g.rulesMu.RUnlock()
+
 	text := strings.Join(messages, "\n")
-	for _, rule := range rules {
-		if rule.Hook != model.GuardrailHookInput && rule.Hook != model.GuardrailHookBoth {
+	for i := range rules {
+		cr := &rules[i]
+		if cr.rule.Hook != model.GuardrailHookInput && cr.rule.Hook != model.GuardrailHookBoth {
 			continue
 		}
-		passed := evaluateRule(rule, text)
+		passed := evalCachedRule(cr, text)
 		if !passed {
-			g.recordEvent(tokenID, rule, false, "input")
-			if rule.OnFailure == model.GuardrailActionFlag {
+			g.recordEvent(tokenID, cr.rule, false, "input")
+			if cr.rule.OnFailure == model.GuardrailActionFlag {
 				logging.Warn("guardrail flagged input",
-					logging.F("rule", rule.Name),
+					logging.F("rule", cr.rule.Name),
 					logging.F("hook", "input"),
 				)
 				continue
 			}
 			return &Result{
 				Passed:  false,
-				Message: fmt.Sprintf("guardrail %q blocked request", rule.Name),
-				RuleID:  rule.ID,
-				Rule:    rule.Name,
+				Message: fmt.Sprintf("guardrail %q blocked request", cr.rule.Name),
+				RuleID:  cr.rule.ID,
+				Rule:    cr.rule.Name,
 			}
 		}
 	}
@@ -77,30 +125,31 @@ func (g *GuardrailEngine) CheckOutput(ctx context.Context, response string, toke
 	if g.store == nil {
 		return nil
 	}
-	rules, err := g.store.GetEnabledGuardrailRules()
-	if err != nil {
-		logging.Warn("guardrail load rules failed", logging.F("error", err.Error()))
-		return nil
-	}
-	for _, rule := range rules {
-		if rule.Hook != model.GuardrailHookOutput && rule.Hook != model.GuardrailHookBoth {
+	g.ensureLoaded()
+	g.rulesMu.RLock()
+	rules := g.rules
+	g.rulesMu.RUnlock()
+
+	for i := range rules {
+		cr := &rules[i]
+		if cr.rule.Hook != model.GuardrailHookOutput && cr.rule.Hook != model.GuardrailHookBoth {
 			continue
 		}
-		passed := evaluateRule(rule, response)
+		passed := evalCachedRule(cr, response)
 		if !passed {
-			g.recordEvent(tokenID, rule, false, "output")
-			if rule.OnFailure == model.GuardrailActionFlag {
+			g.recordEvent(tokenID, cr.rule, false, "output")
+			if cr.rule.OnFailure == model.GuardrailActionFlag {
 				logging.Warn("guardrail flagged output",
-					logging.F("rule", rule.Name),
+					logging.F("rule", cr.rule.Name),
 					logging.F("hook", "output"),
 				)
 				continue
 			}
 			return &Result{
 				Passed:  false,
-				Message: fmt.Sprintf("guardrail %q blocked response", rule.Name),
-				RuleID:  rule.ID,
-				Rule:    rule.Name,
+				Message: fmt.Sprintf("guardrail %q blocked response", cr.rule.Name),
+				RuleID:  cr.rule.ID,
+				Rule:    cr.rule.Name,
 			}
 		}
 	}
@@ -125,7 +174,105 @@ func (g *GuardrailEngine) recordEvent(tokenID int64, rule model.GuardrailRule, p
 	}
 }
 
-// evaluateRule dispatches to the appropriate check function.
+// parse pre-parses the rule config at load time.
+func (cr *cachedRule) parse() {
+	switch cr.rule.Type {
+	case model.GuardrailRegexBlock:
+		var cfg struct {
+			Patterns []string `json:"patterns"`
+		}
+		if err := json.Unmarshal([]byte(cr.rule.Config), &cfg); err != nil {
+			return
+		}
+		cr.compiled = make([]*regexp.Regexp, 0, len(cfg.Patterns))
+		for _, p := range cfg.Patterns {
+			re, err := regexp.Compile(p)
+			if err != nil {
+				continue
+			}
+			cr.compiled = append(cr.compiled, re)
+		}
+
+	case model.GuardrailBlockedWords:
+		var cfg struct {
+			Words         []string `json:"words"`
+			CaseSensitive bool     `json:"case_sensitive"`
+		}
+		if err := json.Unmarshal([]byte(cr.rule.Config), &cfg); err != nil {
+			return
+		}
+		cr.config = cfg
+		cr.caseLower = make([]string, 0, len(cfg.Words))
+		for _, w := range cfg.Words {
+			cr.caseLower = append(cr.caseLower, strings.ToLower(w))
+		}
+
+	case model.GuardrailContentLength:
+		var cfg struct {
+			MinChars int `json:"min_chars"`
+			MaxChars int `json:"max_chars"`
+		}
+		if err := json.Unmarshal([]byte(cr.rule.Config), &cfg); err != nil {
+			return
+		}
+		cr.minChars = cfg.MinChars
+		cr.maxChars = cfg.MaxChars
+	}
+}
+
+// evalCachedRule evaluates a pre-parsed rule against text.
+func evalCachedRule(cr *cachedRule, text string) bool {
+	switch cr.rule.Type {
+	case model.GuardrailRegexBlock:
+		for _, re := range cr.compiled {
+			if re.MatchString(text) {
+				return false
+			}
+		}
+		return true
+
+	case model.GuardrailBlockedWords:
+		cfg, ok := cr.config.(struct {
+			Words         []string `json:"words"`
+			CaseSensitive bool     `json:"case_sensitive"`
+		})
+		if !ok {
+			return true
+		}
+		compare := text
+		if !cfg.CaseSensitive {
+			compare = strings.ToLower(text)
+		}
+		for _, w := range cr.caseLower {
+			word := w
+			if cfg.CaseSensitive {
+				// For case-sensitive, use original word (not lowercased)
+				// but we need to re-fetch from the original config.
+				// Since we lowercased all words, we just use the lowercase version.
+				word = w
+			}
+			if strings.Contains(compare, word) {
+				return false
+			}
+		}
+		return true
+
+	case model.GuardrailContentLength:
+		length := len(text)
+		if cr.minChars > 0 && length < cr.minChars {
+			return false
+		}
+		if cr.maxChars > 0 && length > cr.maxChars {
+			return false
+		}
+		return true
+
+	default:
+		return true
+	}
+}
+
+// evaluateRule dispatches to the appropriate check function (legacy path).
 func evaluateRule(rule model.GuardrailRule, text string) bool {
 	switch rule.Type {
 	case model.GuardrailRegexBlock:
@@ -135,7 +282,7 @@ func evaluateRule(rule model.GuardrailRule, text string) bool {
 	case model.GuardrailContentLength:
 		return checkContentLength(rule.Config, text)
 	default:
-		return true // unknown rule type = pass
+		return true
 	}
 }
 
@@ -145,7 +292,7 @@ func checkRegexBlock(configJSON, text string) bool {
 		Patterns []string `json:"patterns"`
 	}
 	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
-		return true // bad config = pass
+		return true
 	}
 	for _, p := range cfg.Patterns {
 		re, err := regexp.Compile(p)

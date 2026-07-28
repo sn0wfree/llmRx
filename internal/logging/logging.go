@@ -15,10 +15,12 @@
 package logging
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -145,12 +147,33 @@ type Field struct {
 // F is a convenience constructor for Field.
 func F(key string, value any) Field { return Field{Key: key, Value: value} }
 
+// Buffer pool to reduce allocations on the hot path.
+var bufPool = sync.Pool{
+	New: func() any {
+		return new(bytes.Buffer)
+	},
+}
+
+// mapPool reuses the record map to avoid allocation per log call.
+var mapPool = sync.Pool{
+	New: func() any {
+		return make(map[string]any, 16)
+	},
+}
+
 // log emits a record at the given level.
 func (l *Logger) log(level Level, msg string, fields []Field) {
 	if level < l.level {
 		return
 	}
-	record := make(map[string]any, len(l.fields)+len(fields)+3)
+
+	// Reuse a map from the pool.
+	record := mapPool.Get().(map[string]any)
+	// Clear previous keys efficiently.
+	for k := range record {
+		delete(record, k)
+	}
+
 	record["ts"] = time.Now().UTC().Format(time.RFC3339Nano)
 	record["level"] = level.String()
 	record["msg"] = msg
@@ -160,13 +183,24 @@ func (l *Logger) log(level Level, msg string, fields []Field) {
 	for _, f := range fields {
 		record[f.Key] = f.Value
 	}
+
 	var line string
 	if l.format == FormatText {
 		line = formatText(record)
 	} else {
-		buf, _ := json.Marshal(record)
-		line = string(buf)
+		buf := bufPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		enc := json.NewEncoder(buf)
+		enc.Encode(record)
+		line = buf.String()
+		// Trim trailing newline added by json.Encoder.
+		line = strings.TrimRight(line, "\n")
+		bufPool.Put(buf)
 	}
+
+	// Return map to pool.
+	mapPool.Put(record)
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	_, _ = fmt.Fprintln(l.out, line)
