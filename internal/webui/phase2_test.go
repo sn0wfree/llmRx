@@ -15,7 +15,7 @@ func TestLogsPage_Renders(t *testing.T) {
 	admin, _ := st.GetUserByUsername("admin")
 	tok := sessionCookieFor(t, st, admin)
 
-	st.CreateLog(&model.Log{Model: "gpt-4", PromptTokens: 10, CompletionTokens: 5})
+	h.logStore.Insert(&model.Log{Model: "gpt-4", PromptTokens: 10, CompletionTokens: 5})
 
 	req := httptest.NewRequest(http.MethodGet, "/logs", nil)
 	req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: tok})
@@ -164,7 +164,7 @@ func TestConfigSave_Success(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.yaml")
 
 	_, st := newTestWebUI(t)
-	h2, err := New(st, nil, cfgPath)
+	h2, err := New(st, nil, nil, cfgPath)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

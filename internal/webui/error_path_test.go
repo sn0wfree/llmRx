@@ -16,6 +16,35 @@ import (
 
 var errTestStore = errors.New("test store error")
 
+type errorLogDriver struct{ err error }
+
+func (d *errorLogDriver) Open(dir string) error                                          { return nil }
+func (d *errorLogDriver) Insert(entry *model.Log) error                                 { return d.err }
+func (d *errorLogDriver) QueryAcross(f logstore.QueryFilter, days []string) ([]model.Log, int64, error) {
+	return nil, 0, d.err
+}
+func (d *errorLogDriver) LogStats(days []string) (logstore.LogStatsResult, error) {
+	return logstore.LogStatsResult{}, d.err
+}
+func (d *errorLogDriver) TimeSeries(f logstore.QueryFilter, bucketSec int64, days []string) ([]logstore.SeriesBucket, error) {
+	return nil, d.err
+}
+func (d *errorLogDriver) TopByField(f logstore.QueryFilter, field string, limit int, days []string) ([]logstore.NamedMetric, error) {
+	return nil, d.err
+}
+func (d *errorLogDriver) ListFiles() ([]string, error)   { return nil, d.err }
+func (d *errorLogDriver) DeleteFiles(days []string) error { return d.err }
+func (d *errorLogDriver) Close() error                  { return nil }
+
+func newErrorLogStore(t *testing.T) *logstore.Manager {
+	t.Helper()
+	ls, err := logstore.New(t.TempDir(), &errorLogDriver{err: errTestStore})
+	if err != nil {
+		t.Fatalf("newErrorLogStore: %v", err)
+	}
+	return ls
+}
+
 // newScriptedWebui creates a webui handler backed by a ScriptedStore
 // without importing testhelper (which would create an import cycle).
 func newScriptedWebui(t *testing.T) (*Handler, *ScriptedStore) {
@@ -31,7 +60,6 @@ func newScriptedWebui(t *testing.T) (*Handler, *ScriptedStore) {
 	logstore.EnsureDir(logDir)
 	ls, _ := logstore.New(logDir, nil)
 	t.Cleanup(func() { _ = ls.Close() })
-	st.SetLogStore(ls)
 
 	hash, _ := auth.Hash("admin")
 	st.CreateUser(&model.User{
@@ -39,7 +67,7 @@ func newScriptedWebui(t *testing.T) (*Handler, *ScriptedStore) {
 	})
 
 	ss := NewScriptedStore(st)
-	h, err := New(ss, nil, "")
+	h, err := New(ss, ls, nil, "")
 	if err != nil {
 		t.Fatalf("webui.New: %v", err)
 	}
@@ -347,11 +375,9 @@ func TestUserPasswordSubmit_StoreError(t *testing.T) {
 // --- Phase2 error paths ---
 
 func TestLogsPage_StoreError(t *testing.T) {
-	h, ss := newScriptedWebui(t)
+	h, _ := newScriptedWebui(t)
 	tok := testSession(t, h)
-	ss.QueryLogsFunc = func(f store.LogFilter) ([]model.Log, int64, error) {
-		return nil, 0, errTestStore
-	}
+	h.SetLogStore(newErrorLogStore(t))
 	req := authReq2(t, http.MethodGet, "/logs", tok)
 	rec := httptest.NewRecorder()
 	h.Routes().ServeHTTP(rec, req)

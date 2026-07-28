@@ -15,7 +15,6 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 
 	"github.com/sn0wfree/llmRx/internal/logging"
-	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/secrets"
 )
@@ -36,9 +35,8 @@ var (
 )
 
 type SQLite struct {
-	db       *sql.DB
-	logStore *logstore.Manager // nil until SetLogStore is called
-	Secrets  *secrets.Manager  // nil ⇒ plaintext only (legacy mode); set by SetSecrets
+	db      *sql.DB
+	Secrets *secrets.Manager // nil ⇒ plaintext only (legacy mode); set by SetSecrets
 }
 
 // SetSecrets attaches a secrets manager used to encrypt new key rows
@@ -48,13 +46,6 @@ type SQLite struct {
 //     legacy plaintext Key column for rows written before the
 //     migration landed.
 func (s *SQLite) SetSecrets(m *secrets.Manager) { s.Secrets = m }
-
-// SetLogStore wires the per-date file log store. After this call
-// the legacy CreateLog/QueryLogs/LogStats/DeleteLogsBefore methods
-// delegate into the logstore package; the logs table is no longer
-// present in the main DB. Required at startup; the call is
-// idempotent (a second call replaces the manager).
-func (s *SQLite) SetLogStore(m *logstore.Manager) { s.logStore = m }
 
 // Ping verifies the underlying database connection is responsive.
 // Returns nil when the connection is healthy.
@@ -443,6 +434,23 @@ func (s *SQLite) UpdateChannel(ch *model.Channel) error {
 func (s *SQLite) DeleteChannel(id int64) error {
 	_, err := s.db.Exec(`DELETE FROM channels WHERE id = ?`, id)
 	return err
+}
+
+func (s *SQLite) GetDrainedChannels() ([]DrainedChannel, error) {
+	rows, err := s.db.Query(`SELECT c.id, c.name FROM channels c WHERE c.status = 1 AND NOT EXISTS (SELECT 1 FROM keys k WHERE k.channel_id = c.id AND k.status = 0)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DrainedChannel
+	for rows.Next() {
+		var d DrainedChannel
+		if err := rows.Scan(&d.ID, &d.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }
 
 func scanChannel(r interface {
@@ -1191,183 +1199,6 @@ func scanUser(r interface {
 		u.SessionExp = &exp
 	}
 	return &u, nil
-}
-
-// ---------------- Logs ----------------
-// Logs now live in per-date SQLite files under data/logs/. Every
-// method below delegates to the logstore Manager wired in via
-// SetLogStore. The methods on this Store still exist so admin and
-// api call sites don't change.
-
-func (s *SQLite) CreateLog(l *model.Log) error {
-	if s.logStore == nil {
-		return errors.New("logstore not initialized")
-	}
-	return s.logStore.Insert(l)
-}
-
-func (s *SQLite) GetLogs(limit, offset int) ([]model.Log, error) {
-	if s.logStore == nil {
-		return []model.Log{}, nil
-	}
-	out, _, err := s.logStore.Query(logstore.QueryFilter{Limit: limit, Offset: offset}, nil)
-	return out, err
-}
-
-func (s *SQLite) CountLogs() (int64, error) {
-	if s.logStore == nil {
-		return 0, nil
-	}
-	_, total, err := s.logStore.Query(logstore.QueryFilter{Limit: 1}, nil)
-	return total, err
-}
-
-// DeleteLogsBefore deletes every day file whose date is strictly
-// before the cutoff. Returns the number of files removed. The
-// unixSec argument is interpreted as a UTC timestamp; the file
-// date is derived from it.
-func (s *SQLite) DeleteLogsBefore(unixSec int64) (int64, error) {
-	if s.logStore == nil {
-		return 0, nil
-	}
-	cutoff := time.Unix(unixSec, 0).UTC().Format("2006-01-02")
-	files, err := s.logStore.ListFiles()
-	if err != nil {
-		return 0, err
-	}
-	var toDelete []string
-	for _, f := range files {
-		if extractDateForStore(f) < cutoff {
-			toDelete = append(toDelete, f)
-		}
-	}
-	if len(toDelete) == 0 {
-		return 0, nil
-	}
-	if err := s.logStore.DeleteFiles(toDelete); err != nil {
-		return 0, err
-	}
-	return int64(len(toDelete)), nil
-}
-
-func (s *SQLite) LogStats() (LogStats, error) {
-	if s.logStore == nil {
-		return LogStats{}, nil
-	}
-	r, err := s.logStore.Stats(nil)
-	if err != nil {
-		return LogStats{}, err
-	}
-	return LogStats{
-		PromptTokens:     r.PromptTokens,
-		CompletionTokens: r.CompletionTokens,
-		RealCostUSD:      r.RealCostUSD,
-		BilledCostUSD:    r.BilledCostUSD,
-		Total:            r.Total,
-		Errors:           r.Errors,
-	}, nil
-}
-
-func (s *SQLite) QueryLogs(f LogFilter) ([]model.Log, int64, error) {
-	if s.logStore == nil {
-		return []model.Log{}, 0, nil
-	}
-	return s.logStore.Query(toLogstoreFilter(f), nil)
-}
-
-// ---------------- Analytics ----------------
-
-func (s *SQLite) TimeSeries(f LogFilter, bucketSec int64) ([]SeriesPoint, error) {
-	if s.logStore == nil {
-		return []SeriesPoint{}, nil
-	}
-	buckets, err := s.logStore.TimeSeries(toLogstoreFilter(f), bucketSec, nil)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]SeriesPoint, 0, len(buckets))
-	for _, b := range buckets {
-		out = append(out, SeriesPoint{
-			Bucket:           b.Bucket,
-			Requests:         b.Requests,
-			Errors:           b.Errors,
-			PromptTokens:     b.PromptTokens,
-			CompletionTokens: b.CompletionTokens,
-			RealCostUSD:      b.RealCostUSD,
-			BilledCostUSD:    b.BilledCostUSD,
-		})
-	}
-	return out, nil
-}
-
-func (s *SQLite) TopByModel(f LogFilter, limit int) ([]NamedMetric, error) {
-	return s.topByFieldViaStore("model", f, limit)
-}
-
-func (s *SQLite) TopByChannel(f LogFilter, limit int) ([]NamedMetric, error) {
-	return s.topByFieldViaStore("channel_id", f, limit)
-}
-
-func (s *SQLite) TopByToken(f LogFilter, limit int) ([]NamedMetric, error) {
-	return s.topByFieldViaStore("token_id", f, limit)
-}
-
-func (s *SQLite) topByFieldViaStore(field string, f LogFilter, limit int) ([]NamedMetric, error) {
-	if s.logStore == nil {
-		return []NamedMetric{}, nil
-	}
-	out, err := s.logStore.TopByField(toLogstoreFilter(f), field, limit, nil)
-	if err != nil {
-		return nil, err
-	}
-	res := make([]NamedMetric, 0, len(out))
-	for _, m := range out {
-		res = append(res, NamedMetric{
-			Label:  m.Label,
-			Count:  m.Count,
-			Tokens: m.Tokens,
-			Cost:   m.Cost,
-		})
-	}
-	return res, nil
-}
-
-// toLogstoreFilter converts the public LogFilter (which admin
-// handlers use) into the logstore-internal QueryFilter.
-func toLogstoreFilter(f LogFilter) logstore.QueryFilter {
-	return logstore.QueryFilter{
-		TokenID:     f.TokenID,
-		ChannelID:   f.ChannelID,
-		Model:       f.Model,
-		StatusCode:  f.StatusCode,
-		CreatedFrom: f.CreatedFrom,
-		CreatedTo:   f.CreatedTo,
-		Limit:       f.Limit,
-		Offset:      f.Offset,
-	}
-}
-
-// extractDateForStore pulls the YYYY-MM-DD prefix from a day file
-// basename. For "2026-07-09" (base file) it returns "2026-07-09".
-// For "2026-07-09-2" (rollover file) it returns "2026-07-09".
-// It uses a date-format check rather than a numeric suffix check
-// to avoid confusing the day number with a seq suffix.
-func extractDateForStore(key string) string {
-	// Try the longest known date prefix (YYYY-MM-DD-N).
-	if len(key) >= len("2006-01-02-1") {
-		candidate := key[:len("2006-01-02-1")-1]
-		if _, err := time.Parse("2006-01-02", candidate); err == nil {
-			return candidate
-		}
-	}
-	// Try base YYYY-MM-DD.
-	if len(key) >= len("2006-01-02") {
-		candidate := key[:len("2006-01-02")]
-		if _, err := time.Parse("2006-01-02", candidate); err == nil {
-			return candidate
-		}
-	}
-	return key
 }
 
 // ---------------- alerts ----------------

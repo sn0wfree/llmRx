@@ -163,7 +163,10 @@ func KeyCiphertextFromContext(ctx context.Context) (string, string, bool) {
 
 // Decrypt returns the plaintext API key for a BYOK row. nil-safe.
 func (m *Manager) Decrypt(ch *model.BYOKChannel) (string, error) {
-	if m.secrets == nil || ch == nil {
+	if ch == nil {
+		return "", nil
+	}
+	if m.secrets == nil {
 		return ch.KeyCiphertext, nil
 	}
 	b, err := m.secrets.Decrypt(ch.KeyCiphertext)

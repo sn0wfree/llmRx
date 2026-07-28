@@ -4,9 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
-	"time"
 
-	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/secrets"
 )
@@ -20,18 +18,6 @@ func openTemp(t *testing.T) *SQLite {
 		t.Fatalf("OpenSQLite: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-
-	// Initialize logstore for tests
-	logDir := filepath.Join(dir, "logs")
-	if err := logstore.EnsureDir(logDir); err != nil {
-		t.Fatalf("logstore.EnsureDir: %v", err)
-	}
-	logStore, err := logstore.New(logDir, nil)
-	if err != nil {
-		t.Fatalf("logstore.New: %v", err)
-	}
-	s.SetLogStore(logStore)
-	t.Cleanup(func() { _ = logStore.Close() })
 
 	return s
 }
@@ -218,50 +204,6 @@ func TestUsers_UniqueUsernameAndSessionLookup(t *testing.T) {
 	}
 	if u3, _ := s.GetUserBySession(""); u3 != nil {
 		t.Fatalf("empty session should not match, got %+v", u3)
-	}
-}
-
-func TestLogs_Aggregations(t *testing.T) {
-	s := openTemp(t)
-
-	now := time.Now()
-	rows := []*model.Log{
-		{TokenID: 1, ChannelID: 1, Model: "deepseek-chat", PromptTokens: 100, CompletionTokens: 50, RealCostUSD: 0.01, BilledCostUSD: 0.01, DurationMs: 100, StatusCode: 200, RouterPath: "L1→L2", CreatedAt: now},
-		{TokenID: 1, ChannelID: 1, Model: "deepseek-chat", PromptTokens: 200, CompletionTokens: 100, RealCostUSD: 0.02, BilledCostUSD: 0.02, DurationMs: 200, StatusCode: 500, RouterPath: "L1→L2", CreatedAt: now.Add(1 * time.Second)},
-		{TokenID: 2, ChannelID: 2, Model: "minimax-text", PromptTokens: 50, CompletionTokens: 25, RealCostUSD: 0.005, BilledCostUSD: 0.005, DurationMs: 50, StatusCode: 200, RouterPath: "L1→L2", CreatedAt: now.Add(2 * time.Second)},
-	}
-	for _, l := range rows {
-		if err := s.CreateLog(l); err != nil {
-			t.Fatalf("CreateLog: %v", err)
-		}
-	}
-
-	n, err := s.CountLogs()
-	if err != nil || n != 3 {
-		t.Fatalf("CountLogs: n=%d err=%v", n, err)
-	}
-
-	st, err := s.LogStats()
-	if err != nil {
-		t.Fatalf("LogStats: %v", err)
-	}
-	if st.Total != 3 || st.Errors != 1 {
-		t.Fatalf("stats totals: total=%d errors=%d", st.Total, st.Errors)
-	}
-	if st.PromptTokens != 350 || st.CompletionTokens != 175 {
-		t.Fatalf("tokens: %+v", st)
-	}
-	if st.RealCostUSD < 0.0349 || st.RealCostUSD > 0.0351 {
-		t.Fatalf("cost: %.6f", st.RealCostUSD)
-	}
-
-	logs, err := s.GetLogs(10, 0)
-	if err != nil || len(logs) != 3 {
-		t.Fatalf("GetLogs: %d %v", len(logs), err)
-	}
-	// ORDER BY id DESC: newest first
-	if logs[0].CreatedAt.Before(logs[2].CreatedAt) {
-		t.Fatal("GetLogs not ordered DESC")
 	}
 }
 

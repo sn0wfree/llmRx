@@ -17,6 +17,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/guardrail"
 	"github.com/sn0wfree/llmRx/internal/logging"
+	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/observability"
@@ -35,6 +36,7 @@ type Handler struct {
 	providers map[string]provider.Provider
 	cfg       *config.Config
 	store     store.Store
+	logStore  *logstore.Manager
 	logBroker *broker.Broker[*model.Log]
 	rt        *runtime.Defaults
 	limits    *ratelimit.Limiter
@@ -47,21 +49,22 @@ type Handler struct {
 	retryingWrapped map[string]provider.Provider // protocol -> wrapped
 }
 
-func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Handler {
+func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, ls *logstore.Manager, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Handler {
 	if rt == nil {
 		rt = runtime.New()
 		rt.SetMarkupRatio(cfg.Server.MarkupRatio)
 	}
 	return &Handler{
-		router:    eng,
-		pool:      cp,
-		provider:  provider.NewOpenAIProvider(),
-		providers: provider.All(),
-		cfg:       cfg,
-		store:     st,
-		logBroker: lb,
-		rt:        rt,
-		limits:    ratelimit.New(),
+		router:     eng,
+		pool:       cp,
+		provider:   provider.NewOpenAIProvider(),
+		providers:  provider.All(),
+		cfg:        cfg,
+		store:      st,
+		logStore:   ls,
+		logBroker:  lb,
+		rt:         rt,
+		limits:     ratelimit.New(),
 		guardrails: guardrail.New(st),
 	}
 }
@@ -575,7 +578,7 @@ func (h *Handler) emitLog(ctx context.Context, tokenID int64, modelName string, 
 		RouterPath:      route.RouterLog,
 		RequestIP:       ip,
 	}
-	if err := h.store.CreateLog(entry); err != nil {
+	if err := h.logStore.Insert(entry); err != nil {
 		logging.Warn("persist log failed", logging.F("error", err.Error()))
 	}
 	if h.logBroker != nil {

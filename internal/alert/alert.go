@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/logging"
+	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
@@ -32,6 +33,7 @@ type Channel interface {
 // Manager owns the scheduler loop and the registry of rules.
 type Manager struct {
 	st           store.Store
+	logStore     *logstore.Manager
 	channels     []Channel
 	tickInterval time.Duration
 	// defaults is the live runtime.Defaults handle; when set, the
@@ -58,7 +60,7 @@ type Config struct {
 
 // NewManager wires up a manager. TickInterval <= 0 falls back to 30s
 // and DefaultCooldown <= 0 falls back to 5m.
-func NewManager(st store.Store, chans []Channel, cfg Config) *Manager {
+func NewManager(st store.Store, ls *logstore.Manager, chans []Channel, cfg Config) *Manager {
 	if cfg.TickInterval <= 0 {
 		cfg.TickInterval = 30 * time.Second
 	}
@@ -67,6 +69,7 @@ func NewManager(st store.Store, chans []Channel, cfg Config) *Manager {
 	}
 	return &Manager{
 		st:               st,
+		logStore:         ls,
 		channels:         chans,
 		tickInterval:     cfg.TickInterval,
 		defaults:         cfg.Defaults,
@@ -139,7 +142,7 @@ func (m *Manager) evaluate(ctx context.Context) {
 		if r.LastFiredAt > 0 && now.Sub(time.Unix(r.LastFiredAt, 0)) < cd {
 			continue
 		}
-		fired, payload, err := Evaluate(&r, now, m.st)
+		fired, payload, err := Evaluate(&r, now, m.st, m.logStore)
 		if err != nil {
 			logging.Warn("alert eval failed",
 				logging.F("rule", r.Name),

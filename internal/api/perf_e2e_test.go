@@ -17,6 +17,7 @@ import (
 
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/config"
+	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/provider"
@@ -156,10 +157,14 @@ func newBenchEnv(tb testing.TB) *benchEnv {
 	eng := router.New(st, cp)
 	_ = rt
 
+	logDir := dir + "/logs"
+	logstore.EnsureDir(logDir)
+	ls, _ := logstore.New(logDir, nil)
+
 	mock := newMockProvider()
 	provider.SetFactoryOverride(mock)
 
-	apiHandler := New(&config.Config{}, eng, cp, st, broker.New[*model.Log](64), rt)
+	apiHandler := New(&config.Config{}, eng, cp, st, ls, broker.New[*model.Log](64), rt)
 	apiHandler.SetProviders(map[string]provider.Provider{
 		"":          mock,
 		"openai":     mock,

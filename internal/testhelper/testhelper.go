@@ -34,6 +34,7 @@ import (
 type App struct {
 	T         *testing.T
 	Store     store.Store
+	LogStore  *logstore.Manager
 	Pool      *pool.ChannelPool
 	Cache     *tokencache.Cache
 	Engine    *router.RouterEngine
@@ -70,7 +71,6 @@ func New(t *testing.T) *App {
 	if err != nil {
 		t.Fatalf("logstore.New: %v", err)
 	}
-	st.SetLogStore(logStore)
 	t.Cleanup(func() { _ = logStore.Close() })
 
 	if err := st.CreateUser(&model.User{
@@ -90,10 +90,10 @@ func New(t *testing.T) *App {
 	rt := runtime.New()
 	cfg := &config.Config{}
 	limiter := ratelimit.New()
-	adminH := admin.New(st, cp, eng, cache, logBroker, rt, cfg, "")
+	adminH := admin.New(st, logStore, cp, eng, cache, logBroker, rt, cfg, "")
 
 	mp := &MockProvider{}
-	chatH := api.New(cfg, eng, cp, st, logBroker, rt)
+	chatH := api.New(cfg, eng, cp, st, logStore, logBroker, rt)
 	chatH.SetProvider(mp)
 	chatH.SetProviders(map[string]provider.Provider{
 		"":          mp,
@@ -114,6 +114,7 @@ func New(t *testing.T) *App {
 	return &App{
 		T:         t,
 		Store:     st,
+		LogStore:  logStore,
 		Pool:      cp,
 		Cache:     cache,
 		Engine:    eng,
@@ -161,11 +162,19 @@ func NewWithStore(t *testing.T, st store.Store) *App {
 	logBroker := broker.New[*model.Log](128)
 	rt := runtime.New()
 	cfg := &config.Config{}
+
+	logDir := t.TempDir()
+	logStore, err := logstore.New(logDir, nil)
+	if err != nil {
+		t.Fatalf("logstore.New: %v", err)
+	}
+	t.Cleanup(func() { _ = logStore.Close() })
+
 	limiter := ratelimit.New()
-	adminH := admin.New(st, cp, eng, cache, logBroker, rt, cfg, "")
+	adminH := admin.New(st, logStore, cp, eng, cache, logBroker, rt, cfg, "")
 
 	mp := &MockProvider{}
-	chatH := api.New(cfg, eng, cp, st, logBroker, rt)
+	chatH := api.New(cfg, eng, cp, st, logStore, logBroker, rt)
 	chatH.SetProvider(mp)
 	chatH.SetProviders(map[string]provider.Provider{
 		"":          mp,
@@ -186,6 +195,7 @@ func NewWithStore(t *testing.T, st store.Store) *App {
 	return &App{
 		T:         t,
 		Store:     st,
+		LogStore:  logStore,
 		Pool:      cp,
 		Cache:     cache,
 		Engine:    eng,

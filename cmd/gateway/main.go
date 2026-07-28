@@ -63,7 +63,7 @@ func main() {
 		if err != nil {
 			fatalf("wipe-keys load config failed", logging.F("error", err.Error()))
 		}
-		st, err := store.OpenSQLite(cfg.Database.DSN)
+		st, err := store.Open(cfg.Database.Driver, cfg.Database.DSN)
 		if err != nil {
 			fatalf("wipe-keys open store failed", logging.F("error", err.Error()))
 		}
@@ -114,7 +114,7 @@ func main() {
 		fatalf("secrets failed", logging.F("error", err.Error()))
 	}
 
-	st, err := store.OpenSQLite(cfg.Database.DSN)
+	st, err := store.Open(cfg.Database.Driver, cfg.Database.DSN)
 	if err != nil {
 		fatalf("open store failed", logging.F("error", err.Error()))
 	}
@@ -147,7 +147,6 @@ func main() {
 		fatalf("logstore failed", logging.F("error", err.Error()))
 	}
 	defer logStore.Close()
-	st.SetLogStore(logStore)
 	logging.Info("logstore initialized", logging.F("path", logDir))
 
 	// Load provider descriptors from config.yml and DB into the
@@ -267,7 +266,7 @@ func main() {
 	// take effect on the next request, not on restart.
 	eng.SetBreakerDefaults(rt)
 
-	alertMgr := alert.NewManager(st, []alert.Channel{
+	alertMgr := alert.NewManager(st, logStore, []alert.Channel{
 		channels.NewBuiltin(),
 		channels.NewWebhook(),
 	}, alert.Config{
@@ -288,7 +287,7 @@ func main() {
 	go logStore.RunRetention(ctx, func() int { return int(rt.LogRetentionDays()) })
 	go alertMgr.Start(ctx)
 
-	srv := server.New(cfg, *cfgPath, eng, cp, st, tokCache, logBroker, rt, "/data/llmrx.key")
+	srv := server.New(cfg, *cfgPath, eng, cp, st, logStore, tokCache, logBroker, rt, "/data/llmrx.key")
 	srv.SetAlertManager(alertMgr)
 
 	// Hook SIGINT/SIGTERM into ctx so server.Start drains in-flight

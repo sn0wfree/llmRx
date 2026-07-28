@@ -13,6 +13,7 @@ import (
 
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/provider"
+	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/testhelper"
 )
 
@@ -191,7 +192,7 @@ func TestChat_HappyPath(t *testing.T) {
 		t.Fatalf("expected baseURL https://x, got %q", app.Provider.LastURL)
 	}
 
-	logs, err := app.Store.GetLogs(10, 0)
+	logs, _, err := app.LogStore.Query(logstore.QueryFilter{Limit: 10}, nil)
 	if err != nil {
 		t.Fatalf("GetLogs: %v", err)
 	}
@@ -236,7 +237,7 @@ func TestChat_UpstreamErrorLogged(t *testing.T) {
 		t.Fatalf("expected 502, got %d %s", rec.Code, rec.Body.String())
 	}
 
-	logs, _ := app.Store.GetLogs(10, 0)
+	logs, _, _ := app.LogStore.Query(logstore.QueryFilter{Limit: 10, Offset: 0}, nil)
 	if len(logs) != 1 || logs[0].StatusCode != 502 {
 		t.Fatalf("expected 1 fail log with 502, got %+v", logs)
 	}

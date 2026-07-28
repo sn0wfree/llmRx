@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -62,33 +61,5 @@ func TestSQLite_ConnectionPool(t *testing.T) {
 	stats := s.db.Stats()
 	if stats.MaxOpenConnections != 8 {
 		t.Errorf("MaxOpenConnections = %d, want 8", stats.MaxOpenConnections)
-	}
-}
-
-func TestSQLite_DeleteLogsBefore(t *testing.T) {
-	dir := t.TempDir()
-	dsn := filepath.Join(dir, "test.db")
-	s, err := OpenSQLite(dsn)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer s.Close()
-
-	ctx := context.Background()
-	_ = ctx
-	// Setup: create a channel, then 3 logs (1 old, 2 recent)
-	if err := s.CreateChannel(testChannel(t, "test")); err != nil {
-		t.Fatal(err)
-	}
-	// We can't easily test time-based retention without exposing
-	// the logs model; just verify the method doesn't error on
-	// empty table.
-	now := int64(0)
-	n, err := s.DeleteLogsBefore(now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 0 {
-		t.Errorf("expected 0 deletes, got %d", n)
 	}
 }

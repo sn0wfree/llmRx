@@ -20,7 +20,7 @@ func TestHandler_Accessors(t *testing.T) {
 	cp := pool.NewChannelPool()
 	var st store.Store
 	lb := broker.New[*model.Log](16)
-	h := New(cfg, eng, cp, st, lb, rt)
+	h := New(cfg, eng, cp, st, nil, lb, rt)
 
 	if h.Limits() == nil {
 		t.Fatal("Limits() should not be nil")
@@ -40,7 +40,7 @@ func TestHandler_SetStore(t *testing.T) {
 	cp := pool.NewChannelPool()
 	var st store.Store
 	lb := broker.New[*model.Log](16)
-	h := New(cfg, eng, cp, st, lb, rt)
+	h := New(cfg, eng, cp, st, nil, lb, rt)
 
 	var fakeStore store.Store
 	h.SetStore(fakeStore)
@@ -56,7 +56,7 @@ func TestHandler_SetMarkup(t *testing.T) {
 	cp := pool.NewChannelPool()
 	var st store.Store
 	lb := broker.New[*model.Log](16)
-	h := New(cfg, eng, cp, st, lb, rt)
+	h := New(cfg, eng, cp, st, nil, lb, rt)
 
 	h.SetMarkup(1.5)
 	if got := h.Markup(); got != 1.5 {
@@ -71,7 +71,7 @@ func TestHandler_ProviderFor_Default(t *testing.T) {
 	cp := pool.NewChannelPool()
 	var st store.Store
 	lb := broker.New[*model.Log](16)
-	h := New(cfg, eng, cp, st, lb, rt)
+	h := New(cfg, eng, cp, st, nil, lb, rt)
 
 	p := h.providerFor("nonexistent-protocol", false)
 	if p == nil {

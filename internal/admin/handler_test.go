@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/auth"
+	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/runtime"
-	"github.com/sn0wfree/llmRx/internal/store"
 	"github.com/sn0wfree/llmRx/internal/testhelper"
 )
 
@@ -455,7 +455,7 @@ func TestAdmin_LogsFilterByToken(t *testing.T) {
 			PromptTokens: 10, CompletionTokens: 5, RealCostUSD: 0.001,
 			StatusCode: 200, CreatedAt: now.Add(time.Duration(i) * time.Second),
 		}
-		if err := app.Store.CreateLog(l); err != nil {
+		if err := app.LogStore.Insert(l); err != nil {
 			t.Fatalf("seed log: %v", err)
 		}
 	}
@@ -491,7 +491,7 @@ func TestAdmin_LogsFilterByChannelAndModel(t *testing.T) {
 			TokenID: tok.ID, ChannelID: ch.ID, KeyID: 1, Model: s.model,
 			StatusCode: s.status,
 		}
-		if err := app.Store.CreateLog(l); err != nil {
+		if err := app.LogStore.Insert(l); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 	}
@@ -532,7 +532,7 @@ func TestAdmin_LogsFilterByDateRange(t *testing.T) {
 			StatusCode: 200, CreatedAt: base.Add(h * time.Hour),
 		}
 		_ = i
-		_ = app.Store.CreateLog(l)
+		_ = app.LogStore.Insert(l)
 	}
 	sess := login(t, app)
 
@@ -562,7 +562,7 @@ func TestAdmin_AnalyticsTimeSeries(t *testing.T) {
 			BilledCostUSD: 0.001, StatusCode: 200, CreatedAt: base.Add(h * time.Hour),
 		}
 		_ = i
-		_ = app.Store.CreateLog(l)
+		_ = app.LogStore.Insert(l)
 	}
 	sess := login(t, app)
 
@@ -571,7 +571,7 @@ func TestAdmin_AnalyticsTimeSeries(t *testing.T) {
 		t.Fatalf("timeseries: %d %s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		Data []store.SeriesPoint `json:"data"`
+		Data []logstore.SeriesBucket `json:"data"`
 	}
 	decodeJSON(t, rec, &resp)
 	if len(resp.Data) == 0 {
@@ -592,16 +592,16 @@ func TestAdmin_AnalyticsByModel(t *testing.T) {
 	tok := app.AddToken("sk-t", "t")
 
 	for i := 0; i < 3; i++ {
-		_ = app.Store.CreateLog(&model.Log{TokenID: tok.ID, ChannelID: ch.ID, KeyID: 1, Model: "a", StatusCode: 200})
+		_ = app.LogStore.Insert(&model.Log{TokenID: tok.ID, ChannelID: ch.ID, KeyID: 1, Model: "a", StatusCode: 200})
 	}
 	for i := 0; i < 2; i++ {
-		_ = app.Store.CreateLog(&model.Log{TokenID: tok.ID, ChannelID: ch.ID, KeyID: 1, Model: "b", StatusCode: 200})
+		_ = app.LogStore.Insert(&model.Log{TokenID: tok.ID, ChannelID: ch.ID, KeyID: 1, Model: "b", StatusCode: 200})
 	}
 	sess := login(t, app)
 
 	rec := do(t, app.Admin.Routes(), http.MethodGet, "/analytics/by-model", sess, "")
 	var resp struct {
-		Data []store.NamedMetric `json:"data"`
+		Data []logstore.NamedMetric `json:"data"`
 	}
 	decodeJSON(t, rec, &resp)
 	if len(resp.Data) != 2 {
@@ -619,14 +619,14 @@ func TestAdmin_AnalyticsByChannel(t *testing.T) {
 	tok := app.AddToken("sk-t", "t")
 
 	for i := 0; i < 2; i++ {
-		_ = app.Store.CreateLog(&model.Log{TokenID: tok.ID, ChannelID: ch1.ID, KeyID: 1, Model: "a", StatusCode: 200})
+		_ = app.LogStore.Insert(&model.Log{TokenID: tok.ID, ChannelID: ch1.ID, KeyID: 1, Model: "a", StatusCode: 200})
 	}
-	_ = app.Store.CreateLog(&model.Log{TokenID: tok.ID, ChannelID: ch2.ID, KeyID: 1, Model: "a", StatusCode: 200})
+	_ = app.LogStore.Insert(&model.Log{TokenID: tok.ID, ChannelID: ch2.ID, KeyID: 1, Model: "a", StatusCode: 200})
 
 	sess := login(t, app)
 	rec := do(t, app.Admin.Routes(), http.MethodGet, "/analytics/by-channel", sess, "")
 	var resp struct {
-		Data []store.NamedMetric `json:"data"`
+		Data []logstore.NamedMetric `json:"data"`
 	}
 	decodeJSON(t, rec, &resp)
 	if len(resp.Data) != 2 {

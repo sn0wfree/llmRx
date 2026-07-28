@@ -23,6 +23,7 @@ type ScriptedStore struct {
 	CreateChannelFunc     func(ch *model.Channel) error
 	UpdateChannelFunc     func(ch *model.Channel) error
 	DeleteChannelFunc     func(id int64) error
+	GetDrainedChannelsFunc func() ([]store.DrainedChannel, error)
 	GetKeysFunc           func(channelID int64) ([]model.Key, error)
 	CreateKeyFunc         func(k *model.Key) error
 	DeleteKeyFunc         func(id int64) error
@@ -36,6 +37,7 @@ type ScriptedStore struct {
 	IncrementTokenSpendFunc func(tokenID int64, amount float64) error
 	IncrementPlanSpendFunc  func(planID int64, amount float64) error
 	RecordRequestSpendFunc  func(tokenID, planID int64, amount float64) error
+	MarkTokenExpiredFunc    func(tokenID int64) error
 	GetPlansFunc          func() ([]model.Plan, error)
 	GetPlanFunc           func(id int64) (*model.Plan, error)
 	CreatePlanFunc        func(p *model.Plan) error
@@ -48,16 +50,6 @@ type ScriptedStore struct {
 	CreateUserFunc        func(u *model.User) error
 	UpdateUserFunc        func(u *model.User) error
 	CleanupExpiredSessionsFunc func() (int64, error)
-	CreateLogFunc         func(l *model.Log) error
-	GetLogsFunc           func(limit, offset int) ([]model.Log, error)
-	CountLogsFunc         func() (int64, error)
-	DeleteLogsBeforeFunc  func(unixSec int64) (int64, error)
-	LogStatsFunc          func() (store.LogStats, error)
-	QueryLogsFunc         func(f store.LogFilter) ([]model.Log, int64, error)
-	TimeSeriesFunc        func(f store.LogFilter, bucketSec int64) ([]store.SeriesPoint, error)
-	TopByModelFunc        func(f store.LogFilter, limit int) ([]store.NamedMetric, error)
-	TopByChannelFunc      func(f store.LogFilter, limit int) ([]store.NamedMetric, error)
-	TopByTokenFunc        func(f store.LogFilter, limit int) ([]store.NamedMetric, error)
 	GetAlertsFunc         func() ([]model.Alert, error)
 	GetAlertFunc          func(id int64) (*model.Alert, error)
 	CreateAlertFunc       func(a *model.Alert) error
@@ -132,6 +124,10 @@ func (s *ScriptedStore) DeleteChannel(id int64) error {
 	if s.DeleteChannelFunc != nil { return s.DeleteChannelFunc(id) }
 	return s.underlying.DeleteChannel(id)
 }
+func (s *ScriptedStore) GetDrainedChannels() ([]store.DrainedChannel, error) {
+	if s.GetDrainedChannelsFunc != nil { return s.GetDrainedChannelsFunc() }
+	return s.underlying.GetDrainedChannels()
+}
 func (s *ScriptedStore) GetKeys(channelID int64) ([]model.Key, error) {
 	if s.GetKeysFunc != nil { return s.GetKeysFunc(channelID) }
 	return s.underlying.GetKeys(channelID)
@@ -184,6 +180,10 @@ func (s *ScriptedStore) RecordRequestSpend(tokenID, planID int64, amount float64
 	if s.RecordRequestSpendFunc != nil { return s.RecordRequestSpendFunc(tokenID, planID, amount) }
 	return s.underlying.RecordRequestSpend(tokenID, planID, amount)
 }
+func (s *ScriptedStore) MarkTokenExpired(tokenID int64) error {
+	if s.MarkTokenExpiredFunc != nil { return s.MarkTokenExpiredFunc(tokenID) }
+	return s.underlying.MarkTokenExpired(tokenID)
+}
 func (s *ScriptedStore) GetPlans() ([]model.Plan, error) {
 	if s.GetPlansFunc != nil { return s.GetPlansFunc() }
 	return s.underlying.GetPlans()
@@ -231,46 +231,6 @@ func (s *ScriptedStore) UpdateUser(u *model.User) error {
 func (s *ScriptedStore) CleanupExpiredSessions() (int64, error) {
 	if s.CleanupExpiredSessionsFunc != nil { return s.CleanupExpiredSessionsFunc() }
 	return s.underlying.CleanupExpiredSessions()
-}
-func (s *ScriptedStore) CreateLog(l *model.Log) error {
-	if s.CreateLogFunc != nil { return s.CreateLogFunc(l) }
-	return s.underlying.CreateLog(l)
-}
-func (s *ScriptedStore) GetLogs(limit, offset int) ([]model.Log, error) {
-	if s.GetLogsFunc != nil { return s.GetLogsFunc(limit, offset) }
-	return s.underlying.GetLogs(limit, offset)
-}
-func (s *ScriptedStore) CountLogs() (int64, error) {
-	if s.CountLogsFunc != nil { return s.CountLogsFunc() }
-	return s.underlying.CountLogs()
-}
-func (s *ScriptedStore) DeleteLogsBefore(unixSec int64) (int64, error) {
-	if s.DeleteLogsBeforeFunc != nil { return s.DeleteLogsBeforeFunc(unixSec) }
-	return s.underlying.DeleteLogsBefore(unixSec)
-}
-func (s *ScriptedStore) LogStats() (store.LogStats, error) {
-	if s.LogStatsFunc != nil { return s.LogStatsFunc() }
-	return s.underlying.LogStats()
-}
-func (s *ScriptedStore) QueryLogs(f store.LogFilter) ([]model.Log, int64, error) {
-	if s.QueryLogsFunc != nil { return s.QueryLogsFunc(f) }
-	return s.underlying.QueryLogs(f)
-}
-func (s *ScriptedStore) TimeSeries(f store.LogFilter, bucketSec int64) ([]store.SeriesPoint, error) {
-	if s.TimeSeriesFunc != nil { return s.TimeSeriesFunc(f, bucketSec) }
-	return s.underlying.TimeSeries(f, bucketSec)
-}
-func (s *ScriptedStore) TopByModel(f store.LogFilter, limit int) ([]store.NamedMetric, error) {
-	if s.TopByModelFunc != nil { return s.TopByModelFunc(f, limit) }
-	return s.underlying.TopByModel(f, limit)
-}
-func (s *ScriptedStore) TopByChannel(f store.LogFilter, limit int) ([]store.NamedMetric, error) {
-	if s.TopByChannelFunc != nil { return s.TopByChannelFunc(f, limit) }
-	return s.underlying.TopByChannel(f, limit)
-}
-func (s *ScriptedStore) TopByToken(f store.LogFilter, limit int) ([]store.NamedMetric, error) {
-	if s.TopByTokenFunc != nil { return s.TopByTokenFunc(f, limit) }
-	return s.underlying.TopByToken(f, limit)
 }
 func (s *ScriptedStore) GetAlerts() ([]model.Alert, error) {
 	if s.GetAlertsFunc != nil { return s.GetAlertsFunc() }

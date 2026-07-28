@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/store"
 )
@@ -20,16 +19,6 @@ func newTestApp(t *testing.T) *store.SQLite {
 		t.Fatalf("OpenSQLite: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	logDir := filepath.Join(dir, "logs")
-	if err := logstore.EnsureDir(logDir); err != nil {
-		t.Fatalf("logstore.EnsureDir: %v", err)
-	}
-	ls, err := logstore.New(logDir, nil)
-	if err != nil {
-		t.Fatalf("logstore.New: %v", err)
-	}
-	s.SetLogStore(ls)
-	t.Cleanup(func() { _ = ls.Close() })
 	s.CreateUser(&model.User{Username: "admin", PasswordHash: "x", Role: model.RoleRoot, Status: 1})
 	return s
 }

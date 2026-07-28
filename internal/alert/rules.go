@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/logging"
+	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/store"
 )
@@ -27,14 +28,14 @@ import (
 //                     and previous_window_cost > 0.
 //   - key_exhausted:  threshold is unused (0). Fired when any channel
 //                     has zero active keys.
-func Evaluate(r *model.Alert, now time.Time, st store.Store) (bool, map[string]any, error) {
+func Evaluate(r *model.Alert, now time.Time, st store.Store, ls *logstore.Manager) (bool, map[string]any, error) {
 	switch r.Type {
 	case model.AlertErrorRate:
-		return evalErrorRate(r, now, st)
+		return evalErrorRate(r, now, ls)
 	case model.AlertP95Latency:
-		return evalP95(r, now, st)
+		return evalP95(r, now, ls)
 	case model.AlertCostSpike:
-		return evalCostSpike(r, now, st)
+		return evalCostSpike(r, now, st, ls)
 	case model.AlertKeyExhausted:
 		return evalKeyExhausted(r, st)
 	default:
@@ -42,10 +43,10 @@ func Evaluate(r *model.Alert, now time.Time, st store.Store) (bool, map[string]a
 	}
 }
 
-func evalErrorRate(r *model.Alert, now time.Time, st store.Store) (bool, map[string]any, error) {
+func evalErrorRate(r *model.Alert, now time.Time, ls *logstore.Manager) (bool, map[string]any, error) {
 	from := now.Add(-time.Duration(r.WindowSec) * time.Second).Unix()
-	f := store.LogFilter{CreatedFrom: from, Limit: 10000}
-	logs, _, err := st.QueryLogs(f)
+	f := logstore.QueryFilter{CreatedFrom: from, Limit: 10000}
+	logs, _, err := ls.Query(f, nil)
 	if err != nil {
 		return false, nil, err
 	}
@@ -72,10 +73,10 @@ func evalErrorRate(r *model.Alert, now time.Time, st store.Store) (bool, map[str
 	return false, nil, nil
 }
 
-func evalP95(r *model.Alert, now time.Time, st store.Store) (bool, map[string]any, error) {
+func evalP95(r *model.Alert, now time.Time, ls *logstore.Manager) (bool, map[string]any, error) {
 	from := now.Add(-time.Duration(r.WindowSec) * time.Second).Unix()
-	f := store.LogFilter{CreatedFrom: from, Limit: 10000}
-	logs, _, err := st.QueryLogs(f)
+	f := logstore.QueryFilter{CreatedFrom: from, Limit: 10000}
+	logs, _, err := ls.Query(f, nil)
 	if err != nil {
 		return false, nil, err
 	}
@@ -116,7 +117,7 @@ func evalP95(r *model.Alert, now time.Time, st store.Store) (bool, map[string]an
 	return false, nil, nil
 }
 
-func evalCostSpike(r *model.Alert, now time.Time, st store.Store) (bool, map[string]any, error) {
+func evalCostSpike(r *model.Alert, now time.Time, st store.Store, ls *logstore.Manager) (bool, map[string]any, error) {
 	w := time.Duration(r.WindowSec) * time.Second
 	// The logstore caps each query at MaxAttachFiles (8) day
 	// files. For cost_spike the previous window is [now-2w, now-w];
@@ -146,8 +147,8 @@ func evalCostSpike(r *model.Alert, now time.Time, st store.Store) (bool, map[str
 	prevFrom := now.Add(-2 * w).Unix()
 
 	// Get current window logs
-	curFilter := store.LogFilter{CreatedFrom: curFrom, Limit: 10000}
-	curLogs, _, err := st.QueryLogs(curFilter)
+	curFilter := logstore.QueryFilter{CreatedFrom: curFrom, Limit: 10000}
+	curLogs, _, err := ls.Query(curFilter, nil)
 	if err != nil {
 		return false, nil, err
 	}
@@ -157,8 +158,8 @@ func evalCostSpike(r *model.Alert, now time.Time, st store.Store) (bool, map[str
 	}
 
 	// Get previous window logs
-	prevFilter := store.LogFilter{CreatedFrom: prevFrom, CreatedTo: curFrom, Limit: 10000}
-	prevLogs, _, err := st.QueryLogs(prevFilter)
+	prevFilter := logstore.QueryFilter{CreatedFrom: prevFrom, CreatedTo: curFrom, Limit: 10000}
+	prevLogs, _, err := ls.Query(prevFilter, nil)
 	if err != nil {
 		return false, nil, err
 	}
@@ -184,19 +185,13 @@ func evalCostSpike(r *model.Alert, now time.Time, st store.Store) (bool, map[str
 }
 
 func evalKeyExhausted(r *model.Alert, st store.Store) (bool, map[string]any, error) {
-	rows, err := st.RawQuery(`SELECT c.id, c.name FROM channels c WHERE c.status = 1 AND NOT EXISTS (SELECT 1 FROM keys k WHERE k.channel_id = c.id AND k.status = 0)`)
+	drainedList, err := st.GetDrainedChannels()
 	if err != nil {
 		return false, nil, err
 	}
-	defer rows.Close()
 	var drained []string
-	for rows.Next() {
-		var id int64
-		var name string
-		if err := rows.Scan(&id, &name); err != nil {
-			return false, nil, err
-		}
-		drained = append(drained, fmt.Sprintf("%d:%s", id, name))
+	for _, d := range drainedList {
+		drained = append(drained, fmt.Sprintf("%d:%s", d.ID, d.Name))
 	}
 	if len(drained) > 0 {
 		return true, map[string]any{

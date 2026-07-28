@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sn0wfree/llmRx/internal/auth"
+	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/store"
 )
@@ -15,6 +16,7 @@ import (
 // Handler holds dependencies for the admin web UI.
 type Handler struct {
 	store      WebuiStore
+	logStore   *logstore.Manager
 	renderer   *Renderer
 	adminH     *webAPIBridge
 	configPath string
@@ -24,17 +26,20 @@ type Handler struct {
 // JSON endpoints under /api/v1/* that the page handlers still call
 // (e.g. for reload after writes). The handler routes /admin/* to
 // HTML pages backed by embedded templates.
-func New(st store.Store, adminAPI *webAPIBridge, configPath string) (*Handler, error) {
+func New(st store.Store, ls *logstore.Manager, adminAPI *webAPIBridge, configPath string) (*Handler, error) {
 	r, err := NewRenderer()
 	if err != nil {
 		return nil, err
 	}
-	return &Handler{store: st, renderer: r, adminH: adminAPI, configPath: configPath}, nil
+	return &Handler{store: st, logStore: ls, renderer: r, adminH: adminAPI, configPath: configPath}, nil
 }
 
 // SetStore replaces the handler's store. Intended for tests that need
 // to inject a mock store to exercise error paths.
 func (h *Handler) SetStore(st WebuiStore) { h.store = st }
+
+// SetLogStore replaces the handler's log store. Intended for tests.
+func (h *Handler) SetLogStore(ls *logstore.Manager) { h.logStore = ls }
 
 // Routes returns the http handler that serves /admin/*.
 func (h *Handler) Routes() http.Handler {
@@ -266,7 +271,7 @@ func (h *Handler) DashboardPage(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 	tokens, _ := h.store.GetTokens()
 	channels, _ := h.store.GetChannels()
-	stats, _ := h.store.LogStats()
+	stats, _ := h.logStore.Stats(nil)
 
 	activeTokens := 0
 	for _, t := range tokens {

@@ -14,16 +14,16 @@ import (
 //   - avgMS <  threshold → no fire
 
 func TestEvaluateP95_TooFewSamples(t *testing.T) {
-	st := newStore(t)
+	st, ls := newStore(t)
 	now := time.Now()
 	// 4 samples < 5 → must not fire regardless of latency.
 	for i := 0; i < 4; i++ {
-		_ = st.CreateLog(&model.Log{
+		_ = ls.Insert(&model.Log{
 			Model: "m", DurationMs: 100000, CreatedAt: now.Add(-time.Duration(i) * time.Second),
 		})
 	}
 	r := &model.Alert{Type: model.AlertP95Latency, WindowSec: 60, Threshold: 1}
-	fired, payload, err := Evaluate(r, now, st)
+	fired, payload, err := Evaluate(r, now, st, ls)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,16 +33,16 @@ func TestEvaluateP95_TooFewSamples(t *testing.T) {
 }
 
 func TestEvaluateP95_BelowThreshold(t *testing.T) {
-	st := newStore(t)
+	st, ls := newStore(t)
 	now := time.Now()
 	// 20 fast samples (10ms each). p95 ≈ 10ms < 1000ms threshold.
 	for i := 0; i < 20; i++ {
-		_ = st.CreateLog(&model.Log{
+		_ = ls.Insert(&model.Log{
 			Model: "m", DurationMs: 10, CreatedAt: now.Add(-time.Duration(i+1) * time.Second),
 		})
 	}
 	r := &model.Alert{Type: model.AlertP95Latency, WindowSec: 60, Threshold: 1000}
-	fired, _, err := Evaluate(r, now, st)
+	fired, _, err := Evaluate(r, now, st, ls)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,16 +52,16 @@ func TestEvaluateP95_BelowThreshold(t *testing.T) {
 }
 
 func TestEvaluateP95_PayloadFields(t *testing.T) {
-	st := newStore(t)
+	st, ls := newStore(t)
 	now := time.Now()
 	for i := 0; i < 10; i++ {
-		_ = st.CreateLog(&model.Log{
+		_ = ls.Insert(&model.Log{
 			Model: "m", DurationMs: int64(1000 + i*100),
 			CreatedAt: now.Add(-time.Duration(i+1) * time.Second),
 		})
 	}
 	r := &model.Alert{Type: model.AlertP95Latency, WindowSec: 60, Threshold: 500}
-	fired, payload, err := Evaluate(r, now, st)
+	fired, payload, err := Evaluate(r, now, st, ls)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestEvaluateP95_PayloadFields(t *testing.T) {
 
 // evalKeyExhausted branches: an enabled channel with no active keys → fire.
 func TestEvaluateKeyExhausted_NoActiveKeys(t *testing.T) {
-	st := newStore(t)
+	st, ls := newStore(t)
 	// Create an enabled channel with no keys → must fire.
 	_ = st.CreateChannel(&model.Channel{
 		Name: "exhausted", Provider: "openai", Protocol: "openai",
@@ -95,7 +95,7 @@ func TestEvaluateKeyExhausted_NoActiveKeys(t *testing.T) {
 		Status: model.ChannelEnabled,
 	})
 	r := &model.Alert{Type: model.AlertKeyExhausted, WindowSec: 60, Threshold: 1}
-	fired, payload, err := Evaluate(r, time.Now(), st)
+	fired, payload, err := Evaluate(r, time.Now(), st, ls)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestEvaluateKeyExhausted_NoActiveKeys(t *testing.T) {
 }
 
 func TestEvaluateKeyExhausted_AllChannelsHaveKeys(t *testing.T) {
-	st := newStore(t)
+	st, ls := newStore(t)
 	ch := &model.Channel{
 		Name: "ok", Provider: "openai", Protocol: "openai",
 		BaseURL: "https://x", Models: []string{"m"},
@@ -124,7 +124,7 @@ func TestEvaluateKeyExhausted_AllChannelsHaveKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := &model.Alert{Type: model.AlertKeyExhausted, WindowSec: 60, Threshold: 1}
-	fired, _, err := Evaluate(r, time.Now(), st)
+	fired, _, err := Evaluate(r, time.Now(), st, ls)
 	if err != nil {
 		t.Fatal(err)
 	}

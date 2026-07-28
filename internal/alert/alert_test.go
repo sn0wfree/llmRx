@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
@@ -25,25 +26,24 @@ func (r *recordingChannel) Deliver(ev *model.AlertEvent) error {
 	return nil
 }
 
-func newStore(t *testing.T) store.Store {
+func newStore(t *testing.T) (store.Store, *logstore.Manager) {
 	app := testhelper.New(t)
-	return app.Store
+	return app.Store, app.LogStore
 }
 
 func TestEvaluateErrorRate(t *testing.T) {
-	st := newStore(t)
+	st, ls := newStore(t)
 	now := time.Now()
 	// Seed 10 logs: 6 errors, 4 success.
 	for i := 0; i < 10; i++ {
-		st := st
 		code := 200
 		if i < 6 {
 			code = 500
 		}
-		_ = st.CreateLog(&model.Log{Model: "m", StatusCode: code, CreatedAt: now.Add(-time.Duration(i) * time.Second)})
+		_ = ls.Insert(&model.Log{Model: "m", StatusCode: code, CreatedAt: now.Add(-time.Duration(i) * time.Second)})
 	}
 	r := &model.Alert{Type: model.AlertErrorRate, WindowSec: 60, Threshold: 0.5}
-	fired, payload, err := Evaluate(r, now, st)
+	fired, payload, err := Evaluate(r, now, st, ls)
 	if err != nil {
 		t.Fatalf("eval: %v", err)
 	}
@@ -56,14 +56,14 @@ func TestEvaluateErrorRate(t *testing.T) {
 }
 
 func TestEvaluateErrorRateBelowNoise(t *testing.T) {
-	st := newStore(t)
+	st, ls := newStore(t)
 	now := time.Now()
 	// 4 errors, 0 success: 100% but only 4 samples < 5.
 	for i := 0; i < 4; i++ {
-		_ = st.CreateLog(&model.Log{Model: "m", StatusCode: 500, CreatedAt: now.Add(-time.Duration(i) * time.Second)})
+		_ = ls.Insert(&model.Log{Model: "m", StatusCode: 500, CreatedAt: now.Add(-time.Duration(i) * time.Second)})
 	}
 	r := &model.Alert{Type: model.AlertErrorRate, WindowSec: 60, Threshold: 0.1}
-	fired, _, err := Evaluate(r, now, st)
+	fired, _, err := Evaluate(r, now, st, ls)
 	if err != nil {
 		t.Fatalf("eval: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestEvaluateErrorRateBelowNoise(t *testing.T) {
 }
 
 func TestEvaluateKeyExhausted(t *testing.T) {
-	st := newStore(t)
+	st, ls := newStore(t)
 	// Channel with no keys.
 	if err := st.CreateChannel(&model.Channel{
 		Name: "exhausted", Provider: "p", BaseURL: "https://x", Status: model.ChannelEnabled,
@@ -81,7 +81,7 @@ func TestEvaluateKeyExhausted(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	r := &model.Alert{Type: model.AlertKeyExhausted, WindowSec: 60}
-	fired, payload, err := Evaluate(r, time.Now(), st)
+	fired, payload, err := Evaluate(r, time.Now(), st, ls)
 	if err != nil {
 		t.Fatalf("eval: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestEvaluateKeyExhausted(t *testing.T) {
 }
 
 func TestManagerFireWebhook(t *testing.T) {
-	st := newStore(t)
+	st, ls := newStore(t)
 	// Capture webhook deliveries.
 	var hits int32
 	var lastBody []byte
@@ -111,7 +111,7 @@ func TestManagerFireWebhook(t *testing.T) {
 	// Seed an error so error_rate fires.
 	now := time.Now()
 	for i := 0; i < 10; i++ {
-		_ = st.CreateLog(&model.Log{Model: "m", StatusCode: 500, CreatedAt: now.Add(-time.Duration(i) * time.Second)})
+		_ = ls.Insert(&model.Log{Model: "m", StatusCode: 500, CreatedAt: now.Add(-time.Duration(i) * time.Second)})
 	}
 
 	a := &model.Alert{
@@ -124,7 +124,7 @@ func TestManagerFireWebhook(t *testing.T) {
 
 	wh := channelsShim{srv: srv, hits: &hits, lastBody: &lastBody}
 	_ = wh
-	m := NewManager(st, []Channel{
+	m := NewManager(st, ls, []Channel{
 		&recordingChannel{name: "builtin"},
 		&webhookShim{url: srv.URL, hits: &hits, lastBody: &lastBody},
 	}, Config{TickInterval: time.Hour, DefaultCooldown: time.Millisecond})
@@ -164,7 +164,7 @@ type channelsShim struct {
 }
 
 func TestManagerCooldownSuppresses(t *testing.T) {
-	st := newStore(t)
+	st, ls := newStore(t)
 	var hits int32
 	a := &model.Alert{
 		Name: "always", Type: model.AlertErrorRate, Threshold: 0,
@@ -174,7 +174,7 @@ func TestManagerCooldownSuppresses(t *testing.T) {
 	// Insert logs after the alert so the row exists with no firing.
 	now := time.Now()
 	for i := 0; i < 10; i++ {
-		_ = st.CreateLog(&model.Log{Model: "m", StatusCode: 500, CreatedAt: now.Add(-time.Duration(i) * time.Second)})
+		_ = ls.Insert(&model.Log{Model: "m", StatusCode: 500, CreatedAt: now.Add(-time.Duration(i) * time.Second)})
 	}
 	// LastFiredAt == 0 + WindowSec 60 has at least 10 samples, but
 	// the test here is for the cooldown gate. Pre-fire via store,
@@ -182,7 +182,7 @@ func TestManagerCooldownSuppresses(t *testing.T) {
 	if err := st.RecordAlertFired(a.ID, now.Unix()); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	m := NewManager(st, []Channel{&recordingChannel{name: "builtin"}}, Config{DefaultCooldown: time.Hour})
+	m := NewManager(st, ls, []Channel{&recordingChannel{name: "builtin"}}, Config{DefaultCooldown: time.Hour})
 	if err := m.Reload(); err != nil {
 		t.Fatal(err)
 	}
@@ -195,28 +195,28 @@ func TestManagerCooldownSuppresses(t *testing.T) {
 }
 
 func TestEvaluateUnknownType(t *testing.T) {
-	st := newStore(t)
+	st, ls := newStore(t)
 	r := &model.Alert{Type: model.AlertType("bogus"), WindowSec: 60}
-	_, _, err := Evaluate(r, time.Now(), st)
+	_, _, err := Evaluate(r, time.Now(), st, ls)
 	if err == nil {
 		t.Fatal("expected error for unknown type")
 	}
 }
 
 func TestEvaluateCostSpike(t *testing.T) {
-	st := newStore(t)
+	st, ls := newStore(t)
 	now := time.Now()
 	w := 60
 	// Previous window: $1.00
-	if err := st.CreateLog(&model.Log{Model: "m", RealCostUSD: 1.0, CreatedAt: now.Add(-time.Duration(w+30) * time.Second)}); err != nil {
+	if err := ls.Insert(&model.Log{Model: "m", RealCostUSD: 1.0, CreatedAt: now.Add(-time.Duration(w+30) * time.Second)}); err != nil {
 		t.Fatal(err)
 	}
 	// Current window: $5.00 -> 5x spike
-	if err := st.CreateLog(&model.Log{Model: "m", RealCostUSD: 5.0, CreatedAt: now.Add(-time.Duration(5) * time.Second)}); err != nil {
+	if err := ls.Insert(&model.Log{Model: "m", RealCostUSD: 5.0, CreatedAt: now.Add(-time.Duration(5) * time.Second)}); err != nil {
 		t.Fatal(err)
 	}
 	r := &model.Alert{Type: model.AlertCostSpike, WindowSec: int64(w), Threshold: 2.0}
-	fired, payload, err := Evaluate(r, now, st)
+	fired, payload, err := Evaluate(r, now, st, ls)
 	if err != nil {
 		t.Fatalf("eval: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestEvaluateCostSpike(t *testing.T) {
 // record the reason so the operator sees what happened instead
 // of an alert loop that emits the same error every cycle.
 func TestEvaluateCostSpike_WindowTooLargeRejected(t *testing.T) {
-	st := newStore(t)
+	st, ls := newStore(t)
 	now := time.Now()
 	// 5 days = 432000s. 2*WindowSec > 8*86400 = 691200s → reject.
 	r := &model.Alert{
@@ -245,7 +245,7 @@ func TestEvaluateCostSpike_WindowTooLargeRejected(t *testing.T) {
 	if err := st.CreateAlert(r); err != nil {
 		t.Fatalf("CreateAlert: %v", err)
 	}
-	fired, _, err := Evaluate(r, now, st)
+	fired, _, err := Evaluate(r, now, st, ls)
 	if err != nil {
 		t.Fatalf("Evaluate should NOT return error (auto-disable returns clean): %v", err)
 	}
@@ -268,7 +268,7 @@ func TestEvaluateCostSpike_WindowTooLargeRejected(t *testing.T) {
 // = 8 days = MaxAttachFiles) should be the largest accepted
 // window. Just past the boundary, the rule auto-disables.
 func TestEvaluateCostSpike_BoundaryWindow(t *testing.T) {
-	st := newStore(t)
+	st, ls := newStore(t)
 	now := time.Now()
 	r := &model.Alert{
 		Name: "boundary", Type: model.AlertCostSpike,
@@ -277,7 +277,7 @@ func TestEvaluateCostSpike_BoundaryWindow(t *testing.T) {
 	if err := st.CreateAlert(r); err != nil {
 		t.Fatalf("CreateAlert: %v", err)
 	}
-	_, _, err := Evaluate(r, now, st)
+	_, _, err := Evaluate(r, now, st, ls)
 	if err != nil {
 		t.Fatalf("Evaluate past boundary: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestEvaluateCostSpike_BoundaryWindow(t *testing.T) {
 	if err := st.CreateAlert(r2); err != nil {
 		t.Fatalf("CreateAlert r2: %v", err)
 	}
-	_, _, err = Evaluate(r2, now, st)
+	_, _, err = Evaluate(r2, now, st, ls)
 	if err != nil {
 		t.Fatalf("4-day boundary should be accepted, got %v", err)
 	}
@@ -305,15 +305,15 @@ func TestEvaluateCostSpike_BoundaryWindow(t *testing.T) {
 }
 
 func TestEvaluateP95(t *testing.T) {
-	st := newStore(t)
+	st, ls := newStore(t)
 	now := time.Now()
 	// 20 logs: 19 fast, 1 very slow
 	for i := 0; i < 19; i++ {
-		_ = st.CreateLog(&model.Log{Model: "m", DurationMs: int64(100 + i), CreatedAt: now.Add(-time.Duration(i+1) * time.Second)})
+		_ = ls.Insert(&model.Log{Model: "m", DurationMs: int64(100 + i), CreatedAt: now.Add(-time.Duration(i+1) * time.Second)})
 	}
-	_ = st.CreateLog(&model.Log{Model: "m", DurationMs: 10000, CreatedAt: now.Add(-time.Duration(20) * time.Second)})
+	_ = ls.Insert(&model.Log{Model: "m", DurationMs: 10000, CreatedAt: now.Add(-time.Duration(20) * time.Second)})
 	r := &model.Alert{Type: model.AlertP95Latency, WindowSec: 60, Threshold: 5000}
-	fired, _, err := Evaluate(r, now, st)
+	fired, _, err := Evaluate(r, now, st, ls)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func TestEvaluateP95(t *testing.T) {
 // every evaluate() call. Mutating rt between calls changes the
 // effective cooldown without restarting the manager.
 func TestManagerCooldownFollowsRuntimeDefaults(t *testing.T) {
-	st := newStore(t)
+	st, ls := newStore(t)
 	rt := runtime.New()
 	rt.SetAlertCooldownSec(60) // initial: 1 minute
 
@@ -342,10 +342,10 @@ func TestManagerCooldownFollowsRuntimeDefaults(t *testing.T) {
 
 	now := time.Now()
 	for i := 0; i < 10; i++ {
-		_ = st.CreateLog(&model.Log{Model: "m", StatusCode: 500, CreatedAt: now.Add(-time.Duration(i) * time.Second)})
+		_ = ls.Insert(&model.Log{Model: "m", StatusCode: 500, CreatedAt: now.Add(-time.Duration(i) * time.Second)})
 	}
 
-	m := NewManager(st, []Channel{&recordingChannel{name: "builtin"}}, Config{
+	m := NewManager(st, ls, []Channel{&recordingChannel{name: "builtin"}}, Config{
 		Defaults: rt,
 	})
 	if err := m.Reload(); err != nil {
@@ -379,7 +379,7 @@ func TestManagerCooldownFollowsRuntimeDefaults(t *testing.T) {
 // TestDisableAlert_FlipsEnabledAndRecordsReason: covers the
 // store-level helper that cost_spike uses for auto-disable.
 func TestDisableAlert_FlipsEnabledAndRecordsReason(t *testing.T) {
-	st := newStore(t)
+	st, _ := newStore(t)
 	a := &model.Alert{
 		Name: "test", Type: model.AlertErrorRate, Threshold: 0.5,
 		WindowSec: 60, Enabled: true,

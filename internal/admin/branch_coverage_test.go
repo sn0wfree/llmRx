@@ -208,7 +208,7 @@ func TestAdmin_AnalyticsTimeSeries_WithParams2(t *testing.T) {
 func TestAdmin_AnalyticsByModel_WithData(t *testing.T) {
 	app := testhelper.New(t)
 	sess := login(t, app)
-	app.Store.CreateLog(&model.Log{Model: "gpt-4", PromptTokens: 10, StatusCode: 200, RealCostUSD: 1.0})
+	app.LogStore.Insert(&model.Log{Model: "gpt-4", PromptTokens: 10, StatusCode: 200, RealCostUSD: 1.0})
 	rec := do(t, app.Admin.Routes(), http.MethodGet, "/analytics/by-model?limit=10", sess, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code=%d", rec.Code)
@@ -218,7 +218,7 @@ func TestAdmin_AnalyticsByModel_WithData(t *testing.T) {
 func TestAdmin_AnalyticsByChannel_WithData(t *testing.T) {
 	app := testhelper.New(t)
 	sess := login(t, app)
-	app.Store.CreateLog(&model.Log{ChannelID: 1, Model: "m", PromptTokens: 10, StatusCode: 200})
+	app.LogStore.Insert(&model.Log{ChannelID: 1, Model: "m", PromptTokens: 10, StatusCode: 200})
 	rec := do(t, app.Admin.Routes(), http.MethodGet, "/analytics/by-channel?limit=10", sess, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code=%d", rec.Code)

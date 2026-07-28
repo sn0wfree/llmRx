@@ -2,7 +2,6 @@ package webui
 
 import (
 	"github.com/sn0wfree/llmRx/internal/model"
-	"github.com/sn0wfree/llmRx/internal/store"
 )
 
 // UserLookup is the narrow interface SessionMiddleware needs from the store.
@@ -51,14 +50,6 @@ type WebuiStore interface {
 	GetUsers() ([]model.User, error)
 	CreateUser(u *model.User) error
 	UpdateUser(u *model.User) error
-
-	// Logs
-	QueryLogs(f store.LogFilter) ([]model.Log, int64, error)
-	LogStats() (store.LogStats, error)
-
-	// Analytics
-	TopByModel(f store.LogFilter, limit int) ([]store.NamedMetric, error)
-	TopByChannel(f store.LogFilter, limit int) ([]store.NamedMetric, error)
 
 	// Alerts
 	GetAlerts() ([]model.Alert, error)

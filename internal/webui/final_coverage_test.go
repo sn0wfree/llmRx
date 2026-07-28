@@ -174,7 +174,7 @@ func TestLogsPage_WithData(t *testing.T) {
 	h, st := newTestWebUI(t)
 	admin, _ := st.GetUserByUsername("admin")
 	tok := sessionCookieFor(t, st, admin)
-	st.CreateLog(&model.Log{Model: "gpt-4", PromptTokens: 10, StatusCode: 200})
+	h.logStore.Insert(&model.Log{Model: "gpt-4", PromptTokens: 10, StatusCode: 200})
 
 	req := httptest.NewRequest(http.MethodGet, "/logs", nil)
 	req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: tok})
@@ -206,7 +206,7 @@ func TestAnalyticsPage_WithData(t *testing.T) {
 	h, st := newTestWebUI(t)
 	admin, _ := st.GetUserByUsername("admin")
 	tok := sessionCookieFor(t, st, admin)
-	st.CreateLog(&model.Log{Model: "gpt-4", ChannelID: 1, PromptTokens: 10, StatusCode: 200, RealCostUSD: 1.0})
+	h.logStore.Insert(&model.Log{Model: "gpt-4", ChannelID: 1, PromptTokens: 10, StatusCode: 200, RealCostUSD: 1.0})
 
 	req := httptest.NewRequest(http.MethodGet, "/analytics", nil)
 	req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: tok})
@@ -260,7 +260,7 @@ func TestConfigSave_SuccessWithFile(t *testing.T) {
 	cfgPath := dir + "/config.yaml"
 
 	_, st := newTestWebUI(t)
-	h2, _ := New(st, nil, cfgPath)
+	h2, _ := New(st, nil, nil, cfgPath)
 	admin, _ := st.GetUserByUsername("admin")
 	tok := sessionCookieFor(t, st, admin)
 
@@ -282,7 +282,7 @@ func TestEffectivePage_WithConfigFile(t *testing.T) {
 	osWriteFile(cfgPath, []byte("server_port: 8787\nmax_connections: 10\nserver.host: localhost\n"))
 
 	_, st := newTestWebUI(t)
-	h2, _ := New(st, nil, cfgPath)
+	h2, _ := New(st, nil, nil, cfgPath)
 	admin, _ := st.GetUserByUsername("admin")
 	tok := sessionCookieFor(t, st, admin)
 

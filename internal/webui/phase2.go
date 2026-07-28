@@ -9,13 +9,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/sn0wfree/llmRx/internal/store"
+	"github.com/sn0wfree/llmRx/internal/logstore"
 )
 
 // LogsPage renders the logs list with SSE stream.
 func (h *Handler) LogsPage(w http.ResponseWriter, r *http.Request) {
-	f := store.LogFilter{Limit: 100, Offset: 0}
-	logs, _, err := h.store.QueryLogs(f)
+	f := logstore.QueryFilter{Limit: 100, Offset: 0}
+	logs, _, err := h.logStore.Query(f, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -185,9 +185,9 @@ func (h *Handler) alertSave(w http.ResponseWriter, r *http.Request, existing int
 
 // AnalyticsPage renders the analytics dashboard.
 func (h *Handler) AnalyticsPage(w http.ResponseWriter, r *http.Request) {
-	stats, _ := h.store.LogStats()
-	byModel, _ := h.store.TopByModel(store.LogFilter{Limit: 20}, 20)
-	byChannel, _ := h.store.TopByChannel(store.LogFilter{Limit: 20}, 20)
+	stats, _ := h.logStore.Stats(nil)
+	byModel, _ := h.logStore.TopByField(logstore.QueryFilter{Limit: 20}, "model", 20, nil)
+	byChannel, _ := h.logStore.TopByField(logstore.QueryFilter{Limit: 20}, "channel_id", 20, nil)
 	data := map[string]any{
 		"Body":      "analytics_dashboard_body",
 		"Title":     "分析",

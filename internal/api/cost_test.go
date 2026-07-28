@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sn0wfree/llmRx/internal/provider"
+	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/testhelper"
 )
 
@@ -45,7 +46,7 @@ func TestGateway_CachedTokenCostDiscount(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("status: %d %s", rec.Code, rec.Body.String())
 	}
-	logs, _ := app.Store.GetLogs(10, 0)
+	logs, _, _ := app.LogStore.Query(logstore.QueryFilter{Limit: 10, Offset: 0}, nil)
 	if len(logs) != 1 {
 		t.Fatalf("expected 1 log, got %d", len(logs))
 	}
@@ -87,7 +88,7 @@ func TestGateway_MarkupAppliedToBilledCost(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("status: %d", rec.Code)
 	}
-	logs, _ := app.Store.GetLogs(10, 0)
+	logs, _, _ := app.LogStore.Query(logstore.QueryFilter{Limit: 10, Offset: 0}, nil)
 	if len(logs) != 1 {
 		t.Fatalf("expected 1 log, got %d", len(logs))
 	}

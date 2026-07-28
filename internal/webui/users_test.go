@@ -34,7 +34,6 @@ func newTestWebUI(t *testing.T) (*Handler, store.Store) {
 	if err != nil {
 		t.Fatalf("logstore.New: %v", err)
 	}
-	st.SetLogStore(logStore)
 	t.Cleanup(func() { _ = logStore.Close() })
 
 	// Seed default admin (RoleRoot).
@@ -45,7 +44,7 @@ func newTestWebUI(t *testing.T) (*Handler, store.Store) {
 		t.Fatalf("seed admin: %v", err)
 	}
 
-	h, err := New(st, nil, "")
+	h, err := New(st, logStore, nil, "")
 	if err != nil {
 		t.Fatalf("webui.New: %v", err)
 	}

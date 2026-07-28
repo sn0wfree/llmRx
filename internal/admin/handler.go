@@ -20,6 +20,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/provider"
+	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/secrets"
@@ -30,6 +31,7 @@ import (
 
 type Handler struct {
 	store      store.Store
+	logStore   *logstore.Manager
 	pool       *pool.ChannelPool
 	router     *router.RouterEngine
 	tokens     *tokencache.Cache
@@ -48,11 +50,11 @@ type AlertReloader interface {
 	Reload() error
 }
 
-func New(st store.Store, cp *pool.ChannelPool, eng *router.RouterEngine, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults, cfg *config.Config, keyFile string) *Handler {
+func New(st store.Store, ls *logstore.Manager, cp *pool.ChannelPool, eng *router.RouterEngine, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults, cfg *config.Config, keyFile string) *Handler {
 	if rt == nil {
 		rt = runtime.New()
 	}
-	return &Handler{store: st, pool: cp, router: eng, tokens: tc, logBroker: lb, rt: rt, cfg: cfg, keyFile: keyFile, sessionTTL: 24 * time.Hour}
+	return &Handler{store: st, logStore: ls, pool: cp, router: eng, tokens: tc, logBroker: lb, rt: rt, cfg: cfg, keyFile: keyFile, sessionTTL: 24 * time.Hour}
 }
 
 // SetStore replaces the handler's store. Intended for tests that need
@@ -243,7 +245,7 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 // ---------- dashboard ----------
 
 func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
-	st, err := h.store.LogStats()
+	stats, err := h.logStore.Stats(nil)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -273,12 +275,12 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 		"tokens_total":      len(tokens),
 		"tokens_active":     activeTokens,
 		"keys_by_channel":   keysByCh,
-		"logs_total":        st.Total,
-		"logs_errors":       st.Errors,
-		"prompt_tokens":     st.PromptTokens,
-		"completion_tokens": st.CompletionTokens,
-		"real_cost_usd":     st.RealCostUSD,
-		"billed_cost_usd":   st.BilledCostUSD,
+		"logs_total":        stats.Total,
+		"logs_errors":       stats.Errors,
+		"prompt_tokens":     stats.PromptTokens,
+		"completion_tokens": stats.CompletionTokens,
+		"real_cost_usd":     stats.RealCostUSD,
+		"billed_cost_usd":   stats.BilledCostUSD,
 	})
 }
 
@@ -920,32 +922,8 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 // ---------- logs ----------
 
 func (h *Handler) ListLogs(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	filter := store.LogFilter{
-		Limit:  atoiOr(q.Get("limit"), 50),
-		Offset: atoiOr(q.Get("offset"), 0),
-	}
-	if v := q.Get("token_id"); v != "" {
-		filter.TokenID, _ = strconv.ParseInt(v, 10, 64)
-	}
-	if v := q.Get("channel_id"); v != "" {
-		filter.ChannelID, _ = strconv.ParseInt(v, 10, 64)
-	}
-	filter.Model = q.Get("model")
-	if v := q.Get("status_code"); v != "" {
-		filter.StatusCode, _ = strconv.Atoi(v)
-	}
-	if v := q.Get("from"); v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			filter.CreatedFrom = t.Unix()
-		}
-	}
-	if v := q.Get("to"); v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			filter.CreatedTo = t.Unix()
-		}
-	}
-	logs, total, err := h.store.QueryLogs(filter)
+	filter := logFilterFromQuery(r)
+	logs, total, err := h.logStore.Query(filter, nil)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -973,9 +951,9 @@ func atoiOr(s string, def int) int {
 
 // logFilterFromQuery parses the standard filter query string used
 // by /logs and the analytics endpoints.
-func logFilterFromQuery(r *http.Request) store.LogFilter {
+func logFilterFromQuery(r *http.Request) logstore.QueryFilter {
 	q := r.URL.Query()
-	f := store.LogFilter{Limit: atoiOr(q.Get("limit"), 50), Offset: atoiOr(q.Get("offset"), 0)}
+	f := logstore.QueryFilter{Limit: atoiOr(q.Get("limit"), 50), Offset: atoiOr(q.Get("offset"), 0)}
 	if v := q.Get("token_id"); v != "" {
 		f.TokenID, _ = strconv.ParseInt(v, 10, 64)
 	}
@@ -1187,7 +1165,7 @@ func validAlertType(t model.AlertType) bool {
 
 func (h *Handler) AnalyticsTimeSeries(w http.ResponseWriter, r *http.Request) {
 	bucket := int64(atoiOr(r.URL.Query().Get("bucket"), 3600))
-	points, err := h.store.TimeSeries(logFilterFromQuery(r), bucket)
+	points, err := h.logStore.TimeSeries(logFilterFromQuery(r), bucket, nil)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1199,20 +1177,20 @@ func (h *Handler) AnalyticsTimeSeries(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) AnalyticsByModel(w http.ResponseWriter, r *http.Request) {
-	h.writeNamed(w, r, h.store.TopByModel)
+	h.writeNamed(w, r, "model")
 }
 
 func (h *Handler) AnalyticsByChannel(w http.ResponseWriter, r *http.Request) {
-	h.writeNamed(w, r, h.store.TopByChannel)
+	h.writeNamed(w, r, "channel_id")
 }
 
 func (h *Handler) AnalyticsByToken(w http.ResponseWriter, r *http.Request) {
-	h.writeNamed(w, r, h.store.TopByToken)
+	h.writeNamed(w, r, "token_id")
 }
 
-func (h *Handler) writeNamed(w http.ResponseWriter, r *http.Request, fn func(store.LogFilter, int) ([]store.NamedMetric, error)) {
+func (h *Handler) writeNamed(w http.ResponseWriter, r *http.Request, field string) {
 	limit := atoiOr(r.URL.Query().Get("limit"), 10)
-	data, err := fn(logFilterFromQuery(r), limit)
+	data, err := h.logStore.TopByField(logFilterFromQuery(r), field, limit, nil)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

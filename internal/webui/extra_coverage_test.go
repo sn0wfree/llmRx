@@ -337,7 +337,7 @@ func TestSessionMiddleware_ExpiredSession(t *testing.T) {
 func TestConfigSave_Error(t *testing.T) {
 	_, st := newTestWebUI(t)
 	// Pass an unwritable path to trigger error
-	h2, err := New(st, nil, "/nonexistent/dir/config.yaml")
+	h2, err := New(st, nil, nil, "/nonexistent/dir/config.yaml")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

@@ -18,6 +18,9 @@ type Store interface {
 	CreateChannel(ch *model.Channel) error
 	UpdateChannel(ch *model.Channel) error
 	DeleteChannel(id int64) error
+	// GetDrainedChannels returns enabled channels that have zero
+	// active keys. Used by the key_exhausted alert rule.
+	GetDrainedChannels() ([]DrainedChannel, error)
 
 	// Keys
 	GetKeys(channelID int64) ([]model.Key, error)
@@ -39,6 +42,10 @@ type Store interface {
 	DeleteToken(id int64) error
 	IncrementTokenSpend(tokenID int64, amount float64) error
 	IncrementPlanSpend(planID int64, amount float64) error
+	// MarkTokenExpired flips a token's status to TokenExpired so
+	// the cache skips it on next reload. Used by the expiry hook
+	// wired into tokencache.SetExpirer.
+	MarkTokenExpired(tokenID int64) error
 	// RecordRequestSpend atomically credits both the per-token
 	// and per-plan spend ledgers in a single SQL transaction.
 	// On ErrBudgetExceeded the transaction is rolled back so
@@ -61,20 +68,6 @@ type Store interface {
 	CreateUser(u *model.User) error
 	UpdateUser(u *model.User) error
 	CleanupExpiredSessions() (int64, error)
-
-	// Logs
-	CreateLog(l *model.Log) error
-	GetLogs(limit, offset int) ([]model.Log, error)
-	CountLogs() (int64, error)
-	DeleteLogsBefore(unixSec int64) (int64, error)
-	LogStats() (LogStats, error)
-	QueryLogs(f LogFilter) ([]model.Log, int64, error)
-
-	// Analytics
-	TimeSeries(f LogFilter, bucketSec int64) ([]SeriesPoint, error)
-	TopByModel(f LogFilter, limit int) ([]NamedMetric, error)
-	TopByChannel(f LogFilter, limit int) ([]NamedMetric, error)
-	TopByToken(f LogFilter, limit int) ([]NamedMetric, error)
 
 	// Alerts
 	GetAlerts() ([]model.Alert, error)
@@ -151,43 +144,7 @@ type Store interface {
 	GetGuardrailEvents(tokenID int64, limit int) ([]model.GuardrailEvent, error)
 }
 
-type LogStats struct {
-	PromptTokens     int64
-	CompletionTokens int64
-	RealCostUSD      float64
-	BilledCostUSD    float64
-	Total            int64
-	Errors           int64
-}
-
-// LogFilter narrows a logs query. Zero values mean "no filter".
-// CreatedFrom/To are unix seconds; Limit/Offset paginate.
-type LogFilter struct {
-	TokenID     int64
-	ChannelID   int64
-	Model       string
-	StatusCode  int
-	CreatedFrom int64
-	CreatedTo   int64
-	Limit       int
-	Offset      int
-}
-
-// SeriesPoint is one bucket of a time-series.
-type SeriesPoint struct {
-	Bucket           int64   `json:"bucket"` // unix seconds at bucket start
-	Requests         int64   `json:"requests"`
-	Errors           int64   `json:"errors"`
-	PromptTokens     int64   `json:"prompt_tokens"`
-	CompletionTokens int64   `json:"completion_tokens"`
-	RealCostUSD      float64 `json:"real_cost_usd"`
-	BilledCostUSD    float64 `json:"billed_cost_usd"`
-}
-
-// NamedMetric is a (label, value) pair for top-N queries.
-type NamedMetric struct {
-	Label  string  `json:"label"`
-	Count  int64   `json:"count"`
-	Tokens int64   `json:"tokens"`
-	Cost   float64 `json:"cost"`
+type DrainedChannel struct {
+	ID   int64
+	Name string
 }

@@ -6,7 +6,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/store"
 )
@@ -138,17 +137,6 @@ func newTestStore(t *testing.T) store.Store {
 		t.Fatalf("OpenSQLite: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-
-	logDir := filepath.Join(dir, "logs")
-	if err := logstore.EnsureDir(logDir); err != nil {
-		t.Fatalf("logstore.EnsureDir: %v", err)
-	}
-	logStore, err := logstore.New(logDir, nil)
-	if err != nil {
-		t.Fatalf("logstore.New: %v", err)
-	}
-	s.SetLogStore(logStore)
-	t.Cleanup(func() { _ = logStore.Close() })
 
 	return s
 }

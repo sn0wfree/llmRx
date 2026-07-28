@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -8,10 +9,21 @@ import (
 	"github.com/sn0wfree/llmRx/internal/store"
 )
 
+func openTemp(t *testing.T) *store.SQLite {
+	t.Helper()
+	dir := t.TempDir()
+	s, err := store.OpenSQLite(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
 // --- RecordRequestSpend edge cases ---
 
 func TestRecordRequestSpend_NonExistentPlan(t *testing.T) {
-	s, _ := openTempLog(t)
+	s := openTemp(t)
 	tok := &model.Token{Key: "sk-t", Name: "t1", Status: model.TokenActive}
 	s.CreateToken(tok)
 
@@ -22,7 +34,7 @@ func TestRecordRequestSpend_NonExistentPlan(t *testing.T) {
 }
 
 func TestRecordRequestSpend_NegativeAmount(t *testing.T) {
-	s, _ := openTempLog(t)
+	s := openTemp(t)
 	tok := &model.Token{Key: "sk-t", Name: "t1", Status: model.TokenActive}
 	s.CreateToken(tok)
 
@@ -56,7 +68,7 @@ func TestOpenSQLite_EmptyDSN(t *testing.T) {
 // --- CreateKey/CreateToken edge cases ---
 
 func TestCreateKey_EmptyKey(t *testing.T) {
-	s, _ := openTempLog(t)
+	s := openTemp(t)
 	err := s.CreateKey(&model.Key{ChannelID: 1, Key: "", KeyMasked: "", Status: model.KeyActive})
 	if err == nil {
 		t.Errorf("expected error for empty key")
@@ -64,7 +76,7 @@ func TestCreateKey_EmptyKey(t *testing.T) {
 }
 
 func TestCreateToken_EmptyKey(t *testing.T) {
-	s, _ := openTempLog(t)
+	s := openTemp(t)
 	err := s.CreateToken(&model.Token{Key: "", Name: "t", Status: model.TokenActive})
 	if err == nil {
 		t.Errorf("expected error for empty token key")
@@ -74,7 +86,7 @@ func TestCreateToken_EmptyKey(t *testing.T) {
 // --- CreateAlertEvent edge cases ---
 
 func TestCreateAlertEvent_ZeroFiredAt(t *testing.T) {
-	s, _ := openTempLog(t)
+	s := openTemp(t)
 	a := &model.Alert{Name: "a", Type: "cost_spike", Threshold: 10, WindowSec: 300, CooldownSec: 300, Enabled: true}
 	s.CreateAlert(a)
 	e := &model.AlertEvent{AlertID: a.ID, AlertName: "a", FiredAt: time.Time{}}
@@ -89,7 +101,7 @@ func TestCreateAlertEvent_ZeroFiredAt(t *testing.T) {
 // --- GetAlertEvents edge cases ---
 
 func TestGetAlertEvents_NegativeLimit(t *testing.T) {
-	s, _ := openTempLog(t)
+	s := openTemp(t)
 	events, err := s.GetAlertEvents(-1)
 	if err != nil {
 		t.Fatalf("GetAlertEvents: %v", err)
@@ -102,7 +114,7 @@ func TestGetAlertEvents_NegativeLimit(t *testing.T) {
 // --- IncrementPlanSpend edge cases ---
 
 func TestIncrementPlanSpend_NegativeAmount(t *testing.T) {
-	s, _ := openTempLog(t)
+	s := openTemp(t)
 	p := &model.Plan{Name: "p", MarkupRatio: 1.0, BudgetUSD: 100, Status: 1}
 	s.CreatePlan(p)
 
@@ -125,7 +137,7 @@ func TestIncrementPlanSpend_NegativeAmount(t *testing.T) {
 // --- CleanupExpiredSessions edge cases ---
 
 func TestCleanupExpiredSessions_NoExpired(t *testing.T) {
-	s, _ := openTempLog(t)
+	s := openTemp(t)
 	hash, _ := authHashForTest("pw123")
 	u := &model.User{Username: "u1", PasswordHash: hash, Role: model.RoleUser, Status: 1}
 	future := time.Now().Add(24 * time.Hour)
@@ -143,7 +155,7 @@ func TestCleanupExpiredSessions_NoExpired(t *testing.T) {
 }
 
 func TestCleanupExpiredSessions_NoExpirySet(t *testing.T) {
-	s, _ := openTempLog(t)
+	s := openTemp(t)
 	hash, _ := authHashForTest("pw123")
 	u := &model.User{Username: "u1", PasswordHash: hash, Role: model.RoleUser, Status: 1, SessionToken: "tok"}
 	s.CreateUser(u)
@@ -160,7 +172,7 @@ func TestCleanupExpiredSessions_NoExpirySet(t *testing.T) {
 // --- UpdateChannel protocol default ---
 
 func TestUpdateChannel_EmptyProtocolDefaults(t *testing.T) {
-	s, _ := openTempLog(t)
+	s := openTemp(t)
 	ch := &model.Channel{Name: "ch", Provider: "openai", Protocol: "openai", BaseURL: "https://x", Models: []string{"m"}, Status: model.ChannelEnabled}
 	s.CreateChannel(ch)
 
@@ -176,7 +188,7 @@ func TestUpdateChannel_EmptyProtocolDefaults(t *testing.T) {
 // --- DisableAlert edge cases ---
 
 func TestDisableAlert_EmptyReason(t *testing.T) {
-	s, _ := openTempLog(t)
+	s := openTemp(t)
 	a := &model.Alert{Name: "a", Type: "cost_spike", Threshold: 10, Enabled: true}
 	s.CreateAlert(a)
 

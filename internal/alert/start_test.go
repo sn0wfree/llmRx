@@ -11,7 +11,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/store"
 )
 
-func openTestStore(t *testing.T) store.Store {
+func openTestStore(t *testing.T) (store.Store, *logstore.Manager) {
 	t.Helper()
 	dir := t.TempDir()
 	s, err := store.OpenSQLite(filepath.Join(dir, "test.db"))
@@ -24,14 +24,13 @@ func openTestStore(t *testing.T) store.Store {
 		t.Fatalf("logstore.EnsureDir: %v", err)
 	}
 	ls, _ := logstore.New(logDir, nil)
-	s.SetLogStore(ls)
 	t.Cleanup(func() { _ = ls.Close() })
-	return s
+	return s, ls
 }
 
 func TestNewManager_Defaults(t *testing.T) {
-	st := openTestStore(t)
-	m := NewManager(st, nil, Config{})
+	st, ls := openTestStore(t)
+	m := NewManager(st, ls, nil, Config{})
 	if m == nil {
 		t.Fatal("NewManager returned nil")
 	}
@@ -44,8 +43,8 @@ func TestNewManager_Defaults(t *testing.T) {
 }
 
 func TestNewManager_CustomConfig(t *testing.T) {
-	st := openTestStore(t)
-	m := NewManager(st, nil, Config{
+	st, ls := openTestStore(t)
+	m := NewManager(st, ls, nil, Config{
 		TickInterval:    10 * time.Second,
 		DefaultCooldown: 2 * time.Minute,
 	})
@@ -58,9 +57,9 @@ func TestNewManager_CustomConfig(t *testing.T) {
 }
 
 func TestManager_Reload(t *testing.T) {
-	st := openTestStore(t)
+	st, ls := openTestStore(t)
 	st.CreateAlert(&model.Alert{Name: "a", Type: model.AlertErrorRate, Threshold: 0.5, Enabled: true})
-	m := NewManager(st, nil, Config{})
+	m := NewManager(st, ls, nil, Config{})
 	if err := m.Reload(); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
@@ -72,8 +71,8 @@ func TestManager_Reload(t *testing.T) {
 }
 
 func TestManager_Start(t *testing.T) {
-	st := openTestStore(t)
-	m := NewManager(st, nil, Config{TickInterval: 50 * time.Millisecond})
+	st, ls := openTestStore(t)
+	m := NewManager(st, ls, nil, Config{TickInterval: 50 * time.Millisecond})
 	ctx, cancel := context.WithCancel(context.Background())
 	go m.Start(ctx)
 	time.Sleep(150 * time.Millisecond)
@@ -81,8 +80,8 @@ func TestManager_Start(t *testing.T) {
 }
 
 func TestManager_Cooldown_Fallback(t *testing.T) {
-	st := openTestStore(t)
-	m := NewManager(st, nil, Config{DefaultCooldown: 3 * time.Minute})
+	st, ls := openTestStore(t)
+	m := NewManager(st, ls, nil, Config{DefaultCooldown: 3 * time.Minute})
 	if got := m.cooldown(); got != 3*time.Minute {
 		t.Fatalf("fallback cooldown: got %v", got)
 	}
