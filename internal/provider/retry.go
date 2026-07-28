@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"math"
 	"net/http"
@@ -121,6 +122,56 @@ func (r *RetryingProvider) StreamChat(ctx context.Context, req *ChatRequest, api
 		_ = cancel
 	}
 	return sp.StreamChat(ctx, req, apiKey, baseURL)
+}
+
+// Embeddings implements EmbeddingsProvider by delegating to the inner
+// provider if it supports it. Retries are applied the same as Chat.
+func (r *RetryingProvider) Embeddings(ctx context.Context, req *EmbeddingsRequest, apiKey, baseURL string) (*EmbeddingsResponse, int, error) {
+	ep, ok := r.inner.(EmbeddingsProvider)
+	if !ok {
+		return nil, 0, fmt.Errorf("embeddings not supported by inner provider")
+	}
+	if r.config.MaxRetries <= 0 {
+		return r.embeddingsWithTimeout(ctx, req, apiKey, baseURL)
+	}
+	var lastErr error
+	var lastStatus int
+	for attempt := 0; attempt <= r.config.MaxRetries; attempt++ {
+		resp, status, err := r.embeddingsWithTimeout(ctx, req, apiKey, baseURL)
+		if (err == nil && status < 500) || !isRetryable(status, err) {
+			return resp, status, err
+		}
+		lastErr = err
+		lastStatus = status
+		if attempt < r.config.MaxRetries {
+			delay := r.retryDelay(status, err, attempt)
+			if delay > 0 {
+				observability.RecordRetry(req.Model)
+				log.Printf("[retry] embeddings attempt %d/%d failed (status=%d), retrying in %v: %v",
+					attempt+1, r.config.MaxRetries, status, delay, err)
+				select {
+				case <-time.After(delay):
+				case <-ctx.Done():
+					return nil, lastStatus, ctx.Err()
+				}
+			}
+		}
+	}
+	_ = ep // suppress unused variable
+	return nil, lastStatus, lastErr
+}
+
+func (r *RetryingProvider) embeddingsWithTimeout(ctx context.Context, req *EmbeddingsRequest, apiKey, baseURL string) (*EmbeddingsResponse, int, error) {
+	ep, ok := r.inner.(EmbeddingsProvider)
+	if !ok {
+		return nil, 0, fmt.Errorf("embeddings not supported")
+	}
+	if r.config.Timeout <= 0 {
+		return ep.Embeddings(ctx, req, apiKey, baseURL)
+	}
+	ctx, cancel := context.WithTimeout(ctx, r.config.Timeout)
+	defer cancel()
+	return ep.Embeddings(ctx, req, apiKey, baseURL)
 }
 
 // retryDelay calculates the delay before the next retry attempt.

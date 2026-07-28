@@ -23,6 +23,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/provider"
+	"github.com/sn0wfree/llmRx/internal/ratelimit"
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
@@ -41,11 +42,15 @@ type App struct {
 	LogBroker *broker.Broker[*model.Log]
 	RT        *runtime.Defaults
 	Cfg       *config.Config
-	Mux       http.Handler // fully wired mux: /v1/chat/completions, /v1/models, /api/v1, /health
+	Limiter   *ratelimit.Limiter
+	Mux       http.Handler
 }
 
 // New constructs an App backed by a fresh temp-dir SQLite database
 // and seeds one admin user (username=admin, password=admin).
+// The mux uses WithLimits (rate limiting + token expiry + budget
+// enforcement) to match production wiring. Tokens with RPM=0/TPM=0
+// and no plan budget are unlimited, so existing tests are unaffected.
 func New(t *testing.T) *App {
 	t.Helper()
 
@@ -56,7 +61,6 @@ func New(t *testing.T) *App {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	// Initialize logstore for tests
 	logDir := filepath.Join(dir, "logs")
 	if err := logstore.EnsureDir(logDir); err != nil {
 		t.Fatalf("logstore.EnsureDir: %v", err)
@@ -84,13 +88,12 @@ func New(t *testing.T) *App {
 	logBroker := broker.New[*model.Log](128)
 	rt := runtime.New()
 	cfg := &config.Config{}
+	limiter := ratelimit.New()
 	adminH := admin.New(st, cp, eng, cache, logBroker, rt, cfg, "")
 
 	mp := &MockProvider{}
 	chatH := api.New(cfg, eng, cp, st, logBroker, rt)
 	chatH.SetProvider(mp)
-	// Also override the per-protocol map so the chat handler picks
-	// the mock regardless of the channel's Protocol field.
 	chatH.SetProviders(map[string]provider.Provider{
 		"":          mp,
 		"openai":    mp,
@@ -99,11 +102,7 @@ func New(t *testing.T) *App {
 	})
 
 	mux := chi.NewRouter()
-	mux.With(authmw.Token(cache.Lookup)).Mount("/v1", chatH.Routes())
-	// Match the production mount prefix (server.go: Mounts under
-	// /admin/api/v1). Keeping test mux in lock-step with the
-	// real router ensures handler tests catch any drift between
-	// the documented and shipped URL space.
+	mux.With(authmw.WithLimits(cache.Lookup, limiter)).Mount("/v1", chatH.Routes())
 	mux.Mount("/admin/api/v1", adminH.Routes())
 	mux.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -122,15 +121,30 @@ func New(t *testing.T) *App {
 		LogBroker: logBroker,
 		RT:        rt,
 		Cfg:       cfg,
+		Limiter:   limiter,
 		Mux:       mux,
 	}
 }
 
+// NewWithoutLimits constructs an App identical to New() but mounts
+// the Token middleware without rate limiting. Useful for tests that
+// need to bypass the limiter (e.g. error-path tests with ScriptedStore).
+func NewWithoutLimits(t *testing.T) *App {
+	t.Helper()
+	app := New(t)
+	mux := chi.NewRouter()
+	mux.With(authmw.Token(app.Cache.Lookup)).Mount("/v1", app.Chat.Routes())
+	mux.Mount("/admin/api/v1", app.Admin.Routes())
+	mux.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	app.Mux = mux
+	return app
+}
+
 // NewWithStore constructs an App using the provided store instead of
-// opening a fresh SQLite database. This allows tests to inject a mock
-// store (e.g. ScriptedStore) to exercise handler error paths. The
-// remaining infrastructure (pool, cache, router, broker, runtime,
-// admin handler, chat handler) is wired from the given store.
+// opening a fresh SQLite database. Uses WithLimits middleware.
 func NewWithStore(t *testing.T, st store.Store) *App {
 	t.Helper()
 
@@ -144,6 +158,7 @@ func NewWithStore(t *testing.T, st store.Store) *App {
 	logBroker := broker.New[*model.Log](128)
 	rt := runtime.New()
 	cfg := &config.Config{}
+	limiter := ratelimit.New()
 	adminH := admin.New(st, cp, eng, cache, logBroker, rt, cfg, "")
 
 	mp := &MockProvider{}
@@ -157,7 +172,7 @@ func NewWithStore(t *testing.T, st store.Store) *App {
 	})
 
 	mux := chi.NewRouter()
-	mux.With(authmw.Token(cache.Lookup)).Mount("/v1", chatH.Routes())
+	mux.With(authmw.WithLimits(cache.Lookup, limiter)).Mount("/v1", chatH.Routes())
 	mux.Mount("/admin/api/v1", adminH.Routes())
 	mux.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -176,9 +191,12 @@ func NewWithStore(t *testing.T, st store.Store) *App {
 		LogBroker: logBroker,
 		RT:        rt,
 		Cfg:       cfg,
+		Limiter:   limiter,
 		Mux:       mux,
 	}
 }
+
+// --- Channel / Token / Plan helpers ---
 
 // AddChannel inserts a channel + optional key directly via the store.
 func (a *App) AddChannel(name, providerName, baseURL string, models []string, keys ...string) *model.Channel {
@@ -224,6 +242,94 @@ func (a *App) AddToken(key, name string) *model.Token {
 	return t
 }
 
+// AddTokenWithLimits creates a token with explicit RPM, TPM, and model
+// whitelist. Useful for rate-limit and access-control scenario tests.
+func (a *App) AddTokenWithLimits(key, name string, rpm, tpm int, models []string) *model.Token {
+	a.T.Helper()
+	t := &model.Token{
+		Key: key, Name: name, Status: model.TokenActive,
+		RPM: rpm, TPM: tpm, ModelsWhitelist: models,
+	}
+	if err := a.Store.CreateToken(t); err != nil {
+		a.T.Fatalf("AddTokenWithLimits %s: %v", key, err)
+	}
+	if err := a.Cache.Reload(); err != nil {
+		a.T.Fatalf("AddTokenWithLimits reload cache: %v", err)
+	}
+	return t
+}
+
+// AddPlan creates a plan with a USD budget and returns it.
+func (a *App) AddPlan(name string, budgetUSD float64) *model.Plan {
+	a.T.Helper()
+	p := &model.Plan{Name: name, BudgetUSD: budgetUSD, Status: 1}
+	if err := a.Store.CreatePlan(p); err != nil {
+		a.T.Fatalf("AddPlan %s: %v", name, err)
+	}
+	return p
+}
+
+// BindTokenToPlan associates a token with a plan so budget enforcement applies.
+func (a *App) BindTokenToPlan(tokenKey string, planID int64) {
+	a.T.Helper()
+	tok, err := a.Store.GetToken(tokenKey)
+	if err != nil {
+		a.T.Fatalf("BindTokenToPlan: lookup %s: %v", tokenKey, err)
+	}
+	tok.PlanID = planID
+	if err := a.Store.UpdateToken(tok); err != nil {
+		a.T.Fatalf("BindTokenToPlan: update: %v", err)
+	}
+	if err := a.Cache.Reload(); err != nil {
+		a.T.Fatalf("BindTokenToPlan: reload: %v", err)
+	}
+}
+
+// --- Guardrail helper ---
+
+// AddGuardrailRule creates an enabled guardrail rule and returns it.
+func (a *App) AddGuardrailRule(name string, ruleType model.GuardrailType, hook model.GuardrailHook, configJSON string) *model.GuardrailRule {
+	a.T.Helper()
+	r := &model.GuardrailRule{
+		Name:      name,
+		Type:      ruleType,
+		Hook:      hook,
+		OnFailure: model.GuardrailActionDeny,
+		Config:    configJSON,
+		Enabled:   true,
+	}
+	if err := a.Store.CreateGuardrailRule(r); err != nil {
+		a.T.Fatalf("AddGuardrailRule %s: %v", name, err)
+	}
+	return r
+}
+
+// --- Combo model helper ---
+
+// AddComboModel creates a combo model on the given token.
+func (a *App) AddComboModel(tokenKey, comboName string, models []string, mode model.ComboMode) {
+	a.T.Helper()
+	tok, err := a.Store.GetToken(tokenKey)
+	if err != nil {
+		a.T.Fatalf("AddComboModel: lookup %s: %v", tokenKey, err)
+	}
+	combo := &model.TokenComboModel{
+		TokenID: tok.ID,
+		Name:    comboName,
+		Models:  models,
+		Mode:    mode,
+		Enabled: true,
+	}
+	if err := a.Store.CreateComboModel(combo); err != nil {
+		a.T.Fatalf("AddComboModel %s: %v", comboName, err)
+	}
+	if err := a.Cache.Reload(); err != nil {
+		a.T.Fatalf("AddComboModel reload cache: %v", err)
+	}
+}
+
+// --- Internal helpers ---
+
 func maskKey(k string) string {
 	if len(k) > 8 {
 		return k[:4] + "***" + k[len(k)-4:]
@@ -231,8 +337,6 @@ func maskKey(k string) string {
 	return k
 }
 
-// hashForAdminSeed returns a bcrypt hash of "admin" using the same
-// cost factor as production code.
 func hashForAdminSeed(t *testing.T) string {
 	t.Helper()
 	h, err := auth.Hash("admin")
@@ -245,8 +349,7 @@ func hashForAdminSeed(t *testing.T) string {
 // ---------------- Mock provider ----------------
 
 // MockProvider scripts responses / errors per call. Concurrency-safe.
-// Also implements StreamingProvider: when StreamChunks is non-empty,
-// StreamChat emits those chunks in order.
+// Implements Provider, StreamingProvider, and EmbeddingsProvider.
 type MockProvider struct {
 	mu        sync.Mutex
 	Responses []*provider.ChatResponse
@@ -258,6 +361,10 @@ type MockProvider struct {
 
 	StreamChunks []provider.StreamChunk
 	StreamErr    error
+
+	EmbResponses []*provider.EmbeddingsResponse
+	EmbErrs      []error
+	EmbCalls     int
 }
 
 func (m *MockProvider) Name() string { return "mock" }
@@ -278,7 +385,6 @@ func (m *MockProvider) Chat(ctx context.Context, req *provider.ChatRequest, apiK
 		st := httpStatusAt(m.Statuses, idx, 200)
 		return m.Responses[idx], st, nil
 	}
-	// Default: 200 OK with empty usage
 	return &provider.ChatResponse{
 		ID:    "chatcmpl-test",
 		Model: req.Model,
@@ -303,6 +409,31 @@ func (m *MockProvider) StreamChat(ctx context.Context, req *provider.ChatRequest
 		}
 	}()
 	return out, nil
+}
+
+// Embeddings implements EmbeddingsProvider for tests.
+func (m *MockProvider) Embeddings(ctx context.Context, req *provider.EmbeddingsRequest, apiKey, baseURL string) (*provider.EmbeddingsResponse, int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idx := m.EmbCalls
+	m.EmbCalls++
+	m.LastKey = apiKey
+	m.LastURL = baseURL
+
+	if idx < len(m.EmbErrs) && m.EmbErrs[idx] != nil {
+		return nil, 500, m.EmbErrs[idx]
+	}
+	if idx < len(m.EmbResponses) && m.EmbResponses[idx] != nil {
+		return m.EmbResponses[idx], 200, nil
+	}
+	return &provider.EmbeddingsResponse{
+		Object: "list",
+		Data: []provider.Embedding{
+			{Object: "embedding", Embedding: []float64{0.1, 0.2, 0.3}, Index: 0},
+		},
+		Model: req.Model,
+		Usage: provider.Usage{PromptTokens: 5, TotalTokens: 5},
+	}, 200, nil
 }
 
 func httpStatusAt(s []int, idx, def int) int {
