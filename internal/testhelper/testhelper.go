@@ -24,6 +24,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/provider"
 	"github.com/sn0wfree/llmRx/internal/ratelimit"
+	"github.com/sn0wfree/llmRx/internal/requestid"
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
@@ -102,6 +103,7 @@ func New(t *testing.T) *App {
 	})
 
 	mux := chi.NewRouter()
+	mux.Use(requestid.Middleware)
 	mux.With(authmw.WithLimits(cache.Lookup, limiter)).Mount("/v1", chatH.Routes())
 	mux.Mount("/admin/api/v1", adminH.Routes())
 	mux.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -133,6 +135,7 @@ func NewWithoutLimits(t *testing.T) *App {
 	t.Helper()
 	app := New(t)
 	mux := chi.NewRouter()
+	mux.Use(requestid.Middleware)
 	mux.With(authmw.Token(app.Cache.Lookup)).Mount("/v1", app.Chat.Routes())
 	mux.Mount("/admin/api/v1", app.Admin.Routes())
 	mux.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -172,6 +175,7 @@ func NewWithStore(t *testing.T, st store.Store) *App {
 	})
 
 	mux := chi.NewRouter()
+	mux.Use(requestid.Middleware)
 	mux.With(authmw.WithLimits(cache.Lookup, limiter)).Mount("/v1", chatH.Routes())
 	mux.Mount("/admin/api/v1", adminH.Routes())
 	mux.Get("/health", func(w http.ResponseWriter, r *http.Request) {

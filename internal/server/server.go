@@ -19,6 +19,7 @@ import (
 	authmw "github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
+	"github.com/sn0wfree/llmRx/internal/requestid"
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
@@ -57,6 +58,7 @@ func New(cfg *config.Config, cfgPath string, eng *router.RouterEngine, cp *pool.
 }
 
 func (s *Server) registerMiddleware() {
+	s.engine.Use(requestid.Middleware)
 	s.engine.Use(chimw.Logger)
 	s.engine.Use(chimw.Recoverer)
 	s.engine.Use(chimw.RealIP)
