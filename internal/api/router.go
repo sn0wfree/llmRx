@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -38,6 +39,12 @@ type Handler struct {
 	rt        *runtime.Defaults
 	limits    *ratelimit.Limiter
 	guardrails *guardrail.GuardrailEngine
+	// retryingWrappers caches one RetryingProvider per protocol so
+	// the chat hot path doesn't allocate a fresh wrapper on every
+	// request. Refreshed lazily when retry/timeout config changes.
+	retryingMu      sync.Mutex
+	retryingCached  provider.RetryConfig
+	retryingWrapped map[string]provider.Provider // protocol -> wrapped
 }
 
 func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Handler {
@@ -86,6 +93,11 @@ func lookupTokenInfo(ctx context.Context) (middleware.TokenInfo, bool) {
 // retry + timeout. When streaming is true, the raw provider is
 // returned so the streaming handler can correctly detect whether
 // StreamingProvider is supported.
+//
+// The wrapped provider is cached per-protocol so the hot path does
+// not allocate a fresh RetryingProvider struct on every request.
+// The cache is invalidated when the runtime retry/timeout config
+// changes (which is rare — only via the admin UI).
 func (h *Handler) providerFor(channelProtocol string, streaming bool) provider.Provider {
 	var p provider.Provider
 	if pp, ok := h.providers[channelProtocol]; ok {
@@ -100,7 +112,7 @@ func (h *Handler) providerFor(channelProtocol string, streaming bool) provider.P
 		return p
 	}
 
-	// Wrap with retry + timeout when configured.
+	// No retry/timeout configured — return raw provider.
 	retries := h.rt.MaxRetries()
 	if retries <= 0 && h.rt.RequestTimeoutSec() <= 0 {
 		return p
@@ -110,7 +122,33 @@ func (h *Handler) providerFor(channelProtocol string, streaming bool) provider.P
 		BaseDelay:  time.Duration(h.rt.RetryBaseDelayMs()) * time.Millisecond,
 		Timeout:    time.Duration(h.rt.RequestTimeoutSec()) * time.Second,
 	}
-	return provider.NewRetryingProvider(p, cfg)
+
+	// Cache hit: return the wrapped provider.
+	h.retryingMu.Lock()
+	defer h.retryingMu.Unlock()
+	if h.retryingWrapped != nil && h.retryingCached == cfg {
+		if cached, ok := h.retryingWrapped[channelProtocol]; ok {
+			return cached
+		}
+	}
+
+	// Cache miss: (re)build the wrapped provider for this protocol.
+	wrapped := provider.NewRetryingProvider(p, cfg)
+	if h.retryingWrapped == nil {
+		h.retryingWrapped = make(map[string]provider.Provider)
+	}
+	h.retryingWrapped[channelProtocol] = wrapped
+	h.retryingCached = cfg
+	return wrapped
+}
+
+// InvalidateRetryWrappers clears the cached RetryingProvider instances
+// so the next providerFor() call rebuilds them. Call after admin UI
+// changes to retry/timeout config.
+func (h *Handler) InvalidateRetryWrappers() {
+	h.retryingMu.Lock()
+	h.retryingWrapped = nil
+	h.retryingMu.Unlock()
 }
 
 // Markup returns the current per-request billing multiplier.

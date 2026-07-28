@@ -437,9 +437,25 @@ type OpenAIProvider struct {
 	client *http.Client
 }
 
+// sharedTransport is a process-wide *http.Transport with a high
+// MaxIdleConnsPerHost so concurrent requests to the same upstream
+// reuse the existing TCP connection instead of dialing fresh ones.
+// Default stdlib MaxIdleConnsPerHost is 2, which causes connection
+// thrashing under modest concurrency to a single upstream.
+var sharedTransport = &http.Transport{
+	Proxy:                 http.ProxyFromEnvironment,
+	MaxIdleConns:          200,
+	MaxIdleConnsPerHost:   50,
+	IdleConnTimeout:       90 * time.Second,
+	ExpectContinueTimeout: 1 * time.Second,
+}
+
 func NewOpenAIProvider() *OpenAIProvider {
 	return &OpenAIProvider{
-		client: &http.Client{Timeout: 120 * time.Second},
+		client: &http.Client{
+			Timeout:   120 * time.Second,
+			Transport: sharedTransport,
+		},
 	}
 }
 
