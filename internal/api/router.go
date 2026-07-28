@@ -392,7 +392,6 @@ func (h *Handler) handleLoadBalanceCombo(w http.ResponseWriter, r *http.Request,
 	route, err := h.router.RouteWith(context.Background(), req.Model, opts)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "no available channel: "+err.Error(), "no_channel")
-		h.emitLog(r.Context(), tokenID, req.Model, route, nil, 0, 0, true, h.clientIP(r))
 		return
 	}
 
