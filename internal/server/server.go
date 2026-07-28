@@ -17,6 +17,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/logging"
+	"github.com/sn0wfree/llmRx/internal/logstore"
 	authmw "github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
@@ -43,22 +44,24 @@ type Server struct {
 	router     *router.RouterEngine
 	pool       *pool.ChannelPool
 	store      store.Store
+	logStore   *logstore.Manager
 	tokens     *tokencache.Cache
 	admin      *admin.Handler
 	engine     *chi.Mux
 	httpServer *http.Server
 }
 
-func New(cfg *config.Config, cfgPath string, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults, keyFile string) *Server {
+func New(cfg *config.Config, cfgPath string, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, ls *logstore.Manager, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults, keyFile string) *Server {
 	s := &Server{
-		cfg:     cfg,
-		cfgPath: cfgPath,
-		keyFile: keyFile,
-		router:  eng,
-		pool:    cp,
-		store:   st,
-		tokens:  tc,
-		engine:  chi.NewRouter(),
+		cfg:      cfg,
+		cfgPath:  cfgPath,
+		keyFile:  keyFile,
+		router:   eng,
+		pool:     cp,
+		store:    st,
+		logStore: ls,
+		tokens:   tc,
+		engine:   chi.NewRouter(),
 	}
 	s.registerMiddleware()
 	s.registerRoutes(lb, rt)
@@ -95,8 +98,8 @@ func (s *Server) corsOptions() cors.Options {
 }
 
 func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defaults) {
-	handler := api.New(s.cfg, s.router, s.pool, s.store, lb, rt)
-	adminHandler := admin.New(s.store, s.pool, s.router, s.tokens, lb, rt, s.cfg, s.keyFile)
+	handler := api.New(s.cfg, s.router, s.pool, s.store, s.logStore, lb, rt)
+	adminHandler := admin.New(s.store, s.logStore, s.pool, s.router, s.tokens, lb, rt, s.cfg, s.keyFile)
 	s.admin = adminHandler
 
 	s.engine.With(authmw.WithLimits(s.tokens.Lookup, handler.Limits())).
@@ -116,7 +119,7 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 		}
 		return s.pool.LoadFromStore(s.store)
 	})
-	webUI, err := webui.New(s.store, webAPIBridge, s.cfgPath)
+	webUI, err := webui.New(s.store, s.logStore, webAPIBridge, s.cfgPath)
 	if err != nil {
 		fatalf("webui init failed", logging.F("error", err.Error()))
 	}
@@ -194,20 +197,20 @@ func (s *Server) StartMetricsServer(ctx context.Context) func() {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", observability.Handler())
 
-	// Optional auth token.
+	// Optional auth token. Registered unconditionally so the same
+	// mux path is used regardless of whether auth is enabled.
 	token := s.cfg.Server.MetricsAuthToken
-	if token != "" {
-		mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		if token != "" {
 			auth := r.Header.Get("Authorization")
 			if auth != "Bearer "+token {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-			observability.Handler().ServeHTTP(w, r)
-		})
-	}
+		}
+		observability.Handler().ServeHTTP(w, r)
+	})
 
 	ms := &http.Server{
 		Addr:              addr,

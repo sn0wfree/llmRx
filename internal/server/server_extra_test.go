@@ -12,7 +12,7 @@ import (
 func TestNew_ConstructsServer(t *testing.T) {
 	app := testhelper.New(t)
 	cfg := &config.Config{Server: config.ServerConfig{Port: 0}}
-	s := New(cfg, "config.yml", app.Engine, app.Pool, app.Store, app.Cache, app.LogBroker, app.RT, "")
+	s := New(cfg, "config.yml", app.Engine, app.Pool, app.Store, app.LogStore, app.Cache, app.LogBroker, app.RT, "")
 	if s == nil {
 		t.Fatal("New returned nil")
 	}
@@ -27,7 +27,7 @@ func TestNew_ConstructsServer(t *testing.T) {
 func TestNew_HealthEndpoint(t *testing.T) {
 	app := testhelper.New(t)
 	cfg := &config.Config{Server: config.ServerConfig{Port: 0}}
-	s := New(cfg, "config.yml", app.Engine, app.Pool, app.Store, app.Cache, app.LogBroker, app.RT, "")
+	s := New(cfg, "config.yml", app.Engine, app.Pool, app.Store, app.LogStore, app.Cache, app.LogBroker, app.RT, "")
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -48,7 +48,7 @@ func TestNew_HealthEndpoint(t *testing.T) {
 func TestNew_AdminAPIMounted(t *testing.T) {
 	app := testhelper.New(t)
 	cfg := &config.Config{Server: config.ServerConfig{Port: 0}}
-	s := New(cfg, "config.yml", app.Engine, app.Pool, app.Store, app.Cache, app.LogBroker, app.RT, "")
+	s := New(cfg, "config.yml", app.Engine, app.Pool, app.Store, app.LogStore, app.Cache, app.LogBroker, app.RT, "")
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/admin/api/v1/channels", nil)
@@ -61,7 +61,7 @@ func TestNew_AdminAPIMounted(t *testing.T) {
 func TestNew_V1Mounted(t *testing.T) {
 	app := testhelper.New(t)
 	cfg := &config.Config{Server: config.ServerConfig{Port: 0}}
-	s := New(cfg, "config.yml", app.Engine, app.Pool, app.Store, app.Cache, app.LogBroker, app.RT, "")
+	s := New(cfg, "config.yml", app.Engine, app.Pool, app.Store, app.LogStore, app.Cache, app.LogBroker, app.RT, "")
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
@@ -79,14 +79,14 @@ func TestSetAlertManager_NilAdmin(t *testing.T) {
 func TestSetAlertManager_WithAdmin(t *testing.T) {
 	app := testhelper.New(t)
 	cfg := &config.Config{Server: config.ServerConfig{Port: 0}}
-	s := New(cfg, "config.yml", app.Engine, app.Pool, app.Store, app.Cache, app.LogBroker, app.RT, "")
+	s := New(cfg, "config.yml", app.Engine, app.Pool, app.Store, app.LogStore, app.Cache, app.LogBroker, app.RT, "")
 	s.SetAlertManager(nil)
 }
 
 func TestRegisterMiddleware_NoCORSByDefault(t *testing.T) {
 	app := testhelper.New(t)
 	cfg := &config.Config{Server: config.ServerConfig{Port: 0}}
-	s := New(cfg, "config.yml", app.Engine, app.Pool, app.Store, app.Cache, app.LogBroker, app.RT, "")
+	s := New(cfg, "config.yml", app.Engine, app.Pool, app.Store, app.LogStore, app.Cache, app.LogBroker, app.RT, "")
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodOptions, "/health", nil)
@@ -104,7 +104,7 @@ func TestRegisterMiddleware_WithCORS(t *testing.T) {
 		Port:               0,
 		CORSAllowedOrigins: []string{"https://trusted.example"},
 	}}
-	s := New(cfg, "config.yml", app.Engine, app.Pool, app.Store, app.Cache, app.LogBroker, app.RT, "")
+	s := New(cfg, "config.yml", app.Engine, app.Pool, app.Store, app.LogStore, app.Cache, app.LogBroker, app.RT, "")
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodOptions, "/health", nil)
