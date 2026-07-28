@@ -42,6 +42,15 @@ else
             -o "$BUILD_DIR/llmRx" ./cmd/gateway
 fi
 
+# ----- 1b. Optional UPX compression (reduces binary from ~14 MB to ~5 MB) ---
+
+if [ "${SKIP_UPX:-0}" != "1" ] && command -v upx >/dev/null 2>&1; then
+    echo "build-docker: compressing binary with upx"
+    upx --best --lzma --overwrite "$BUILD_DIR/llmRx"
+else
+    echo "build-docker: upx not found or SKIP_UPX=1 — skipping compression"
+fi
+
 # ----- 2. docker build ---------------------------------------------------
 
 echo "build-docker: building image $IMAGE"
