@@ -46,7 +46,13 @@ fi
 
 if [ "${SKIP_UPX:-0}" != "1" ] && command -v upx >/dev/null 2>&1; then
     echo "build-docker: compressing binary with upx"
-    upx --best --lzma --overwrite "$BUILD_DIR/llmRx"
+    # UPX 4.x uses --force-overwrite; older versions used --overwrite.
+    # Detect and use whichever flag the installed version supports.
+    if upx --help 2>&1 | grep -q -- "--force-overwrite"; then
+        upx --best --lzma --force-overwrite "$BUILD_DIR/llmRx"
+    else
+        upx --best --lzma --overwrite "$BUILD_DIR/llmRx"
+    fi
 else
     echo "build-docker: upx not found or SKIP_UPX=1 — skipping compression"
 fi

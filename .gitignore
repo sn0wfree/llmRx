@@ -40,14 +40,14 @@ config.local.yml
 # mounts ./secrets/llmrx_key_master for production deployments.
 /secrets/
 
-# Performance test artifacts
-data/llmrx.db
-data/llmrx.db-shm
-data/llmrx.db-wal
-# Master key, pidfile, gateway log (start.sh lifecycle)
-data/llmrx.key
-data/llmRx.pid
-data/llmRx.log
+# Local runtime data (bind-mounted into the gateway container).
+# Holds SQLite DB, master key, thompson state, and per-date logs.
+# Excluded wholesale — the bind mount recreates these on every run.
+data/
+# Performance-test artifacts (used by scripts/loadtest)
+data.bak*/
+# Allow a placeholder so the directory survives a fresh clone.
+!data/.gitkeep
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
