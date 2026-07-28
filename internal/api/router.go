@@ -258,12 +258,12 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
-// handleCombo dispatches a combo-model request. Non-streaming only
-// in this iteration; streaming combos are deferred.
+// handleCombo dispatches a combo-model request. Streaming and non-
+// streaming are both supported; load_balance uses the L1-L5 pipeline
+// to pick one channel, serial tries each underlying model in order.
 func (h *Handler) handleCombo(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, combo model.TokenComboModel, info middleware.TokenInfo) {
 	if req.Stream {
-		// TODO: streaming combo support in future iteration
-		writeError(w, http.StatusBadRequest, "streaming combo models is not yet supported", "combo_stream_not_supported")
+		h.handleStreamCombo(w, r, req, combo)
 		return
 	}
 	switch combo.Mode {
@@ -271,6 +271,68 @@ func (h *Handler) handleCombo(w http.ResponseWriter, r *http.Request, req *provi
 		h.handleSerialCombo(w, r, req, combo, info)
 	default:
 		h.handleLoadBalanceCombo(w, r, req, combo, info)
+	}
+}
+
+// handleStreamCombo routes a streaming combo-model request. For
+// load_balance it uses the L1-L5 pipeline with the combo's model pool;
+// for serial it tries each model in order, streaming from the first
+// that yields an upstream SSE channel.
+func (h *Handler) handleStreamCombo(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, combo model.TokenComboModel) {
+	if combo.Mode == model.ComboModeSerial {
+		h.handleStreamSerialCombo(w, r, req, combo)
+		return
+	}
+	// load_balance: pick one channel via L1-L5 from the combo's model set,
+	// then rewrite req.Model to the resolved channel model and stream.
+	opts := router.RouteOptions{
+		Text:         lastUserText(req.Messages),
+		ModelSet:     combo.Models,
+		CostStrategy: combo.Strategy,
+	}
+	route, err := h.router.RouteWith(context.Background(), req.Model, opts)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "no available channel: "+err.Error(), "no_channel")
+		return
+	}
+	original := req.Model
+	if len(route.Channel.Models) > 0 {
+		req.Model = route.Channel.Models[0]
+	}
+	h.streamChatCompletions(w, r, req)
+	req.Model = original
+}
+
+// handleStreamSerialCombo tries each model in combo.Models in order.
+// First model that produces a successful upstream SSE channel wins;
+// remaining models are skipped. If all fail, returns 502.
+func (h *Handler) handleStreamSerialCombo(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, combo model.TokenComboModel) {
+	opts := router.RouteOptions{Text: lastUserText(req.Messages)}
+	var lastErr error
+	for _, modelName := range combo.Models {
+		route, routeErr := h.router.RouteWith(r.Context(), modelName, opts)
+		if routeErr != nil {
+			lastErr = routeErr
+			continue
+		}
+		prov := h.providerFor(route.Channel.Protocol, true)
+		if _, ok := prov.(provider.StreamingProvider); !ok {
+			lastErr = fmt.Errorf("model %s: streaming not supported", modelName)
+			continue
+		}
+		// Rewrite the request model so the upstream sees the real model
+		// name (combo name is a virtual alias).
+		original := req.Model
+		req.Model = modelName
+		h.streamChatCompletions(w, r, req)
+		req.Model = original
+		_ = route // route recorded via streamChatCompletions -> emitLog
+		return
+	}
+	if lastErr != nil {
+		writeError(w, http.StatusBadGateway, "all combo models failed: "+lastErr.Error(), "combo_all_failed")
+	} else {
+		writeError(w, http.StatusServiceUnavailable, "no channel matched for combo models", "no_channel")
 	}
 }
 
