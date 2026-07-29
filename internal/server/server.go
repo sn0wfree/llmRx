@@ -49,9 +49,18 @@ type Server struct {
 	admin      *admin.Handler
 	engine     *chi.Mux
 	httpServer *http.Server
+	// byokHook, when set, is invoked on unknown bearer tokens
+	// so the BYOK manager can probe+register them. nil means
+	// strict 403 (legacy behaviour).
+	byokHook   authmw.UnknownTokenHook
 }
 
-func New(cfg *config.Config, cfgPath string, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, ls *logstore.Manager, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults, keyFile string) *Server {
+// New wires the HTTP router. byokHook (optional) is invoked
+// when the token cache misses — typically a *byok.Manager.Hook.
+// Must be supplied at construction time (not via setter)
+// because the middleware chain is registered before New
+// returns; a setter would silently never be wired.
+func New(cfg *config.Config, cfgPath string, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, ls *logstore.Manager, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults, keyFile string, byokHook authmw.UnknownTokenHook) *Server {
 	s := &Server{
 		cfg:      cfg,
 		cfgPath:  cfgPath,
@@ -61,6 +70,7 @@ func New(cfg *config.Config, cfgPath string, eng *router.RouterEngine, cp *pool.
 		store:    st,
 		logStore: ls,
 		tokens:   tc,
+		byokHook: byokHook,
 		engine:   chi.NewRouter(),
 	}
 	s.registerMiddleware()
@@ -102,7 +112,11 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	adminHandler := admin.New(s.store, s.logStore, s.pool, s.router, s.tokens, lb, rt, s.cfg, s.keyFile)
 	s.admin = adminHandler
 
-	s.engine.With(authmw.WithLimits(s.tokens.Lookup, handler.Limits())).
+	// WithLimitsAndOptions (vs. WithLimits) is what actually
+	// fires the BYOK hook when an unknown bearer arrives. If
+	// s.byokHook is nil we fall back to the strict 403 path —
+	// same effective behaviour as the old WithLimits call.
+	s.engine.With(authmw.WithLimitsAndOptions(s.tokens.Lookup, handler.Limits(), s.byokHook)).
 		Mount("/v1", handler.Routes())
 
 	s.engine.Get("/health", func(w http.ResponseWriter, r *http.Request) {

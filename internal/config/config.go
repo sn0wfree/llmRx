@@ -140,6 +140,12 @@ type SecretsConfig struct {
 // feature is not yet implemented; keep Enabled=false. When the
 // feature ships, WhitelistIPs and WhitelistEmails will gate which
 // callers may present their own upstream key.
+//
+// UpstreamProbes and ProviderPrefixes are not loaded from YAML
+// — they're wired programmatically by main.go because the
+// probe implementations live in the runtime, not the config.
+// Reading them from YAML would force every operator to
+// re-declare code paths in their config file.
 type BYOKConfig struct {
 	Enabled         bool     `yaml:"enabled"`
 	WhitelistIPs    []string `yaml:"whitelist_ips"`

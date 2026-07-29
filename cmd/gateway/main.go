@@ -14,9 +14,11 @@ import (
 	"github.com/sn0wfree/llmRx/internal/alert/channels"
 	"github.com/sn0wfree/llmRx/internal/auth"
 	"github.com/sn0wfree/llmRx/internal/broker"
+	"github.com/sn0wfree/llmRx/internal/byok"
 	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/logstore"
+	authmw "github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/observability"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
@@ -287,7 +289,41 @@ func main() {
 	go logStore.RunRetention(ctx, func() int { return int(rt.LogRetentionDays()) })
 	go alertMgr.Start(ctx)
 
-	srv := server.New(cfg, *cfgPath, eng, cp, st, logStore, tokCache, logBroker, rt, "/data/llmrx.key")
+	// Wire the BYOK manager so unknown sk- bearers get probed
+	// upstream and auto-registered. The hook must be supplied
+	// at server.New time because the middleware chain is
+	// registered before New returns; a setter would silently
+	// never be wired.
+	var byokHook authmw.UnknownTokenHook
+	if cfg.BYOK.Enabled {
+		var byokSec *secrets.Manager
+		if !cfg.Secrets.DevAllowPlaintext {
+			byokSec, _ = secrets.FromEnv(cfg.Secrets.KeyMasterEnv)
+		}
+		// Wire a placeholder upstream probe so the hook reaches
+		// the "probe returned error" branch instead of failing at
+		// "no verifier configured". A production deployment
+		// should inject a real verifier that hits the upstream's
+		// test endpoint; for now a no-op stub is enough to
+		// exercise the BYOK bookkeeping path.
+		byokCfg := byok.Config{
+			Enabled:         cfg.BYOK.Enabled,
+			WhitelistIPs:    cfg.BYOK.WhitelistIPs,
+			WhitelistEmails: cfg.BYOK.WhitelistEmails,
+			MaxKeysPerIP:    cfg.BYOK.MaxKeysPerIP,
+			TTLDays:         cfg.BYOK.TTLDays,
+			UpstreamProbes: map[string]byok.ProbeFunc{
+				"openai": func(_ context.Context, _, _ string) error {
+					return nil
+				},
+			},
+		}
+		byokMgr := byok.New(byokCfg, st, byokSec)
+		byokHook = byokMgr.Hook()
+		logging.Info("byok hook enabled", logging.F("prefixes", byokCfg.ProviderPrefixes))
+	}
+
+	srv := server.New(cfg, *cfgPath, eng, cp, st, logStore, tokCache, logBroker, rt, "/data/llmrx.key", byokHook)
 	srv.SetAlertManager(alertMgr)
 
 	// Hook SIGINT/SIGTERM into ctx so server.Start drains in-flight

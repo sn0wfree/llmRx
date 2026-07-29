@@ -12,7 +12,7 @@ import (
 func TestStart_EmptyHost(t *testing.T) {
 	app := testhelper.New(t)
 	cfg := &config.Config{Server: config.ServerConfig{Host: "", Port: 0}}
-	s := New(cfg, "", app.Engine, app.Pool, app.Store, app.LogStore, app.Cache, app.LogBroker, app.RT, "")
+	s := New(cfg, "", app.Engine, app.Pool, app.Store, app.LogStore, app.Cache, app.LogBroker, app.RT, "", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -25,7 +25,7 @@ func TestStart_EmptyHost(t *testing.T) {
 func TestStart_WithTokens(t *testing.T) {
 	app := testhelper.New(t)
 	cfg := &config.Config{Server: config.ServerConfig{Host: "127.0.0.1", Port: 0}}
-	s := New(cfg, "", app.Engine, app.Pool, app.Store, app.LogStore, app.Cache, app.LogBroker, app.RT, "")
+	s := New(cfg, "", app.Engine, app.Pool, app.Store, app.LogStore, app.Cache, app.LogBroker, app.RT, "", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
