@@ -1,8 +1,10 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/sn0wfree/llmRx/internal/config"
@@ -124,4 +126,68 @@ func containsStr(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// TestNew_BYOKHookWired covers the regression where a setter
+// (formerly SetBYOKHook) silently never fired because the
+// middleware chain is registered before New returns. Now that
+// the hook is a New parameter, this test pins the contract:
+// unknown sk- bearers actually reach the hook.
+func TestNew_BYOKHookWired(t *testing.T) {
+	app := testhelper.New(t)
+	cfg := &config.Config{Server: config.ServerConfig{Port: 0}}
+
+	called := false
+	hook := func(w http.ResponseWriter, r *http.Request, rawKey string) {
+		called = true
+		w.Header().Set("X-BYOK-Key", rawKey)
+		w.WriteHeader(http.StatusTeapot)
+	}
+	s := New(cfg, "config.yml", app.Engine, app.Pool, app.Store, app.LogStore, app.Cache, app.LogBroker, app.RT, "", hook)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer sk-new-bearer-unknown-to-cache")
+	req.RemoteAddr = "10.0.0.1:54321"
+	s.engine.ServeHTTP(rec, req)
+
+	if !called {
+		t.Fatal("byok hook was not invoked; New parameter is not wired")
+	}
+	if rec.Header().Get("X-BYOK-Key") != "sk-new-bearer-unknown-to-cache" {
+		t.Fatalf("hook received wrong key: %q", rec.Header().Get("X-BYOK-Key"))
+	}
+	if rec.Code != http.StatusTeapot {
+		t.Fatalf("hook should fully own the response, got code=%d", rec.Code)
+	}
+}
+
+// TestNew_NoBYOKHook_Gives403 covers the case where the hook
+// is nil: the middleware chain must still 403 unknown tokens
+// (the same behaviour the legacy WithLimits provided). With
+// byokHook=nil the BYOK feature is effectively off.
+func TestNew_NoBYOKHook_Gives403(t *testing.T) {
+	app := testhelper.New(t)
+	cfg := &config.Config{Server: config.ServerConfig{Port: 0}}
+	s := New(cfg, "config.yml", app.Engine, app.Pool, app.Store, app.LogStore, app.Cache, app.LogBroker, app.RT, "", nil)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer sk-unknown-bearer")
+	s.engine.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 invalid_token without hook, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Error.Code != "invalid_token" {
+		t.Fatalf("expected code=invalid_token, got %q", body.Error.Code)
+	}
 }
