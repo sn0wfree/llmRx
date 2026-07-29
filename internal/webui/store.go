@@ -68,7 +68,10 @@ type WebuiStore interface {
 	// ComboModels
 	GetComboModels(tokenID int64) ([]model.TokenComboModel, error)
 	GetComboModel(id int64) (*model.TokenComboModel, error)
+	GetAllComboModels() ([]model.TokenComboModel, error)
+	ListAllComboModels() ([]model.TokenComboModel, error)
 	CreateComboModel(c *model.TokenComboModel) error
 	UpdateComboModel(c *model.TokenComboModel) error
 	DeleteComboModel(id int64) error
+	SetDefaultModelSet(tokenID, comboID int64) error
 }

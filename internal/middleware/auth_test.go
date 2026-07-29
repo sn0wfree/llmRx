@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/sn0wfree/llmRx/internal/model"
 )
 
 func passthrough() http.Handler {
@@ -136,6 +138,54 @@ func TestTokenInfo_HasModelAccess(t *testing.T) {
 	star := TokenInfo{ModelsWhitelist: []string{"*"}}
 	if !star.HasModelAccess("anything") {
 		t.Fatal("* should match anything")
+	}
+}
+
+func TestTokenInfo_HasModelAccess_ComboMembers(t *testing.T) {
+	tk := TokenInfo{
+		ComboModels: map[string]model.TokenComboModel{
+			"my-set": {
+				Models: []string{"gpt-4o", "claude-3"},
+				Enabled: true,
+			},
+		},
+	}
+	if !tk.HasModelAccess("gpt-4o") {
+		t.Error("model inside enabled combo should be allowed")
+	}
+	if !tk.HasModelAccess("claude-3") {
+		t.Error("model inside enabled combo should be allowed")
+	}
+	if tk.HasModelAccess("gemini-pro") {
+		t.Error("model not in any combo should be denied when combos exist")
+	}
+}
+
+func TestTokenInfo_HasModelAccess_DisabledComboIgnored(t *testing.T) {
+	tk := TokenInfo{
+		ComboModels: map[string]model.TokenComboModel{
+			"disabled-set": {
+				Models: []string{"secret-model"},
+				Enabled: false,
+			},
+		},
+	}
+	if tk.HasModelAccess("secret-model") {
+		t.Error("models in disabled combo should NOT be allowed")
+	}
+}
+
+func TestTokenInfo_HasModelAccess_ComboNameAllowed(t *testing.T) {
+	tk := TokenInfo{
+		ComboModels: map[string]model.TokenComboModel{
+			"my-set": {
+				Models: []string{"m1"},
+				Enabled: true,
+			},
+		},
+	}
+	if !tk.HasModelAccess("my-set") {
+		t.Error("combo name itself should be allowed")
 	}
 }
 

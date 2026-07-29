@@ -283,3 +283,120 @@ func TestRequestBaseURL(t *testing.T) {
 		})
 	}
 }
+
+func TestTokenCreate_AutoComboCreated(t *testing.T) {
+	h, st := newTestWebUI(t)
+	admin, _ := st.GetUserByUsername("admin")
+	sess := sessionCookieFor(t, st, admin)
+
+	body := "name=tok1&status=1&models_whitelist=gpt-4%0Aclaude-sonnet"
+	req := httptest.NewRequest(http.MethodPost, "/tokens", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: sess})
+	rec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	toks, _ := st.GetTokens()
+	if len(toks) != 1 {
+		t.Fatalf("expected 1 token, got %d", len(toks))
+	}
+	combos, _ := st.GetComboModels(toks[0].ID)
+	if len(combos) != 1 {
+		t.Fatalf("expected 1 auto combo, got %d", len(combos))
+	}
+	c := combos[0]
+	if c.Name != "auto" {
+		t.Errorf("combo name: got %q, want auto", c.Name)
+	}
+	if c.Mode != model.ComboModeLoadBalance {
+		t.Errorf("combo mode: got %q, want load_balance", c.Mode)
+	}
+	if c.Strategy != model.StrategyBalanced {
+		t.Errorf("combo strategy: got %q, want balanced", c.Strategy)
+	}
+	if len(c.Models) != 2 || c.Models[0] != "gpt-4" || c.Models[1] != "claude-sonnet" {
+		t.Errorf("combo models: got %v", c.Models)
+	}
+	if !c.Enabled {
+		t.Error("combo should be enabled")
+	}
+}
+
+func TestTokenUpdate_AutoComboSynced(t *testing.T) {
+	h, st := newTestWebUI(t)
+	admin, _ := st.GetUserByUsername("admin")
+	sess := sessionCookieFor(t, st, admin)
+
+	tk := &model.Token{Key: "sk-t1", Name: "tok1", Status: model.TokenActive,
+		ModelsWhitelist: []string{"m1", "m2"}}
+	st.CreateToken(tk)
+
+	body := "_method=PUT&name=tok1-updated&status=1&models_whitelist=m1%0Am3%0Am4&combo_name=myset&combo_mode=serial&combo_strategy=cheapest"
+	req := httptest.NewRequest(http.MethodPost, "/tokens/"+itoa(tk.ID), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: sess})
+	rec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	combos, _ := st.GetComboModels(tk.ID)
+	if len(combos) != 1 {
+		t.Fatalf("expected 1 combo after update, got %d", len(combos))
+	}
+	c := combos[0]
+	if c.Name != "myset" {
+		t.Errorf("combo name: got %q, want myset", c.Name)
+	}
+	if c.Mode != model.ComboModeSerial {
+		t.Errorf("combo mode: got %q, want serial", c.Mode)
+	}
+	if c.Strategy != model.StrategyCheapest {
+		t.Errorf("combo strategy: got %q, want cheapest", c.Strategy)
+	}
+	if len(c.Models) != 3 || c.Models[0] != "m1" || c.Models[1] != "m3" || c.Models[2] != "m4" {
+		t.Errorf("combo models: got %v", c.Models)
+	}
+}
+
+func TestTokenUpdate_CreatesComboIfMissing(t *testing.T) {
+	h, st := newTestWebUI(t)
+	admin, _ := st.GetUserByUsername("admin")
+	sess := sessionCookieFor(t, st, admin)
+
+	tk := &model.Token{Key: "sk-t1", Name: "tok1", Status: model.TokenActive,
+		ModelsWhitelist: []string{"old-a", "old-b"}}
+	st.CreateToken(tk)
+
+	body := "_method=PUT&name=tok1&status=1&models_whitelist=new-a%0Anew-b"
+	req := httptest.NewRequest(http.MethodPost, "/tokens/"+itoa(tk.ID), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: sess})
+	rec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	combos, _ := st.GetComboModels(tk.ID)
+	if len(combos) != 1 {
+		t.Fatalf("expected 1 combo after update, got %d", len(combos))
+	}
+	c := combos[0]
+	if c.Name != "auto" {
+		t.Errorf("combo name: got %q, want auto (default)", c.Name)
+	}
+	if c.Mode != model.ComboModeLoadBalance {
+		t.Errorf("combo mode: got %q, want load_balance (default)", c.Mode)
+	}
+	if c.Strategy != model.StrategyBalanced {
+		t.Errorf("combo strategy: got %q, want balanced (default)", c.Strategy)
+	}
+	if len(c.Models) != 2 || c.Models[0] != "new-a" || c.Models[1] != "new-b" {
+		t.Errorf("combo models: got %v", c.Models)
+	}
+}

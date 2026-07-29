@@ -21,6 +21,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/logstore"
 	authmw "github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/modelmeta"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/provider"
 	"github.com/sn0wfree/llmRx/internal/ratelimit"
@@ -55,6 +56,8 @@ type App struct {
 // and no plan budget are unlimited, so existing tests are unaffected.
 func New(t *testing.T) *App {
 	t.Helper()
+
+	modelmeta.Init("")
 
 	dir := t.TempDir()
 	st, err := store.OpenSQLite(filepath.Join(dir, "test.db"))

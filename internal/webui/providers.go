@@ -3,10 +3,12 @@ package webui
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/modelmeta"
 	"github.com/sn0wfree/llmRx/internal/provider"
 )
 
@@ -110,4 +112,80 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// ModelsByProvider returns known models for the given provider from
+// the model metadata registry. Used by the channel form to let users
+// pick models from a catalog instead of typing them manually.
+func (h *Handler) ModelsByProvider(w http.ResponseWriter, r *http.Request) {
+	provider := r.URL.Query().Get("provider")
+	var models []*modelmeta.ModelMeta
+	if provider != "" {
+		models = modelmeta.GetByProvider(provider)
+	}
+	if models == nil {
+		models = []*modelmeta.ModelMeta{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+}
+
+// MetaProviders returns all provider names from the model metadata
+// registry. Used by token/combo forms to populate the model catalog
+// provider selector.
+func (h *Handler) MetaProviders(w http.ResponseWriter, r *http.Request) {
+	providers := modelmeta.AllProviders()
+	if providers == nil {
+		providers = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"providers": providers})
+}
+
+// AvailableModels returns all model names from configured channels
+// (enabled only), deduplicated and sorted. Used by combo forms so
+// users can pick from models that actually exist in their setup.
+func (h *Handler) AvailableModels(w http.ResponseWriter, r *http.Request) {
+	chs, err := h.store.GetChannels()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	seen := make(map[string]bool)
+	var models []string
+	for i := range chs {
+		if chs[i].Status != model.ChannelEnabled {
+			continue
+		}
+		for _, m := range chs[i].Models {
+			if !seen[m] {
+				seen[m] = true
+				models = append(models, m)
+			}
+		}
+	}
+	sort.Strings(models)
+	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+}
+
+// PreviewModels fetches the model list from an upstream provider
+// without requiring a saved channel. Used by the new-channel form
+// so operators can browse what models are available before creating
+// the channel.
+func (h *Handler) PreviewModels(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	prov := r.FormValue("provider")
+	baseURL := r.FormValue("base_url")
+	apiKey := r.FormValue("api_key")
+	if prov == "" || baseURL == "" {
+		http.Error(w, "provider and base_url are required", http.StatusBadRequest)
+		return
+	}
+	models, err := provider.ListModels(r.Context(), prov, apiKey, baseURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": models})
 }

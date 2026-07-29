@@ -543,3 +543,64 @@ func TestComboUpdate_PartialFields(t *testing.T) {
 		t.Errorf("mode not updated: got %q", updated.Mode)
 	}
 }
+
+func TestComboSetDefault_Success(t *testing.T) {
+	h, st := newTestWebUI(t)
+	admin, _ := st.GetUserByUsername("admin")
+	sess := sessionCookieFor(t, st, admin)
+	tk := newComboToken(t, st, "tk1")
+	c2 := newCombo(t, st, tk.ID, "bravo")
+
+	req := httptest.NewRequest(http.MethodPost, "/tokens/"+itoa(tk.ID)+"/combos/"+itoa(c2.ID)+"/set-default", nil)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: sess})
+	rec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	combos, _ := st.GetComboModels(tk.ID)
+	defaults := 0
+	var chosen string
+	for _, c := range combos {
+		if c.IsDefault {
+			defaults++
+			chosen = c.Name
+		}
+	}
+	if defaults != 1 || chosen != "bravo" {
+		t.Errorf("expected 1 default named bravo, got %d default with chosen=%q", defaults, chosen)
+	}
+}
+
+func TestComboSetDefault_BadTokenID(t *testing.T) {
+	h, st := newTestWebUI(t)
+	admin, _ := st.GetUserByUsername("admin")
+	sess := sessionCookieFor(t, st, admin)
+
+	req := httptest.NewRequest(http.MethodPost, "/tokens/abc/combos/1/set-default", nil)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: sess})
+	rec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestComboSetDefault_BadComboID(t *testing.T) {
+	h, st := newTestWebUI(t)
+	admin, _ := st.GetUserByUsername("admin")
+	sess := sessionCookieFor(t, st, admin)
+	tk := newComboToken(t, st, "tk1")
+
+	req := httptest.NewRequest(http.MethodPost, "/tokens/"+itoa(tk.ID)+"/combos/abc/set-default", nil)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: sess})
+	rec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", rec.Code)
+	}
+}

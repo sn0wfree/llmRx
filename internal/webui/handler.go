@@ -75,6 +75,10 @@ func (h *Handler) Routes() http.Handler {
 		r.Post("/channels/{id}/keys", h.ChannelKeyCreate)
 		r.Delete("/channels/{id}/keys/{keyId}", h.ChannelKeyDelete)
 		r.Post("/channels/{id}/fetch-models", h.ChannelFetchModels)
+		r.Get("/api/models-by-provider", h.ModelsByProvider)
+		r.Get("/api/meta-providers", h.MetaProviders)
+		r.Get("/api/available-models", h.AvailableModels)
+		r.Post("/api/preview-models", h.PreviewModels)
 
 		// Providers
 		r.Get("/providers", h.ProvidersPage)
@@ -91,13 +95,19 @@ func (h *Handler) Routes() http.Handler {
 		r.Post("/tokens/{id}", h.TokenAction)
 		r.Delete("/tokens/{id}", h.TokenDelete)
 
-		// ComboModels (sub-resource of tokens)
+// ComboModels (sub-resource of tokens)
 		r.Get("/tokens/{id}/combos", h.CombosPage)
 		r.Get("/tokens/{id}/combos/new", h.ComboNewForm)
 		r.Get("/tokens/{id}/combos/{cid}/edit", h.ComboEditForm)
 		r.Post("/tokens/{id}/combos", h.ComboCreate)
 		r.Post("/tokens/{id}/combos/{cid}", h.ComboAction)
+		r.Post("/tokens/{id}/combos/{cid}/set-default", h.ComboSetDefault)
 		r.Delete("/tokens/{id}/combos/{cid}", h.ComboDelete)
+
+		// ModelSets (top-level cross-token management)
+		r.Get("/model-sets", h.ModelSetsPage)
+		r.Get("/model-sets/partial/list", h.ModelSetsListPartial)
+		r.Get("/model-sets/{id}", h.ModelSetDetailPage)
 
 		// Plans
 		r.Get("/plans", h.PlansPage)

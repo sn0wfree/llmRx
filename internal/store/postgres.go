@@ -133,6 +133,9 @@ func (p *Postgres) GetComboModel(id int64) (*model.TokenComboModel, error) {
 func (p *Postgres) GetAllComboModels() ([]model.TokenComboModel, error) {
 	return nil, errNotImplemented
 }
+func (p *Postgres) ListAllComboModels() ([]model.TokenComboModel, error) {
+	return nil, errNotImplemented
+}
 func (p *Postgres) CreateComboModel(combo *model.TokenComboModel) error {
 	return errNotImplemented
 }
@@ -140,6 +143,7 @@ func (p *Postgres) UpdateComboModel(combo *model.TokenComboModel) error {
 	return errNotImplemented
 }
 func (p *Postgres) DeleteComboModel(id int64) error                 { return errNotImplemented }
+func (p *Postgres) SetDefaultModelSet(tokenID, comboID int64) error { return errNotImplemented }
 func (p *Postgres) GetEnabledGuardrailRules() ([]model.GuardrailRule, error) {
 	return nil, errNotImplemented
 }

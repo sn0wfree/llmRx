@@ -257,15 +257,138 @@ func TestChat_ListModels(t *testing.T) {
 	}
 	var resp struct {
 		Data []struct {
-			ID      string `json:"id"`
-			OwnedBy string `json:"owned_by"`
+			ID       string `json:"id"`
+			OwnedBy  string `json:"owned_by"`
+			ContextW *int   `json:"context_window"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data) != 3 {
+		t.Fatalf("expected 3 models (2 real + auto), got %d (%+v)", len(resp.Data), resp.Data)
+	}
+	if resp.Data[0].ContextW != nil {
+		t.Error("default response should NOT include context_window")
+	}
+	hasAuto := false
+	for _, m := range resp.Data {
+		if m.ID == "auto" {
+			hasAuto = true
+			if m.OwnedBy != "llmrx" {
+				t.Errorf("auto owned_by: got %q, want llmrx", m.OwnedBy)
+			}
+		}
+	}
+	if !hasAuto {
+		t.Error("response should contain 'auto' virtual model")
+	}
+}
+
+func TestChat_ListModelsDetails(t *testing.T) {
+	app := testhelper.New(t)
+	app.AddChannel("c", "openai", "https://x", []string{"gpt-4o"}, "sk-k")
+	app.AddToken("sk-t", "t")
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/v1/models?details=true", nil)
+	r.Header.Set("Authorization", "Bearer sk-t")
+	app.Mux.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data []struct {
+			ID            string   `json:"id"`
+			OwnedBy       string   `json:"owned_by"`
+			ContextWindow *int     `json:"context_window"`
+			MaxOutput     *int     `json:"max_output"`
+			Pricing       *struct {
+				Input  float64 `json:"input"`
+				Output float64 `json:"output"`
+			} `json:"pricing"`
+			Capabilities *struct {
+				ToolCall bool `json:"tool_call"`
+			} `json:"capabilities"`
+			Modalities []string `json:"modalities"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if len(resp.Data) != 2 {
-		t.Fatalf("expected 2 models, got %d (%+v)", len(resp.Data), resp.Data)
+		t.Fatalf("expected 2 models (1 real + auto), got %d", len(resp.Data))
+	}
+	var gpt4oIdx = -1
+	for i := range resp.Data {
+		if resp.Data[i].ID == "gpt-4o" {
+			gpt4oIdx = i
+			break
+		}
+	}
+	if gpt4oIdx < 0 {
+		t.Fatal("gpt-4o not found in response")
+	}
+	m := &resp.Data[gpt4oIdx]
+	if m.ContextWindow == nil {
+		t.Fatal("details=true should include context_window")
+	}
+	if *m.ContextWindow != 128000 {
+		t.Errorf("context_window: got %d, want 128000", *m.ContextWindow)
+	}
+	if m.Pricing == nil {
+		t.Fatal("details=true should include pricing")
+	}
+	if m.Pricing.Input <= 0 {
+		t.Errorf("pricing.input should be positive, got %f", m.Pricing.Input)
+	}
+	if m.Capabilities == nil {
+		t.Fatal("details=true should include capabilities")
+	}
+	if !m.Capabilities.ToolCall {
+		t.Error("gpt-4o should have tool_call=true")
+	}
+	if len(m.Modalities) < 1 {
+		t.Error("should have at least text modality")
+	}
+}
+
+func TestChat_ListModelsDetails_UnknownModel(t *testing.T) {
+	app := testhelper.New(t)
+	app.AddChannel("c", "openai", "https://x", []string{"made-up-model-xyz"}, "sk-k")
+	app.AddToken("sk-t", "t")
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/v1/models?details=true", nil)
+	r.Header.Set("Authorization", "Bearer sk-t")
+	app.Mux.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data []struct {
+			ID            string `json:"id"`
+			ContextWindow *int   `json:"context_window"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("expected 2 models (1 real + auto), got %d", len(resp.Data))
+	}
+	var unknownIdx = -1
+	for i := range resp.Data {
+		if resp.Data[i].ID == "made-up-model-xyz" {
+			unknownIdx = i
+			break
+		}
+	}
+	if unknownIdx < 0 {
+		t.Fatal("unknown model not found in response")
+	}
+	if resp.Data[unknownIdx].ContextWindow != nil {
+		t.Error("unknown model should NOT have context_window in details mode")
 	}
 }
 

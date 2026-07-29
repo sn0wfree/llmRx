@@ -229,6 +229,7 @@ func (s *SQLite) migrate() error {
 			mode TEXT NOT NULL DEFAULT 'load_balance',
 			strategy TEXT NOT NULL DEFAULT '',
 			enabled INTEGER NOT NULL DEFAULT 1,
+			is_default INTEGER NOT NULL DEFAULT 0,
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL,
 			UNIQUE(token_id, name)
@@ -306,7 +307,89 @@ func (s *SQLite) migrate() error {
 	if err := s.addColumnIfMissing("tokens", "key_ciphertext", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	return s.addColumnIfMissing("alerts", "disabled_reason", "TEXT NOT NULL DEFAULT ''")
+	if err := s.addColumnIfMissing("alerts", "disabled_reason", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing("token_combo_models", "is_default", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	s.migrateAutoCombos()
+	s.migrateDefaultFlag()
+	return nil
+}
+
+// migrateDefaultFlag sets is_default=1 for any existing combo whose
+// Name == "auto", so the data created by Phase 1 (token-form-driven)
+// is consistent with the new explicit default-flag semantics. Best
+// effort, errors are logged but never block startup.
+func (s *SQLite) migrateDefaultFlag() {
+	res, err := s.db.Exec(`UPDATE token_combo_models SET is_default = 1 WHERE name = 'auto' AND is_default = 0`)
+	if err != nil {
+		logging.Debug("migrate default flag: skipped", logging.F("err", err.Error()))
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		logging.Info("migrate default flag", logging.F("promoted", n))
+	}
+}
+
+// migrateAutoCombos is a best-effort one-time data migration that
+// creates a default "auto" combo for any token that has a non-empty
+// models whitelist but no combo at all. Tokens with an empty
+// whitelist (unrestricted) are skipped — an "auto" combo would have
+// no well-defined model pool. Errors are logged but never block
+// startup (the table may not exist yet on a fresh DB, or the
+// models_whitelist column may be missing on old schemas during
+// upgrade tests).
+func (s *SQLite) migrateAutoCombos() {
+	toks, err := s.GetTokens()
+	if err != nil {
+		logging.Debug("migrate auto combos: skipped (cannot list tokens)",
+			logging.F("err", err.Error()),
+		)
+		return
+	}
+	now := time.Now()
+	created := 0
+	for i := range toks {
+		t := &toks[i]
+		if len(t.ModelsWhitelist) == 0 {
+			continue
+		}
+		existing, err := s.GetComboModels(t.ID)
+		if err != nil {
+			logging.Debug("migrate auto combos: skip token",
+				logging.F("token_id", t.ID),
+				logging.F("err", err.Error()),
+			)
+			continue
+		}
+		if len(existing) > 0 {
+			continue
+		}
+		c := &model.TokenComboModel{
+			TokenID:   t.ID,
+			Name:      "auto",
+			Models:    append([]string(nil), t.ModelsWhitelist...),
+			Mode:      model.ComboModeLoadBalance,
+			Strategy:  model.StrategyBalanced,
+			Enabled:   true,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		if err := s.CreateComboModel(c); err != nil {
+			logging.Debug("migrate auto combos: create failed",
+				logging.F("token_id", t.ID),
+				logging.F("err", err.Error()),
+			)
+			continue
+		}
+		created++
+	}
+	if created > 0 {
+		logging.Info("migrate auto combos", logging.F("created", created))
+	}
 }
 
 func (s *SQLite) addColumnIfMissing(table, column, decl string) error {
@@ -1573,9 +1656,9 @@ func (s *SQLite) DeleteProviderDef(id int64) error {
 func (s *SQLite) scanComboRow(r interface{ Scan(dest ...any) error }) (*model.TokenComboModel, error) {
 	var c model.TokenComboModel
 	var modelsJSON, mode, strategy string
-	var enabled int
+	var enabled, isDefault int
 	var created, updated int64
-	if err := r.Scan(&c.ID, &c.TokenID, &c.Name, &modelsJSON, &mode, &strategy, &enabled, &created, &updated); err != nil {
+	if err := r.Scan(&c.ID, &c.TokenID, &c.Name, &modelsJSON, &mode, &strategy, &enabled, &isDefault, &created, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -1585,13 +1668,14 @@ func (s *SQLite) scanComboRow(r interface{ Scan(dest ...any) error }) (*model.To
 	c.Mode = model.ComboMode(mode)
 	c.Strategy = model.CostStrategy(strategy)
 	c.Enabled = enabled == 1
+	c.IsDefault = isDefault == 1
 	c.CreatedAt = fromUnix(created)
 	c.UpdatedAt = fromUnix(updated)
 	return &c, nil
 }
 
 func (s *SQLite) GetComboModels(tokenID int64) ([]model.TokenComboModel, error) {
-	rows, err := s.db.Query(`SELECT id, token_id, name, models, mode, strategy, enabled, created_at, updated_at FROM token_combo_models WHERE token_id = ? ORDER BY id`, tokenID)
+	rows, err := s.db.Query(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models WHERE token_id = ? ORDER BY id`, tokenID)
 	if err != nil {
 		return nil, err
 	}
@@ -1608,12 +1692,33 @@ func (s *SQLite) GetComboModels(tokenID int64) ([]model.TokenComboModel, error) 
 }
 
 func (s *SQLite) GetComboModel(id int64) (*model.TokenComboModel, error) {
-	row := s.db.QueryRow(`SELECT id, token_id, name, models, mode, strategy, enabled, created_at, updated_at FROM token_combo_models WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models WHERE id = ?`, id)
 	return s.scanComboRow(row)
 }
 
 func (s *SQLite) GetAllComboModels() ([]model.TokenComboModel, error) {
-	rows, err := s.db.Query(`SELECT id, token_id, name, models, mode, strategy, enabled, created_at, updated_at FROM token_combo_models WHERE enabled = 1 ORDER BY token_id, id`)
+	rows, err := s.db.Query(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models WHERE enabled = 1 ORDER BY token_id, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.TokenComboModel
+	for rows.Next() {
+		c, err := s.scanComboRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *c)
+	}
+	return out, rows.Err()
+}
+
+// ListAllComboModels returns every combo (enabled or disabled) across
+// all tokens. Used by the admin UI's model-sets page where the
+// operator wants to see disabled entries too. Routing-time lookup
+// uses GetAllComboModels (enabled-only).
+func (s *SQLite) ListAllComboModels() ([]model.TokenComboModel, error) {
+	rows, err := s.db.Query(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models ORDER BY token_id, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1633,10 +1738,15 @@ func (s *SQLite) CreateComboModel(c *model.TokenComboModel) error {
 	if err := s.validateCombo(c); err != nil {
 		return err
 	}
+	if c.IsDefault {
+		if err := s.clearDefaultFlag(c.TokenID, 0); err != nil {
+			return fmt.Errorf("clear default flag: %w", err)
+		}
+	}
 	now := time.Now().Unix()
 	res, err := s.db.Exec(
-		`INSERT INTO token_combo_models (token_id, name, models, mode, strategy, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.TokenID, c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), boolToInt(c.Enabled), now, now,
+		`INSERT INTO token_combo_models (token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.TokenID, c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), boolToInt(c.Enabled), boolToInt(c.IsDefault), now, now,
 	)
 	if err != nil {
 		return err
@@ -1699,10 +1809,15 @@ var (
 )
 
 func (s *SQLite) UpdateComboModel(c *model.TokenComboModel) error {
+	if c.IsDefault {
+		if err := s.clearDefaultFlag(c.TokenID, c.ID); err != nil {
+			return fmt.Errorf("clear default flag: %w", err)
+		}
+	}
 	now := time.Now().Unix()
 	_, err := s.db.Exec(
-		`UPDATE token_combo_models SET name=?, models=?, mode=?, strategy=?, enabled=?, updated_at=? WHERE id=?`,
-		c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), boolToInt(c.Enabled), now, c.ID,
+		`UPDATE token_combo_models SET name=?, models=?, mode=?, strategy=?, enabled=?, is_default=?, updated_at=? WHERE id=?`,
+		c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), boolToInt(c.Enabled), boolToInt(c.IsDefault), now, c.ID,
 	)
 	if err != nil {
 		return err
@@ -1713,6 +1828,44 @@ func (s *SQLite) UpdateComboModel(c *model.TokenComboModel) error {
 
 func (s *SQLite) DeleteComboModel(id int64) error {
 	_, err := s.db.Exec(`DELETE FROM token_combo_models WHERE id = ?`, id)
+	return err
+}
+
+// SetDefaultModelSet promotes one combo to the token's "default"
+// set and demotes any other. The "auto" routing alias resolves to
+// the default set. If comboID is 0 the call is a no-op (used when
+// the operator wants to clear the default).
+func (s *SQLite) SetDefaultModelSet(tokenID, comboID int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE token_combo_models SET is_default = 0, updated_at = ? WHERE token_id = ? AND is_default = 1`,
+		time.Now().Unix(), tokenID); err != nil {
+		return err
+	}
+	if comboID != 0 {
+		if _, err := tx.Exec(`UPDATE token_combo_models SET is_default = 1, updated_at = ? WHERE id = ? AND token_id = ?`,
+			time.Now().Unix(), comboID, tokenID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// clearDefaultFlag unsets is_default for every combo of tokenID
+// except excludeID. Used inside Create/Update to keep the per-token
+// default-set invariant at most one row has is_default=1. excludeID
+// 0 means "no exclusion".
+func (s *SQLite) clearDefaultFlag(tokenID, excludeID int64) error {
+	if excludeID == 0 {
+		_, err := s.db.Exec(`UPDATE token_combo_models SET is_default = 0, updated_at = ? WHERE token_id = ?`,
+			time.Now().Unix(), tokenID)
+		return err
+	}
+	_, err := s.db.Exec(`UPDATE token_combo_models SET is_default = 0, updated_at = ? WHERE token_id = ? AND id != ?`,
+		time.Now().Unix(), tokenID, excludeID)
 	return err
 }
 

@@ -1,0 +1,98 @@
+{{define "model_sets_list_body"}}<div class="mb-6 flex justify-between items-center">
+  <div>
+    <h1 class="text-2xl font-bold text-gray-900">模型集</h1>
+    <p class="mt-1 text-sm text-gray-500">跨 Token 的虚拟模型集合：负载均衡 / 串行容灾</p>
+  </div>
+</div>
+
+<div class="mb-4 bg-white shadow rounded-lg p-4 flex flex-wrap items-end gap-3">
+  <div class="flex-1 min-w-[180px]">
+    <label class="block text-xs font-medium text-gray-700 mb-1">搜索名称</label>
+    <input type="text" name="q" value="{{.Query}}" placeholder="输入组合名..."
+           hx-get="/admin/model-sets/partial/list"
+           hx-trigger="keyup changed delay:200ms"
+           hx-target="#model-sets-tbody"
+           hx-swap="innerHTML"
+           hx-include="[name='token_id'],[name='enabled']"
+           class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+  </div>
+  <div>
+    <label class="block text-xs font-medium text-gray-700 mb-1">Token</label>
+    <select name="token_id"
+            hx-get="/admin/model-sets/partial/list"
+            hx-trigger="change"
+            hx-target="#model-sets-tbody"
+            hx-swap="innerHTML"
+            hx-include="[name='q'],[name='enabled']"
+            class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+      <option value="">全部</option>
+      {{range .Tokens}}
+      <option value="{{.ID}}" {{if eq (printf "%d" .ID) $.TokenFilter}}selected{{end}}>{{.Name}}</option>
+      {{end}}
+    </select>
+  </div>
+  <div>
+    <label class="block text-xs font-medium text-gray-700 mb-1">状态</label>
+    <select name="enabled"
+            hx-get="/admin/model-sets/partial/list"
+            hx-trigger="change"
+            hx-target="#model-sets-tbody"
+            hx-swap="innerHTML"
+            hx-include="[name='q'],[name='token_id']"
+            class="block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+      <option value="" {{if eq .EnabledFilter ""}}selected{{end}}>全部</option>
+      <option value="yes" {{if eq .EnabledFilter "yes"}}selected{{end}}>启用</option>
+      <option value="no" {{if eq .EnabledFilter "no"}}selected{{end}}>禁用</option>
+    </select>
+  </div>
+</div>
+
+<div class="bg-white shadow rounded-lg overflow-hidden">
+  <table class="min-w-full divide-y divide-gray-200">
+    <thead class="bg-gray-50">
+      <tr>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">名称</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">所属 Token</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">模式</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">底层模型</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">策略</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">状态</th>
+      </tr>
+    </thead>
+    <tbody id="model-sets-tbody" class="bg-white divide-y divide-gray-200">
+      {{range .Combos}}
+      <tr>
+        <td class="px-6 py-4 whitespace-nowrap">
+          <a href="/admin/model-sets/{{.ID}}" class="text-sm font-medium text-blue-600 hover:underline font-mono">{{.Name}}</a>
+          {{if .IsDefault}}<span class="ml-1 px-1.5 py-0.5 text-xs bg-yellow-100 text-yellow-800 rounded" title="auto 路由的默认组合">★ 默认</span>{{end}}
+        </td>
+        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+          {{with index $.TokenByID .TokenID}}{{.}}{{else}}#{{.TokenID}}{{end}}
+        </td>
+        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+          {{if eq .Mode "serial"}}
+            <span class="px-2 py-0.5 text-xs bg-orange-100 text-orange-800 rounded">串行</span>
+          {{else}}
+            <span class="px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded">负载均衡</span>
+          {{end}}
+        </td>
+        <td class="px-6 py-4 text-sm text-gray-700">
+          <span class="font-mono">{{range $i, $m := .Models}}{{if $i}}, {{end}}{{$m}}{{end}}</span>
+        </td>
+        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+          {{if ne .Strategy ""}}{{.Strategy}}{{else}}<span class="text-gray-400">继承</span>{{end}}
+        </td>
+        <td class="px-6 py-4 whitespace-nowrap">
+          {{if .Enabled}}<span class="px-2 py-0.5 text-xs bg-green-100 text-green-800 rounded">启用</span>
+          {{else}}<span class="px-2 py-0.5 text-xs bg-gray-100 text-gray-800 rounded">禁用</span>{{end}}
+        </td>
+      </tr>
+      {{else}}
+      <tr><td colspan="6" class="px-6 py-12 text-center text-sm text-gray-500">
+        没有匹配项
+      </td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+<div id="flash"></div>{{end}}

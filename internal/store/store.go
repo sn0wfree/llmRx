@@ -129,9 +129,14 @@ type Store interface {
 	// GetAllComboModels returns every enabled combo across all tokens
 	// in one query — used by tokencache.Reload() to avoid N+1.
 	GetAllComboModels() ([]model.TokenComboModel, error)
+	ListAllComboModels() ([]model.TokenComboModel, error)
 	CreateComboModel(c *model.TokenComboModel) error
 	UpdateComboModel(c *model.TokenComboModel) error
 	DeleteComboModel(id int64) error
+	// SetDefaultModelSet promotes comboID to the token's default
+	// set (the alias "auto" resolves to it) and demotes any other.
+	// comboID == 0 clears the default.
+	SetDefaultModelSet(tokenID, comboID int64) error
 
 	// Guardrails
 	GetEnabledGuardrailRules() ([]model.GuardrailRule, error)

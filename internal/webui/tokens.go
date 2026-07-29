@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/model"
 )
 
@@ -125,6 +126,16 @@ func (h *Handler) TokenEditForm(w http.ResponseWriter, r *http.Request) {
 		"Active": "tokens",
 		"Token":  t,
 	}
+	combos, _ := h.store.GetComboModels(t.ID)
+	for i := range combos {
+		if combos[i].Name == "auto" {
+			data["DefaultCombo"] = &combos[i]
+			break
+		}
+	}
+	if _, ok := data["DefaultCombo"]; !ok && len(combos) > 0 {
+		data["DefaultCombo"] = &combos[0]
+	}
 	if err := h.renderer.Render(w, "tokens_form_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -157,6 +168,48 @@ func (h *Handler) TokenCreate(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.CreateToken(t); err != nil {
 		h.renderTokenFormError(w, r, nil, "创建失败: "+err.Error(), r.Form)
 		return
+	}
+	logging.Info("token.create",
+		logging.F("token_id", t.ID),
+		logging.F("token_name", t.Name),
+		logging.F("has_models", len(t.ModelsWhitelist) > 0),
+	)
+	if len(t.ModelsWhitelist) > 0 {
+		comboName := strings.TrimSpace(r.FormValue("combo_name"))
+		if comboName == "" {
+			comboName = "auto"
+		}
+		mode := r.FormValue("combo_mode")
+		if mode == "" {
+			mode = string(model.ComboModeLoadBalance)
+		}
+		strategy := r.FormValue("combo_strategy")
+		if strategy == "" {
+			strategy = string(model.StrategyBalanced)
+		}
+		c := &model.TokenComboModel{
+			TokenID:  t.ID,
+			Name:     comboName,
+			Models:   append([]string(nil), t.ModelsWhitelist...),
+			Mode:     model.ComboMode(mode),
+			Strategy: model.CostStrategy(strategy),
+			Enabled:  true,
+		}
+		if err := h.store.CreateComboModel(c); err != nil {
+			logging.Warn("token.create: auto combo creation failed",
+				logging.F("token_id", t.ID),
+				logging.F("err", err.Error()),
+			)
+		} else {
+			logging.Info("token.create: auto combo created",
+				logging.F("token_id", t.ID),
+				logging.F("combo_name", comboName),
+				logging.F("combo_id", c.ID),
+				logging.F("mode", mode),
+				logging.F("strategy", strategy),
+				logging.F("models", len(t.ModelsWhitelist)),
+			)
+		}
 	}
 	h.triggerReload()
 	// Show the new key once
@@ -243,6 +296,83 @@ func (h *Handler) updateTokenByID(w http.ResponseWriter, r *http.Request, id int
 		h.renderTokenFormError(w, r, cur, "更新失败: "+err.Error(), r.Form)
 		return
 	}
+	if r.FormValue("models_whitelist") != "" {
+		combos, _ := h.store.GetComboModels(cur.ID)
+		var defaultCombo *model.TokenComboModel
+		for i := range combos {
+			if combos[i].Name == "auto" {
+				defaultCombo = &combos[i]
+				break
+			}
+		}
+		if defaultCombo == nil && len(combos) > 0 {
+			defaultCombo = &combos[0]
+		}
+
+		newName := strings.TrimSpace(r.FormValue("combo_name"))
+		newMode := r.FormValue("combo_mode")
+		newStrategy := r.FormValue("combo_strategy")
+
+		if defaultCombo != nil {
+			if newName != "" {
+				defaultCombo.Name = newName
+			}
+			if newMode != "" {
+				defaultCombo.Mode = model.ComboMode(newMode)
+			}
+			if newStrategy != "" {
+				defaultCombo.Strategy = model.CostStrategy(newStrategy)
+			}
+			defaultCombo.Models = append([]string(nil), cur.ModelsWhitelist...)
+			if err := h.store.UpdateComboModel(defaultCombo); err != nil {
+				logging.Warn("token.update: sync combo failed",
+					logging.F("token_id", cur.ID),
+					logging.F("combo_id", defaultCombo.ID),
+					logging.F("err", err.Error()),
+				)
+			} else {
+				logging.Info("token.update: combo synced",
+					logging.F("token_id", cur.ID),
+					logging.F("combo_id", defaultCombo.ID),
+					logging.F("combo_name", defaultCombo.Name),
+					logging.F("models", len(defaultCombo.Models)),
+				)
+			}
+		} else {
+			if newName == "" {
+				newName = "auto"
+			}
+			if newMode == "" {
+				newMode = string(model.ComboModeLoadBalance)
+			}
+			if newStrategy == "" {
+				newStrategy = string(model.StrategyBalanced)
+			}
+			c := &model.TokenComboModel{
+				TokenID:  cur.ID,
+				Name:     newName,
+				Models:   append([]string(nil), cur.ModelsWhitelist...),
+				Mode:     model.ComboMode(newMode),
+				Strategy: model.CostStrategy(newStrategy),
+				Enabled:  true,
+			}
+			if err := h.store.CreateComboModel(c); err != nil {
+				logging.Warn("token.update: combo creation failed",
+					logging.F("token_id", cur.ID),
+					logging.F("err", err.Error()),
+				)
+			} else {
+				logging.Info("token.update: combo created",
+					logging.F("token_id", cur.ID),
+					logging.F("combo_id", c.ID),
+					logging.F("combo_name", newName),
+					logging.F("mode", newMode),
+					logging.F("strategy", newStrategy),
+					logging.F("models", len(c.Models)),
+				)
+			}
+		}
+	}
 	h.triggerReload()
 	http.Redirect(w, r, "/admin/tokens", http.StatusSeeOther)
 }
@@ -277,6 +407,9 @@ func (h *Handler) renderTokenFormError(w http.ResponseWriter, r *http.Request, t
 		fd["IPsStr"] = firstOrEmpty(form["ip_whitelist"])
 		fd["ExpiresDaysStr"] = firstOrEmpty(form["expires_in_days"])
 		fd["Status"] = firstOrEmpty(form["status"])
+		fd["ComboName"] = firstOrEmpty(form["combo_name"])
+		fd["ComboMode"] = firstOrEmpty(form["combo_mode"])
+		fd["ComboStrategy"] = firstOrEmpty(form["combo_strategy"])
 	}
 	data := map[string]any{
 		"Body":      "tokens_form_body",

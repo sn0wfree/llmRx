@@ -21,6 +21,7 @@ import (
 	authmw "github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
+	"github.com/sn0wfree/llmRx/internal/prober"
 	"github.com/sn0wfree/llmRx/internal/requestid"
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/runtime"
@@ -49,6 +50,7 @@ type Server struct {
 	admin      *admin.Handler
 	engine     *chi.Mux
 	httpServer *http.Server
+	prober     *prober.Cache
 	// byokHook, when set, is invoked on unknown bearer tokens
 	// so the BYOK manager can probe+register them. nil means
 	// strict 403 (legacy behaviour).
@@ -109,6 +111,15 @@ func (s *Server) corsOptions() cors.Options {
 
 func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defaults) {
 	handler := api.New(s.cfg, s.router, s.pool, s.store, s.logStore, lb, rt)
+	proberCache := prober.New(prober.Config{}, s.store, s.pool)
+	handler.SetProber(proberCache)
+	s.prober = proberCache
+	// Wire real-traffic signals into the routing engine. Every
+	// successful/failed real call now updates the probe cache so
+	// busy channels get zero probe requests (real traffic is a
+	// better health signal than a synthetic /v1/models probe).
+	s.router.SetTrafficObserver(prober.NewRouterObserver(proberCache))
+	logging.Info("prober: wired into router (real-traffic observer)")
 	adminHandler := admin.New(s.store, s.logStore, s.pool, s.router, s.tokens, lb, rt, s.cfg, s.keyFile)
 	s.admin = adminHandler
 
@@ -186,6 +197,9 @@ func (s *Server) Start(ctx context.Context) error {
 	)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
+		if s.prober != nil {
+			s.prober.Stop()
+		}
 		if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
 			return fmt.Errorf("graceful shutdown: %w", err)
 		}

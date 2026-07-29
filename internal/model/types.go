@@ -212,6 +212,7 @@ type TokenComboModel struct {
 	Mode      ComboMode  `json:"mode"`
 	Strategy  CostStrategy `json:"strategy"` // "" = inherit global
 	Enabled   bool       `json:"enabled"`
+	IsDefault bool       `json:"is_default" gorm:"default:false"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 }

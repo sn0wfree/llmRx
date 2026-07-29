@@ -54,18 +54,65 @@
   </div>
 
   <div>
-    <h2 class="text-lg font-medium text-gray-900 mb-4">白名单</h2>
-    <div class="grid grid-cols-2 gap-4">
+    <h2 class="text-lg font-medium text-gray-900 mb-4">默认模型集</h2>
+    <div class="grid grid-cols-3 gap-4 mb-3">
       <div>
-        <label class="block text-sm font-medium text-gray-700">模型白名单（每行一个）</label>
-        <textarea name="models_whitelist" rows="3" placeholder="gpt-4&#10;gpt-3.5-turbo"
-                  class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm">{{or .FormData.ModelsStr (joinStrings .Token.ModelsWhitelist)}}</textarea>
+        <label class="block text-sm font-medium text-gray-700">模型集名称</label>
+        <input type="text" name="combo_name"
+               value="{{if .FormData.ComboName}}{{.FormData.ComboName}}{{else if .DefaultCombo}}{{.DefaultCombo.Name}}{{else}}auto{{end}}"
+               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono" placeholder="auto">
       </div>
       <div>
-        <label class="block text-sm font-medium text-gray-700">IP 白名单（每行一个，留空 = 不限）</label>
-        <textarea name="ip_whitelist" rows="3" placeholder="192.168.1.0/24"
-                  class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm">{{or .FormData.IPsStr (joinStrings .Token.IPWhitelist)}}</textarea>
+        <label class="block text-sm font-medium text-gray-700">路由模式</label>
+        <select name="combo_mode" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+          <option value="load_balance" {{if or (eq .FormData.ComboMode "load_balance") (and (not .FormData.ComboMode) (or (not .DefaultCombo) (eq .DefaultCombo.Mode "load_balance")))}}selected{{end}}>负载均衡</option>
+          <option value="serial" {{if eq .FormData.ComboMode "serial"}}selected{{else if and (not .FormData.ComboMode) .DefaultCombo (eq .DefaultCombo.Mode "serial")}}selected{{end}}>串行容灾</option>
+        </select>
       </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700">成本策略</label>
+        <select name="combo_strategy" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+          <option value="balanced" {{if or (eq .FormData.ComboStrategy "balanced") (and (not .FormData.ComboStrategy) (or (not .DefaultCombo) (eq .DefaultCombo.Strategy "balanced")))}}selected{{end}}>均衡</option>
+          <option value="cheapest" {{if eq .FormData.ComboStrategy "cheapest"}}selected{{else if and (not .FormData.ComboStrategy) .DefaultCombo (eq .DefaultCombo.Strategy "cheapest")}}selected{{end}}>最便宜</option>
+          <option value="fastest" {{if eq .FormData.ComboStrategy "fastest"}}selected{{else if and (not .FormData.ComboStrategy) .DefaultCombo (eq .DefaultCombo.Strategy "fastest")}}selected{{end}}>最快</option>
+        </select>
+      </div>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-gray-700">模型列表（每行一个）</label>
+      <textarea name="models_whitelist" id="models-whitelist" rows="3" placeholder="gpt-4&#10;gpt-3.5-turbo"
+                class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm">{{or .FormData.ModelsStr (joinStrings .Token.ModelsWhitelist)}}</textarea>
+      <div id="token-model-browser" class="mt-3 p-3 rounded border border-gray-200 bg-gray-50">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-medium text-gray-700">从模型库选择</span>
+          <span id="token-model-count" class="text-xs text-gray-500">-</span>
+        </div>
+        <div class="flex gap-2 mb-2">
+          <select id="token-provider-select" class="px-2 py-1 border border-gray-300 rounded text-sm">
+            <option value="">选择 provider...</option>
+          </select>
+          <input type="text" id="token-model-search" placeholder="搜索模型..."
+                 class="flex-1 px-2 py-1 border border-gray-300 rounded text-sm">
+        </div>
+        <div id="token-model-list" class="max-h-48 overflow-y-auto space-y-1">
+          <p class="text-sm text-gray-400 py-4 text-center">选择 provider 后加载模型列表</p>
+        </div>
+        <div class="flex gap-2 mt-2">
+          <button type="button" class="text-xs text-blue-600 px-2 py-1" onclick="tokenSelectAll(true)">全选</button>
+          <button type="button" class="text-xs text-gray-500 px-2 py-1" onclick="tokenSelectAll(false)">取消全选</button>
+          <button type="button" class="px-3 py-1 bg-blue-600 text-white rounded text-xs ml-auto" onclick="tokenAddModels()">添加选中 →</button>
+        </div>
+      </div>
+      <p class="mt-2 text-xs text-gray-500">提示：请求 model="auto" 时会从这个模型集中自动选一个最优通道。</p>
+    </div>
+  </div>
+
+  <div>
+    <h2 class="text-lg font-medium text-gray-900 mb-4">安全</h2>
+    <div>
+      <label class="block text-sm font-medium text-gray-700">IP 白名单（每行一个，留空 = 不限）</label>
+      <textarea name="ip_whitelist" rows="3" placeholder="192.168.1.0/24"
+                class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm">{{or .FormData.IPsStr (joinStrings .Token.IPWhitelist)}}</textarea>
     </div>
   </div>
 
@@ -86,10 +133,154 @@
 
   <div class="flex justify-end gap-3 pt-4 border-t">
     <a href="/admin/tokens" class="px-4 py-2 text-gray-700 hover:text-gray-900 text-sm">取消</a>
-    {{if .Token}}<a href="/admin/tokens/{{.Token.ID}}/combos" class="px-4 py-2 bg-green-100 text-green-700 hover:bg-green-200 text-sm rounded-md">管理组合模型</a>{{end}}
+    {{if .Token}}<a href="/admin/tokens/{{.Token.ID}}/combos" class="px-4 py-2 bg-gray-100 text-gray-700 hover:bg-gray-200 text-sm rounded-md">高级：管理组合模型</a>{{end}}
     <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
       {{if .Token}}保存{{else}}创建{{end}}
     </button>
   </div>
 </form>
-<div id="flash"></div>{{end}}
+<div id="flash"></div>
+
+<script>
+var tokenCatalogModels = [];
+var tokenFiltered = [];
+
+function loadTokenProviderOptions() {
+  fetch('/admin/api/meta-providers')
+    .then(function(resp) { return resp.json(); })
+    .then(function(data) {
+      var sel = document.getElementById('token-provider-select');
+      if (!sel) return;
+      var providers = data.providers || [];
+      providers.forEach(function(p) {
+        var opt = document.createElement('option');
+        opt.value = p;
+        opt.textContent = p;
+        sel.appendChild(opt);
+      });
+    });
+}
+
+function loadTokenCatalog(provider) {
+  var listEl = document.getElementById('token-model-list');
+  var countEl = document.getElementById('token-model-count');
+  if (!provider) {
+    listEl.innerHTML = '<p class="text-sm text-gray-400 py-4 text-center">选择 provider 后加载模型列表</p>';
+    countEl.textContent = '-';
+    tokenCatalogModels = [];
+    tokenFiltered = [];
+    return;
+  }
+  listEl.innerHTML = '<p class="text-sm text-gray-400 py-4 text-center">加载中...</p>';
+  countEl.textContent = '-';
+
+  fetch('/admin/api/models-by-provider?provider=' + encodeURIComponent(provider))
+    .then(function(resp) { return resp.json(); })
+    .then(function(data) {
+      tokenCatalogModels = data.models || [];
+      document.getElementById('token-model-search').value = '';
+      renderTokenCatalog();
+    })
+    .catch(function() {
+      listEl.innerHTML = '<p class="text-sm text-red-500 py-4 text-center">加载失败</p>';
+      countEl.textContent = '-';
+    });
+}
+
+function renderTokenCatalog() {
+  var q = document.getElementById('token-model-search').value.toLowerCase().trim();
+  var listEl = document.getElementById('token-model-list');
+  var countEl = document.getElementById('token-model-count');
+
+  tokenFiltered = tokenCatalogModels.filter(function(m) {
+    if (!q) return true;
+    return m.id.toLowerCase().indexOf(q) >= 0 || (m.name && m.name.toLowerCase().indexOf(q) >= 0);
+  });
+
+  if (tokenCatalogModels.length === 0) {
+    listEl.innerHTML = '<p class="text-sm text-gray-400 py-4 text-center">该 provider 暂无已知模型，可手动输入</p>';
+    countEl.textContent = '0 / 0';
+    return;
+  }
+
+  var ta = document.getElementById('models-whitelist');
+  var existing = ta.value.split('\n').map(function(s) { return s.trim() }).filter(function(s) { return s });
+
+  var html = '';
+  tokenFiltered.forEach(function(m) {
+    var checked = existing.indexOf(m.id) >= 0;
+    var badges = [];
+    if (m.context_window) {
+      var cw = m.context_window >= 1000 ? (m.context_window / 1000) + 'K' : m.context_window;
+      badges.push('<span class="text-xs text-gray-500">' + cw + '</span>');
+    }
+    if (m.capabilities && m.capabilities.tool_call) badges.push('<span title="工具调用">🔧</span>');
+    if (m.capabilities && m.capabilities.attachment) badges.push('<span title="图像">👁️</span>');
+    if (m.capabilities && m.capabilities.reasoning) badges.push('<span title="推理">🧠</span>');
+    var hasAudio = m.modalities && m.modalities.indexOf('audio') >= 0;
+    if (hasAudio) badges.push('<span title="音频">🎙️</span>');
+
+    html += '<label class="flex items-start gap-2 p-1.5 rounded hover:bg-white cursor-pointer text-sm">';
+    html += '<input type="checkbox" value="' + escapeHtml(m.id) + '" class="mt-0.5 token-cb"' + (checked ? ' checked' : '') + '>';
+    html += '<div class="flex-1 min-w-0">';
+    html += '<div class="flex items-center gap-2">';
+    html += '<span class="font-mono text-gray-900">' + escapeHtml(m.id) + '</span>';
+    html += '<span class="flex items-center gap-1 flex-shrink-0">' + badges.join('') + '</span>';
+    html += '</div>';
+    if (m.name && m.name !== m.id) {
+      html += '<div class="text-xs text-gray-500">' + escapeHtml(m.name) + '</div>';
+    }
+    html += '</div></label>';
+  });
+
+  listEl.innerHTML = html;
+  updateTokenCount();
+}
+
+function updateTokenCount() {
+  var countEl = document.getElementById('token-model-count');
+  var selected = document.querySelectorAll('.token-cb:checked').length;
+  countEl.textContent = '已选 ' + selected + ' / 共 ' + tokenFiltered.length;
+}
+
+function tokenSelectAll(checked) {
+  document.querySelectorAll('.token-cb').forEach(function(cb) { cb.checked = checked });
+  updateTokenCount();
+}
+
+function tokenAddModels() {
+  var ta = document.getElementById('models-whitelist');
+  var existing = ta.value.split('\n').map(function(s) { return s.trim() }).filter(function(s) { return s });
+  document.querySelectorAll('.token-cb:checked').forEach(function(cb) {
+    if (existing.indexOf(cb.value) < 0) {
+      existing.push(cb.value);
+    }
+  });
+  ta.value = existing.join('\n');
+  renderTokenCatalog();
+}
+
+function tokenEscapeHtml(s) {
+  var d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+document.addEventListener('change', function(e) {
+  if (e.target.classList && e.target.classList.contains('token-cb')) {
+    updateTokenCount();
+  }
+});
+
+document.getElementById('token-model-search').addEventListener('input', function() {
+  renderTokenCatalog();
+});
+
+document.getElementById('token-provider-select').addEventListener('change', function() {
+  loadTokenCatalog(this.value);
+});
+
+(function() {
+  loadTokenProviderOptions();
+})();
+</script>{{end}}

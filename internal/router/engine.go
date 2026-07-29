@@ -12,6 +12,12 @@ import (
 	"github.com/sn0wfree/llmRx/internal/store"
 )
 
+// RouterEngine is the L1-L5 routing pipeline. Optional helpers
+// (circuit breaker, Thompson sampler, intent classifier) hang off
+// it; the prober plugin (prober.Cache implements TrafficObserver)
+// is also hung off here so every successful/failed real call is
+// observed once at the source instead of scattered across api
+// handlers.
 type RouterEngine struct {
 	static         *StaticRouter
 	breaker        *CircuitBreaker
@@ -21,6 +27,23 @@ type RouterEngine struct {
 	pool           *pool.ChannelPool
 	store          store.Store
 	extraChannels  []func() []*model.Channel // BYOK hook (Phase 1.5 reserved)
+	trafficObs     TrafficObserver            // optional real-traffic observer (prober etc.)
+}
+
+// TrafficObserver is the pluggable hook RouterEngine invokes on
+// every successful or failed real (non-probe) call. Implementations
+// must be safe for concurrent use. A nil observer (the default)
+// silently drops the notification — keeps the hot path branchless
+// when no prober is wired in.
+type TrafficObserver interface {
+	OnRealSuccess(channelID int64)
+	OnRealFailure(channelID int64)
+}
+
+// SetTrafficObserver installs the observer. Pass nil to detach.
+// Typically wired once during bootstrap from server.New().
+func (e *RouterEngine) SetTrafficObserver(o TrafficObserver) {
+	e.trafficObs = o
 }
 
 type RouteResult struct {
@@ -264,11 +287,17 @@ func containsString(xs []string, s string) bool {
 func (e *RouterEngine) RecordSuccess(channelID int64) {
 	e.breaker.RecordSuccess(channelID)
 	e.thompson.RecordSuccess(channelID)
+	if e.trafficObs != nil {
+		e.trafficObs.OnRealSuccess(channelID)
+	}
 }
 
 func (e *RouterEngine) RecordFailure(channelID int64) {
 	e.breaker.RecordFailure(channelID)
 	e.thompson.RecordFailure(channelID)
+	if e.trafficObs != nil {
+		e.trafficObs.OnRealFailure(channelID)
+	}
 }
 
 // Thompson returns the underlying sampler (for the admin API and

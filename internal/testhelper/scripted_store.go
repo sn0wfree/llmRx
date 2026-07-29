@@ -112,9 +112,11 @@ type ScriptedStore struct {
 	GetComboModelsFunc    func(tokenID int64) ([]model.TokenComboModel, error)
 	GetComboModelFunc     func(id int64) (*model.TokenComboModel, error)
 	GetAllComboModelsFunc func() ([]model.TokenComboModel, error)
+	ListAllComboModelsFunc func() ([]model.TokenComboModel, error)
 	CreateComboModelFunc  func(c *model.TokenComboModel) error
 	UpdateComboModelFunc  func(c *model.TokenComboModel) error
 	DeleteComboModelFunc  func(id int64) error
+	SetDefaultModelSetFunc func(tokenID, comboID int64) error
 
 	// Guardrails
 	GetEnabledGuardrailRulesFunc func() ([]model.GuardrailRule, error)
@@ -548,6 +550,13 @@ func (s *ScriptedStore) GetAllComboModels() ([]model.TokenComboModel, error) {
 	}
 	return s.underlying.GetAllComboModels()
 }
+
+func (s *ScriptedStore) ListAllComboModels() ([]model.TokenComboModel, error) {
+	if s.ListAllComboModelsFunc != nil {
+		return s.ListAllComboModelsFunc()
+	}
+	return s.underlying.ListAllComboModels()
+}
 func (s *ScriptedStore) CreateComboModel(c *model.TokenComboModel) error {
 	if s.CreateComboModelFunc != nil {
 		return s.CreateComboModelFunc(c)
@@ -565,6 +574,13 @@ func (s *ScriptedStore) DeleteComboModel(id int64) error {
 		return s.DeleteComboModelFunc(id)
 	}
 	return s.underlying.DeleteComboModel(id)
+}
+
+func (s *ScriptedStore) SetDefaultModelSet(tokenID, comboID int64) error {
+	if s.SetDefaultModelSetFunc != nil {
+		return s.SetDefaultModelSetFunc(tokenID, comboID)
+	}
+	return s.underlying.SetDefaultModelSet(tokenID, comboID)
 }
 func (s *ScriptedStore) GetEnabledGuardrailRules() ([]model.GuardrailRule, error) {
 	if s.GetEnabledGuardrailRulesFunc != nil {

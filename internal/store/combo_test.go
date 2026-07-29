@@ -185,3 +185,109 @@ func TestComboModels_DeleteComboModel_NotFound(t *testing.T) {
 		t.Errorf("delete non-existent should not error, got %v", err)
 	}
 }
+
+func TestComboModels_SetDefaultModelSet(t *testing.T) {
+	s := openTemp(t)
+	tok := &model.Token{Key: "sk-test", Name: "t1", Status: model.TokenActive}
+	if err := s.CreateToken(tok); err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+	c1 := &model.TokenComboModel{TokenID: tok.ID, Name: "alpha", Models: []string{"m1"}, Mode: model.ComboModeLoadBalance, Strategy: model.StrategyBalanced, Enabled: true}
+	c2 := &model.TokenComboModel{TokenID: tok.ID, Name: "bravo", Models: []string{"m2"}, Mode: model.ComboModeLoadBalance, Strategy: model.StrategyBalanced, Enabled: true}
+	c3 := &model.TokenComboModel{TokenID: tok.ID, Name: "charlie", Models: []string{"m3"}, Mode: model.ComboModeLoadBalance, Strategy: model.StrategyBalanced, Enabled: true}
+	for _, c := range []*model.TokenComboModel{c1, c2, c3} {
+		if err := s.CreateComboModel(c); err != nil {
+			t.Fatalf("create %s: %v", c.Name, err)
+		}
+	}
+
+	if err := s.SetDefaultModelSet(tok.ID, c2.ID); err != nil {
+		t.Fatalf("set default: %v", err)
+	}
+	combos, _ := s.GetComboModels(tok.ID)
+	defaults := 0
+	var chosen string
+	for _, c := range combos {
+		if c.IsDefault {
+			defaults++
+			chosen = c.Name
+		}
+	}
+	if defaults != 1 {
+		t.Fatalf("expected exactly 1 default, got %d", defaults)
+	}
+	if chosen != "bravo" {
+		t.Errorf("default: got %q, want bravo", chosen)
+	}
+
+	if err := s.SetDefaultModelSet(tok.ID, c3.ID); err != nil {
+		t.Fatalf("set default to charlie: %v", err)
+	}
+	combos, _ = s.GetComboModels(tok.ID)
+	defaults = 0
+	chosen = ""
+	for _, c := range combos {
+		if c.IsDefault {
+			defaults++
+			chosen = c.Name
+		}
+	}
+	if defaults != 1 || chosen != "charlie" {
+		t.Errorf("after switch: defaults=%d chosen=%q", defaults, chosen)
+	}
+
+	if err := s.SetDefaultModelSet(tok.ID, 0); err != nil {
+		t.Fatalf("clear default: %v", err)
+	}
+	combos, _ = s.GetComboModels(tok.ID)
+	for _, c := range combos {
+		if c.IsDefault {
+			t.Errorf("after clear: %s should not be default", c.Name)
+		}
+	}
+}
+
+func TestComboModels_DefaultFlag_RoundTrip(t *testing.T) {
+	s := openTemp(t)
+	tok := &model.Token{Key: "sk-test", Name: "t1", Status: model.TokenActive}
+	if err := s.CreateToken(tok); err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+	c := &model.TokenComboModel{TokenID: tok.ID, Name: "default-set", Models: []string{"m1"}, Mode: model.ComboModeLoadBalance, Strategy: model.StrategyBalanced, Enabled: true, IsDefault: true}
+	if err := s.CreateComboModel(c); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := s.GetComboModel(c.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !got.IsDefault {
+		t.Error("IsDefault should persist as true")
+	}
+}
+
+func TestComboModels_DefaultFlag_ClearedOnCreate(t *testing.T) {
+	s := openTemp(t)
+	tok := &model.Token{Key: "sk-test", Name: "t1", Status: model.TokenActive}
+	if err := s.CreateToken(tok); err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+	c1 := &model.TokenComboModel{TokenID: tok.ID, Name: "set-a", Models: []string{"m1"}, Mode: model.ComboModeLoadBalance, Strategy: model.StrategyBalanced, Enabled: true, IsDefault: true}
+	if err := s.CreateComboModel(c1); err != nil {
+		t.Fatalf("create set-a: %v", err)
+	}
+	c2 := &model.TokenComboModel{TokenID: tok.ID, Name: "set-b", Models: []string{"m2"}, Mode: model.ComboModeLoadBalance, Strategy: model.StrategyBalanced, Enabled: true, IsDefault: true}
+	if err := s.CreateComboModel(c2); err != nil {
+		t.Fatalf("create set-b: %v", err)
+	}
+	combos, _ := s.GetComboModels(tok.ID)
+	defaults := 0
+	for _, c := range combos {
+		if c.IsDefault {
+			defaults++
+		}
+	}
+	if defaults != 1 {
+		t.Errorf("expected exactly 1 default after second insert, got %d", defaults)
+	}
+}

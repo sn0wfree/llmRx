@@ -83,8 +83,33 @@ type TokenInfo struct {
 // whitelist — the combo definition itself constrains which real
 // models can be reached.
 func (t TokenInfo) HasModelAccess(model string) bool {
+	if model == "auto" {
+		return true
+	}
 	if _, isCombo := t.ComboModels[model]; isCombo {
 		return true
+	}
+	if len(t.ComboModels) > 0 {
+		// Token has at least one model set — permission is scoped
+		// to enabled sets only. Whitelist is supplemental (a
+		// token may also whitelist a model name that doesn't
+		// appear in any combo's models list).
+		for _, c := range t.ComboModels {
+			if !c.Enabled {
+				continue
+			}
+			for _, m := range c.Models {
+				if m == model {
+					return true
+				}
+			}
+		}
+		for _, m := range t.ModelsWhitelist {
+			if m == model || m == "*" {
+				return true
+			}
+		}
+		return false
 	}
 	if len(t.ModelsWhitelist) == 0 {
 		return true

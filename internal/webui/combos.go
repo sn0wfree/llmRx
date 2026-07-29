@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/model"
 )
 
@@ -140,6 +141,13 @@ func (h *Handler) ComboCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	logging.Info("combo.created",
+		logging.F("token_id", tokenID),
+		logging.F("combo_id", c.ID),
+		logging.F("name", name),
+		logging.F("mode", mode),
+		logging.F("models_count", len(models)),
+	)
 	h.triggerReload()
 	http.Redirect(w, r, "/admin/tokens/"+strconv.FormatInt(tokenID, 10)+"/combos", http.StatusSeeOther)
 }
@@ -203,6 +211,43 @@ func (h *Handler) comboUpdateByID(w http.ResponseWriter, r *http.Request, tokenI
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	logging.Info("combo.updated",
+		logging.F("token_id", tokenID),
+		logging.F("combo_id", existing.ID),
+		logging.F("name", existing.Name),
+		logging.F("mode", existing.Mode),
+		logging.F("models_count", len(existing.Models)),
+	)
+	h.triggerReload()
+	http.Redirect(w, r, "/admin/tokens/"+strconv.FormatInt(tokenID, 10)+"/combos", http.StatusSeeOther)
+}
+
+// ComboSetDefault promotes a combo to be the token's default set
+// (the alias "auto" routes through it). Returns the combos list
+// partial so HTMX can re-render the table in place.
+func (h *Handler) ComboSetDefault(w http.ResponseWriter, r *http.Request) {
+	tokenID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	comboID, err := strconv.ParseInt(chi.URLParam(r, "cid"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad combo id", http.StatusBadRequest)
+		return
+	}
+	if _, err := h.store.GetTokenByID(tokenID); err != nil {
+		http.Error(w, "token not found", http.StatusNotFound)
+		return
+	}
+	if err := h.store.SetDefaultModelSet(tokenID, comboID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	logging.Info("combo.set_default",
+		logging.F("token_id", tokenID),
+		logging.F("combo_id", comboID),
+	)
 	h.triggerReload()
 	http.Redirect(w, r, "/admin/tokens/"+strconv.FormatInt(tokenID, 10)+"/combos", http.StatusSeeOther)
 }
@@ -222,11 +267,15 @@ func (h *Handler) ComboDelete(w http.ResponseWriter, r *http.Request) {
 	h.comboDeleteByID(w, r, tokenID, comboID)
 }
 
-func (h *Handler) comboDeleteByID(w http.ResponseWriter, _ *http.Request, _, comboID int64) {
+func (h *Handler) comboDeleteByID(w http.ResponseWriter, _ *http.Request, tokenID, comboID int64) {
 	if err := h.store.DeleteComboModel(comboID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	logging.Info("combo.deleted",
+		logging.F("token_id", tokenID),
+		logging.F("combo_id", comboID),
+	)
 	h.triggerReload()
 	w.WriteHeader(http.StatusOK)
 }

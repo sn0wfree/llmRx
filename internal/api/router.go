@@ -20,6 +20,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/modelmeta"
 	"github.com/sn0wfree/llmRx/internal/observability"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/provider"
@@ -27,6 +28,8 @@ import (
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
+
+	proberpkg "github.com/sn0wfree/llmRx/internal/prober"
 )
 
 type Handler struct {
@@ -41,6 +44,7 @@ type Handler struct {
 	rt        *runtime.Defaults
 	limits    *ratelimit.Limiter
 	guardrails *guardrail.GuardrailEngine
+	prober    *proberpkg.Cache
 	// retryingWrappers caches one RetryingProvider per protocol so
 	// the chat hot path doesn't allocate a fresh wrapper on every
 	// request. Refreshed lazily when retry/timeout config changes.
@@ -87,6 +91,39 @@ func (h *Handler) Store() store.Store { return h.store }
 func lookupTokenInfo(ctx context.Context) (middleware.TokenInfo, bool) {
 	v, ok := ctx.Value(middleware.TokenInfoKey).(middleware.TokenInfo)
 	return v, ok
+}
+
+// findDefaultCombo returns the "default" combo for a token, used by
+// the model="auto" shortcut. Priority:
+//  1. combo with IsDefault=true and Enabled
+//  2. combo named "auto" and Enabled
+//  3. first enabled combo (by map iteration order, non-deterministic)
+//
+// Returns ok=false when no enabled combo exists.
+func findDefaultCombo(info middleware.TokenInfo) (model.TokenComboModel, bool) {
+	var namedAuto, first model.TokenComboModel
+	var hasNamedAuto, hasFirst bool
+	for name, c := range info.ComboModels {
+		if !c.Enabled {
+			continue
+		}
+		if c.IsDefault {
+			return c, true
+		}
+		if name == "auto" {
+			namedAuto = c
+			hasNamedAuto = true
+			continue
+		}
+		if !hasFirst {
+			first = c
+			hasFirst = true
+		}
+	}
+	if hasNamedAuto {
+		return namedAuto, true
+	}
+	return first, hasFirst
 }
 
 // providerFor returns the provider matching channel.Protocol,
@@ -166,6 +203,12 @@ func (h *Handler) SetMarkup(m float64) { h.rt.SetMarkupRatio(m) }
 // whose Protocol is "openai" or empty; use SetProviders to swap
 // per-protocol clients.
 func (h *Handler) SetProvider(p provider.Provider) { h.provider = p }
+
+// SetProber attaches the channel health-probe cache. The cache is
+// consulted on every auto-model request so a recent failed probe
+// short-circuits the call before it burns upstream latency. nil
+// disables the check.
+func (h *Handler) SetProber(p *proberpkg.Cache) { h.prober = p }
 
 // SetProviders replaces the per-protocol provider map. Used by
 // tests to inject mocks for every protocol. Pass a nil-valued
@@ -251,6 +294,11 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Per-token model whitelist + IP whitelist enforcement.
 	if info, ok := lookupTokenInfo(r.Context()); ok {
 		if !info.HasModelAccess(req.Model) {
+			logging.Warn("api.model_denied",
+				logging.F("model", req.Model),
+				logging.F("token_id", info.ID),
+				logging.F("endpoint", "chat/completions"),
+			)
 			writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
 			return
 		}
@@ -264,7 +312,27 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// combo defined on this token, route via the combo path
 		// instead of the standard L1-L5 pipeline.
 		if combo, ok := info.ComboModels[req.Model]; ok && combo.Enabled {
+			logging.Debug("chat.combo_dispatch",
+				logging.F("model", req.Model),
+				logging.F("combo_name", combo.Name),
+				logging.F("combo_models", combo.Models),
+			)
 			h.handleCombo(w, r, &req, combo, info)
+			return
+		}
+
+		if req.Model == "auto" {
+			if combo, ok := findDefaultCombo(info); ok {
+				logging.Debug("chat.auto_resolved",
+					logging.F("combo_name", combo.Name),
+					logging.F("is_default", combo.IsDefault),
+					logging.F("combo_models", combo.Models),
+				)
+				h.handleCombo(w, r, &req, combo, info)
+				return
+			}
+			logging.Warn("chat.auto_no_combo", logging.F("token_id", info.ID))
+			writeError(w, http.StatusNotFound, "no auto combo configured for this token", "no_auto_combo")
 			return
 		}
 	}
@@ -354,6 +422,11 @@ func (h *Handler) handleStreamCombo(w http.ResponseWriter, r *http.Request, req 
 	if len(route.Channel.Models) > 0 {
 		req.Model = route.Channel.Models[0]
 	}
+	logging.Debug("combo.stream_dispatch",
+		logging.F("model_requested", original),
+		logging.F("model_actual", req.Model),
+		logging.F("channel", route.Channel.Name),
+	)
 	h.streamChatCompletions(w, r, req)
 	req.Model = original
 }
@@ -379,12 +452,20 @@ func (h *Handler) handleStreamSerialCombo(w http.ResponseWriter, r *http.Request
 		// name (combo name is a virtual alias).
 		original := req.Model
 		req.Model = modelName
+		logging.Debug("combo.stream_serial.success",
+			logging.F("model", modelName),
+			logging.F("channel", route.Channel.Name),
+		)
 		h.streamChatCompletions(w, r, req)
 		req.Model = original
 		_ = route // route recorded via streamChatCompletions -> emitLog
 		return
 	}
 	if lastErr != nil {
+		logging.Warn("combo.stream_serial.all_failed",
+			logging.F("combo_models", combo.Models),
+			logging.F("error", lastErr),
+		)
 		writeError(w, http.StatusBadGateway, "all combo models failed: "+lastErr.Error(), "combo_all_failed")
 	} else {
 		writeError(w, http.StatusServiceUnavailable, "no channel matched for combo models", "no_channel")
@@ -407,21 +488,66 @@ func (h *Handler) handleLoadBalanceCombo(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	// Rewrite req.Model to the real channel model so the upstream
+	// sees a model name it recognises (the combo name — e.g. "auto"
+	// — is only meaningful to llmRx).
+	originalModel := req.Model
+	if len(route.Channel.Models) > 0 {
+		req.Model = route.Channel.Models[0]
+	}
+
+	// Probe-based short-circuit: if the prober has recently
+	// verified this channel as unhealthy, fail fast with a
+	// distinct error so callers can distinguish "no channel" from
+	// "selected channel looks dead". Only triggers when both
+	// (a) the request is model="auto" and (b) the cache has a
+	// fresh failing entry — otherwise we'd over-aggressively
+	// penalise non-auto traffic.
+	if h.prober != nil && originalModel == "auto" && !h.prober.Healthy(route.Channel.ID) {
+		lat, _ := h.prober.Latest(route.Channel.ID)
+		logging.Warn("chat.probe_unhealthy",
+			logging.F("channel_id", route.Channel.ID),
+			logging.F("channel", route.Channel.Name),
+			logging.F("error", lat.Error),
+			logging.F("checked_at", lat.CheckedAt),
+		)
+		writeError(w, http.StatusBadGateway,
+			"selected channel marked unhealthy by probe: "+lat.Error,
+			"probe_unhealthy")
+		return
+	}
+
 	prov := h.providerFor(route.Channel.Protocol, false)
 	start := time.Now()
 	resp, statusCode, err := prov.Chat(r.Context(), req, route.KeyValue, route.Channel.BaseURL)
 	duration := time.Since(start).Milliseconds()
 
+	req.Model = originalModel
+
 	if err != nil {
 		h.router.RecordFailure(route.Channel.ID)
-		observability.RecordUpstreamError(req.Model, statusCode)
+		observability.RecordUpstreamError(originalModel, statusCode)
+		logging.Warn("combo.upstream_error",
+			logging.F("model_requested", originalModel),
+			logging.F("model_actual", req.Model),
+			logging.F("channel", route.Channel.Name),
+			logging.F("status", statusCode),
+			logging.F("error", err.Error()),
+		)
 		writeError(w, statusCode, "upstream error: "+err.Error(), "upstream_error")
-		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
+		h.emitLog(r.Context(), tokenID, originalModel, route, nil, duration, statusCode, true, h.clientIP(r))
 		return
 	}
 
 	h.router.RecordSuccess(route.Channel.ID)
-	h.emitLog(r.Context(), tokenID, req.Model, route, &resp.Usage, duration, statusCode, false, h.clientIP(r))
+	logging.Debug("combo.upstream_success",
+		logging.F("model_requested", originalModel),
+		logging.F("model_actual", route.Channel.Models[0]),
+		logging.F("channel", route.Channel.Name),
+		logging.F("status", statusCode),
+		logging.F("duration_ms", duration),
+	)
+	h.emitLog(r.Context(), tokenID, originalModel, route, &resp.Usage, duration, statusCode, false, h.clientIP(r))
 	writeJSON(w, resp)
 }
 
@@ -451,12 +577,24 @@ func (h *Handler) handleSerialCombo(w http.ResponseWriter, r *http.Request, req 
 			h.router.RecordFailure(route.Channel.ID)
 			observability.RecordUpstreamError(modelName, statusCode)
 			lastErr = fmt.Errorf("model %s: status=%d err=%w", modelName, statusCode, err)
+			logging.Debug("combo.serial.fail",
+				logging.F("model", modelName),
+				logging.F("channel", route.Channel.Name),
+				logging.F("status", statusCode),
+				logging.F("error", err),
+			)
 			h.emitLog(r.Context(), tokenID, modelName, route, nil, duration, statusCode, true, h.clientIP(r))
 			continue
 		}
 
 		// Success.
 		h.router.RecordSuccess(route.Channel.ID)
+		logging.Debug("combo.serial.success",
+			logging.F("model", modelName),
+			logging.F("channel", route.Channel.Name),
+			logging.F("status", statusCode),
+			logging.F("duration_ms", duration),
+		)
 		h.emitLog(r.Context(), tokenID, modelName, route, &resp.Usage, duration, statusCode, false, h.clientIP(r))
 		writeJSON(w, resp)
 		return
@@ -665,11 +803,23 @@ func completionTokens(u *provider.Usage) int {
 }
 
 func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
+	details := r.URL.Query().Get("details") == "true"
+
+	type modelPricing struct {
+		Input  float64 `json:"input"`
+		Output float64 `json:"output"`
+	}
+
 	type modelEntry struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		Created int64  `json:"created"`
-		OwnedBy string `json:"owned_by"`
+		ID           string                     `json:"id"`
+		Object       string                     `json:"object"`
+		Created      int64                      `json:"created"`
+		OwnedBy      string                     `json:"owned_by"`
+		ContextWindow *int                      `json:"context_window,omitempty"`
+		MaxOutput    *int                       `json:"max_output,omitempty"`
+		Pricing      *modelPricing              `json:"pricing,omitempty"`
+		Capabilities *modelmeta.ModelCapabilities `json:"capabilities,omitempty"`
+		Modalities   []string                   `json:"modalities,omitempty"`
 	}
 
 	type modelsResp struct {
@@ -683,15 +833,38 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 		for _, m := range ch.Models {
 			if !seen[m] {
 				seen[m] = true
-				data = append(data, modelEntry{
+				entry := modelEntry{
 					ID:      m,
 					Object:  "model",
 					Created: time.Now().Unix(),
 					OwnedBy: ch.Provider,
-				})
+				}
+				if details {
+					if meta, ok := modelmeta.Get(m); ok {
+						cw := meta.ContextWindow
+						mo := meta.MaxOutput
+						entry.ContextWindow = &cw
+						entry.MaxOutput = &mo
+						entry.Pricing = &modelPricing{
+							Input:  meta.InputPrice,
+							Output: meta.OutputPrice,
+						}
+						caps := meta.Capabilities
+						entry.Capabilities = &caps
+						entry.Modalities = meta.Modalities
+					}
+				}
+				data = append(data, entry)
 			}
 		}
 	}
+
+	data = append(data, modelEntry{
+		ID:      "auto",
+		Object:  "model",
+		Created: time.Now().Unix(),
+		OwnedBy: "llmrx",
+	})
 
 	writeJSON(w, modelsResp{Object: "list", Data: data})
 }
@@ -714,7 +887,7 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 	// Per-token model whitelist + IP whitelist enforcement.
 	if info, ok := lookupTokenInfo(r.Context()); ok {
 		if !info.HasModelAccess(req.Model) {
-			writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
+			logging.Warn("api.model_denied", logging.F("model", req.Model), logging.F("token_id", info.ID), logging.F("endpoint", "embeddings")); writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
 			return
 		}
 		ip := h.clientIP(r)
@@ -775,7 +948,7 @@ func (h *Handler) ImageGenerations(w http.ResponseWriter, r *http.Request) {
 	}
 	if info, ok := lookupTokenInfo(r.Context()); ok {
 		if !info.HasModelAccess(req.Model) {
-			writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
+			logging.Warn("api.model_denied", logging.F("model", req.Model), logging.F("token_id", info.ID), logging.F("endpoint", "images/generations")); writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
 			return
 		}
 	}
@@ -830,7 +1003,7 @@ func (h *Handler) AudioSpeech(w http.ResponseWriter, r *http.Request) {
 	}
 	if info, ok := lookupTokenInfo(r.Context()); ok {
 		if !info.HasModelAccess(req.Model) {
-			writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
+			logging.Warn("api.model_denied", logging.F("model", req.Model), logging.F("token_id", info.ID), logging.F("endpoint", "audio/speech")); writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
 			return
 		}
 	}
@@ -898,7 +1071,7 @@ func (h *Handler) AudioTranscriptions(w http.ResponseWriter, r *http.Request) {
 	}
 	if info, ok := lookupTokenInfo(r.Context()); ok {
 		if !info.HasModelAccess(req.Model) {
-			writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
+			logging.Warn("api.model_denied", logging.F("model", req.Model), logging.F("token_id", info.ID), logging.F("endpoint", "audio/transcriptions")); writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
 			return
 		}
 	}
@@ -958,7 +1131,7 @@ func (h *Handler) Rerank(w http.ResponseWriter, r *http.Request) {
 	}
 	if info, ok := lookupTokenInfo(r.Context()); ok {
 		if !info.HasModelAccess(req.Model) {
-			writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
+			logging.Warn("api.model_denied", logging.F("model", req.Model), logging.F("token_id", info.ID), logging.F("endpoint", "rerank")); writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
 			return
 		}
 	}

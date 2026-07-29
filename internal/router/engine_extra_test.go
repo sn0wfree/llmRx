@@ -3,6 +3,7 @@ package router_test
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/sn0wfree/llmRx/internal/intent"
@@ -140,6 +141,64 @@ func TestRouter_RecordFailure(t *testing.T) {
 	if ab, ok := snap[ch.ID]; !ok || ab[1] < 2.0 {
 		t.Fatalf("RecordFailure should increment beta: %+v", snap)
 	}
+}
+
+// observerSpy records TrafficObserver callbacks for assertions.
+type observerSpy struct {
+	mu       sync.Mutex
+	successN int
+	failureN int
+	lastID   int64
+}
+
+func (o *observerSpy) OnRealSuccess(id int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.successN++
+	o.lastID = id
+}
+
+func (o *observerSpy) OnRealFailure(id int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.failureN++
+	o.lastID = id
+}
+
+func TestRouter_TrafficObserver_NotifiedOnSuccess(t *testing.T) {
+	app := testhelper.New(t)
+	ch := app.AddChannelWithPrice("c", "openai", "https://x", []string{"m"}, 1, 1, "k")
+	spy := &observerSpy{}
+	app.Engine.SetTrafficObserver(spy)
+	app.Engine.RecordSuccess(ch.ID)
+	if spy.successN != 1 {
+		t.Errorf("expected 1 success notification, got %d", spy.successN)
+	}
+	if spy.lastID != ch.ID {
+		t.Errorf("expected lastID=%d, got %d", ch.ID, spy.lastID)
+	}
+	if spy.failureN != 0 {
+		t.Errorf("expected 0 failure notifications, got %d", spy.failureN)
+	}
+}
+
+func TestRouter_TrafficObserver_NotifiedOnFailure(t *testing.T) {
+	app := testhelper.New(t)
+	ch := app.AddChannelWithPrice("c", "openai", "https://x", []string{"m"}, 1, 1, "k")
+	spy := &observerSpy{}
+	app.Engine.SetTrafficObserver(spy)
+	app.Engine.RecordFailure(ch.ID)
+	if spy.failureN != 1 {
+		t.Errorf("expected 1 failure notification, got %d", spy.failureN)
+	}
+}
+
+func TestRouter_TrafficObserver_NilSafe(t *testing.T) {
+	app := testhelper.New(t)
+	ch := app.AddChannelWithPrice("c", "openai", "https://x", []string{"m"}, 1, 1, "k")
+	app.Engine.SetTrafficObserver(nil)
+	app.Engine.RecordSuccess(ch.ID) // must not panic
+	app.Engine.RecordFailure(ch.ID) // must not panic
 }
 
 func TestRouter_ThompsonAccessor(t *testing.T) {

@@ -33,11 +33,45 @@
 
   <div>
     <label class="block text-sm font-medium text-gray-700 mb-2">底层模型列表 *</label>
-    <textarea name="models" rows="5" required
+    <textarea name="models" id="combo-models" rows="5" required
               placeholder="gpt-4o&#10;claude-3-5-sonnet&#10;gemini-2.5-flash"
               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm">{{if .Combo}}{{range .Combo.Models}}{{.}}
 {{end}}{{end}}</textarea>
     <p class="mt-1 text-xs text-gray-500">每行一个模型名，至少 1 项，最多 100 项。</p>
+
+    <div class="mt-3 p-3 rounded border border-gray-200 bg-gray-50">
+      <div class="flex items-center gap-2 mb-2 border-b border-gray-200 pb-2">
+        <button type="button" id="combo-tab-catalog" class="text-sm font-medium text-blue-600 px-2 py-1" onclick="comboSwitchTab('catalog')">从模型库</button>
+        <button type="button" id="combo-tab-configured" class="text-sm text-gray-500 px-2 py-1" onclick="comboSwitchTab('configured')">已配置的通道模型</button>
+        <span id="combo-model-count" class="text-xs text-gray-500 ml-auto">-</span>
+      </div>
+      <div id="combo-panel-catalog" class="space-y-2">
+        <div class="flex gap-2">
+          <select id="combo-provider-select" class="px-2 py-1 border border-gray-300 rounded text-sm">
+            <option value="">选择 provider...</option>
+          </select>
+          <input type="text" id="combo-model-search" placeholder="搜索模型..."
+                 class="flex-1 px-2 py-1 border border-gray-300 rounded text-sm">
+        </div>
+        <div id="combo-model-list" class="max-h-48 overflow-y-auto space-y-1">
+          <p class="text-sm text-gray-400 py-4 text-center">选择 provider 后加载模型列表</p>
+        </div>
+      </div>
+      <div id="combo-panel-configured" class="hidden space-y-2">
+        <div class="flex gap-2">
+          <input type="text" id="combo-configured-search" placeholder="搜索已配置模型..."
+                 class="flex-1 px-2 py-1 border border-gray-300 rounded text-sm">
+        </div>
+        <div id="combo-configured-list" class="max-h-48 overflow-y-auto space-y-1">
+          <p class="text-sm text-gray-400 py-4 text-center">加载中...</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2 mt-2 pt-2 border-t border-gray-200">
+        <button type="button" class="text-xs text-blue-600 px-2 py-1" onclick="comboSelectAll(true)">全选</button>
+        <button type="button" class="text-xs text-gray-500 px-2 py-1" onclick="comboSelectAll(false)">取消全选</button>
+        <button type="button" class="px-3 py-1 bg-blue-600 text-white rounded text-xs ml-auto" onclick="comboAddModels()">添加选中 →</button>
+      </div>
+    </div>
   </div>
 
   <div>
@@ -67,4 +101,223 @@
     </button>
   </div>
 </form>
-<div id="flash"></div>{{end}}
+<div id="flash"></div>
+
+<script>
+var comboTab = 'catalog';
+var comboCatalogModels = [];
+var comboCatalogFiltered = [];
+var comboConfiguredModels = [];
+var comboConfiguredFiltered = [];
+
+function comboSwitchTab(tab) {
+  comboTab = tab;
+  var tabCatalog = document.getElementById('combo-tab-catalog');
+  var tabConfigured = document.getElementById('combo-tab-configured');
+  var panelCatalog = document.getElementById('combo-panel-catalog');
+  var panelConfigured = document.getElementById('combo-panel-configured');
+  if (tab === 'catalog') {
+    tabCatalog.className = 'text-sm font-medium text-blue-600 px-2 py-1';
+    tabConfigured.className = 'text-sm text-gray-500 px-2 py-1';
+    panelCatalog.classList.remove('hidden');
+    panelConfigured.classList.add('hidden');
+    renderComboCatalog();
+  } else {
+    tabCatalog.className = 'text-sm text-gray-500 px-2 py-1';
+    tabConfigured.className = 'text-sm font-medium text-blue-600 px-2 py-1';
+    panelCatalog.classList.add('hidden');
+    panelConfigured.classList.remove('hidden');
+    renderComboConfigured();
+  }
+}
+
+function loadComboProviderOptions() {
+  fetch('/admin/api/meta-providers')
+    .then(function(resp) { return resp.json(); })
+    .then(function(data) {
+      var sel = document.getElementById('combo-provider-select');
+      if (!sel) return;
+      (data.providers || []).forEach(function(p) {
+        var opt = document.createElement('option');
+        opt.value = p;
+        opt.textContent = p;
+        sel.appendChild(opt);
+      });
+    });
+}
+
+function loadComboCatalog(provider) {
+  var listEl = document.getElementById('combo-model-list');
+  if (!provider) {
+    listEl.innerHTML = '<p class="text-sm text-gray-400 py-4 text-center">选择 provider 后加载模型列表</p>';
+    comboCatalogModels = [];
+    comboCatalogFiltered = [];
+    updateComboCount();
+    return;
+  }
+  listEl.innerHTML = '<p class="text-sm text-gray-400 py-4 text-center">加载中...</p>';
+
+  fetch('/admin/api/models-by-provider?provider=' + encodeURIComponent(provider))
+    .then(function(resp) { return resp.json(); })
+    .then(function(data) {
+      comboCatalogModels = data.models || [];
+      document.getElementById('combo-model-search').value = '';
+      renderComboCatalog();
+    })
+    .catch(function() {
+      listEl.innerHTML = '<p class="text-sm text-red-500 py-4 text-center">加载失败</p>';
+    });
+}
+
+function loadComboConfigured() {
+  var listEl = document.getElementById('combo-configured-list');
+  fetch('/admin/api/available-models')
+    .then(function(resp) { return resp.json(); })
+    .then(function(data) {
+      comboConfiguredModels = data.models || [];
+      renderComboConfigured();
+    })
+    .catch(function() {
+      listEl.innerHTML = '<p class="text-sm text-red-500 py-4 text-center">加载失败</p>';
+    });
+}
+
+function renderComboCatalog() {
+  if (comboTab !== 'catalog') return;
+  var q = document.getElementById('combo-model-search').value.toLowerCase().trim();
+  var listEl = document.getElementById('combo-model-list');
+
+  comboCatalogFiltered = comboCatalogModels.filter(function(m) {
+    if (!q) return true;
+    return m.id.toLowerCase().indexOf(q) >= 0 || (m.name && m.name.toLowerCase().indexOf(q) >= 0);
+  });
+
+  if (comboCatalogModels.length === 0) {
+    listEl.innerHTML = '<p class="text-sm text-gray-400 py-4 text-center">该 provider 暂无已知模型，可手动输入</p>';
+    updateComboCount();
+    return;
+  }
+
+  var ta = document.getElementById('combo-models');
+  var existing = ta.value.split('\n').map(function(s) { return s.trim() }).filter(function(s) { return s });
+
+  var html = '';
+  comboCatalogFiltered.forEach(function(m) {
+    var checked = existing.indexOf(m.id) >= 0;
+    var badges = [];
+    if (m.context_window) {
+      var cw = m.context_window >= 1000 ? (m.context_window / 1000) + 'K' : m.context_window;
+      badges.push('<span class="text-xs text-gray-500">' + cw + '</span>');
+    }
+    if (m.capabilities && m.capabilities.tool_call) badges.push('<span title="工具调用">🔧</span>');
+    if (m.capabilities && m.capabilities.attachment) badges.push('<span title="图像">👁️</span>');
+    if (m.capabilities && m.capabilities.reasoning) badges.push('<span title="推理">🧠</span>');
+    var hasAudio = m.modalities && m.modalities.indexOf('audio') >= 0;
+    if (hasAudio) badges.push('<span title="音频">🎙️</span>');
+
+    html += '<label class="flex items-start gap-2 p-1.5 rounded hover:bg-white cursor-pointer text-sm">';
+    html += '<input type="checkbox" value="' + comboEscape(m.id) + '" class="mt-0.5 combo-cb"' + (checked ? ' checked' : '') + '>';
+    html += '<div class="flex-1 min-w-0">';
+    html += '<div class="flex items-center gap-2">';
+    html += '<span class="font-mono text-gray-900">' + comboEscape(m.id) + '</span>';
+    html += '<span class="flex items-center gap-1 flex-shrink-0">' + badges.join('') + '</span>';
+    html += '</div>';
+    if (m.name && m.name !== m.id) {
+      html += '<div class="text-xs text-gray-500">' + comboEscape(m.name) + '</div>';
+    }
+    html += '</div></label>';
+  });
+
+  listEl.innerHTML = html;
+  updateComboCount();
+}
+
+function renderComboConfigured() {
+  if (comboTab !== 'configured') return;
+  var q = document.getElementById('combo-configured-search').value.toLowerCase().trim();
+  var listEl = document.getElementById('combo-configured-list');
+
+  comboConfiguredFiltered = comboConfiguredModels.filter(function(m) {
+    if (!q) return true;
+    return m.toLowerCase().indexOf(q) >= 0;
+  });
+
+  if (comboConfiguredModels.length === 0) {
+    listEl.innerHTML = '<p class="text-sm text-gray-400 py-4 text-center">暂无已配置的通道模型，请先创建通道</p>';
+    updateComboCount();
+    return;
+  }
+
+  var ta = document.getElementById('combo-models');
+  var existing = ta.value.split('\n').map(function(s) { return s.trim() }).filter(function(s) { return s });
+
+  var html = '';
+  comboConfiguredFiltered.forEach(function(m) {
+    var checked = existing.indexOf(m) >= 0;
+    html += '<label class="flex items-center gap-2 p-1.5 rounded hover:bg-white cursor-pointer text-sm">';
+    html += '<input type="checkbox" value="' + comboEscape(m) + '" class="combo-cb"' + (checked ? ' checked' : '') + '>';
+    html += '<span class="font-mono text-gray-900">' + comboEscape(m) + '</span>';
+    html += '</label>';
+  });
+
+  listEl.innerHTML = html;
+  updateComboCount();
+}
+
+function updateComboCount() {
+  var countEl = document.getElementById('combo-model-count');
+  var selected = document.querySelectorAll('.combo-cb:checked').length;
+  var total = comboTab === 'catalog' ? comboCatalogFiltered.length : comboConfiguredFiltered.length;
+  countEl.textContent = '已选 ' + selected + ' / 共 ' + total;
+}
+
+function comboSelectAll(checked) {
+  document.querySelectorAll('.combo-cb').forEach(function(cb) { cb.checked = checked });
+  updateComboCount();
+}
+
+function comboAddModels() {
+  var ta = document.getElementById('combo-models');
+  var existing = ta.value.split('\n').map(function(s) { return s.trim() }).filter(function(s) { return s });
+  document.querySelectorAll('.combo-cb:checked').forEach(function(cb) {
+    if (existing.indexOf(cb.value) < 0) {
+      existing.push(cb.value);
+    }
+  });
+  ta.value = existing.join('\n');
+  if (comboTab === 'catalog') {
+    renderComboCatalog();
+  } else {
+    renderComboConfigured();
+  }
+}
+
+function comboEscape(s) {
+  var d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+document.addEventListener('change', function(e) {
+  if (e.target.classList && e.target.classList.contains('combo-cb')) {
+    updateComboCount();
+  }
+});
+
+document.getElementById('combo-model-search').addEventListener('input', function() {
+  renderComboCatalog();
+});
+
+document.getElementById('combo-configured-search').addEventListener('input', function() {
+  renderComboConfigured();
+});
+
+document.getElementById('combo-provider-select').addEventListener('change', function() {
+  loadComboCatalog(this.value);
+});
+
+(function() {
+  loadComboProviderOptions();
+  loadComboConfigured();
+})();
+</script>{{end}}

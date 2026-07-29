@@ -21,6 +21,7 @@ import (
 	authmw "github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/observability"
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/modelmeta"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/provider"
 	"github.com/sn0wfree/llmRx/internal/router"
@@ -172,6 +173,21 @@ func main() {
 			})
 		}
 	}
+
+	// Initialize model metadata registry. Loads from
+	// /data/models.json if present (operator-managed,
+	// can be refreshed via scripts/fetch-models.sh),
+	// otherwise falls back to the built-in catalog
+	// compiled into the binary. A background goroutine
+	// re-reads the file every 24h so updates take
+	// effect without a restart.
+	modelsPath := "/data/models.json"
+	if err := modelmeta.Init(modelsPath); err != nil {
+		logging.Warn("modelmeta init failed", logging.F("error", err.Error()))
+	} else {
+		logging.Info("modelmeta loaded", logging.F("models", modelmeta.Count()))
+	}
+	go modelmeta.StartRefreshLoop(24*time.Hour, modelsPath)
 
 	if err := seed(st, cfg); err != nil {
 		fatalf("seed failed", logging.F("error", err.Error()))
