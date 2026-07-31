@@ -263,8 +263,14 @@ func TestComboCreate_MissingName(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.Routes().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("code=%d want 400", rec.Code)
+	// New UX: missing name renders the form back with an error
+	// banner (200) instead of a bare 400.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d want 200", rec.Code)
+	}
+	if !contains(rec.Body.String(), "请修正表单错误") {
+		t.Logf("body: %s", rec.Body.String())
+		t.Error("expected form error banner in body")
 	}
 }
 
@@ -281,8 +287,11 @@ func TestComboCreate_MissingModels(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.Routes().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("code=%d want 400", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d want 200", rec.Code)
+	}
+	if !contains(rec.Body.String(), "请修正表单错误") {
+		t.Error("expected form error banner in body")
 	}
 }
 

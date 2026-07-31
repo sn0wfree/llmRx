@@ -296,6 +296,12 @@ func (h *Handler) DashboardPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Show a "quick start" guide to first-time operators. The bar is
+	// intentionally low: any state where something is missing or
+	// unused qualifies. Operators with everything wired up don't see
+	// the guide (and aren't nagged).
+	showQuickStart := len(channels) == 0 || len(tokens) == 0
+
 	data := map[string]any{
 		"Body":           "dashboard_body",
 		"Title":          "仪表盘",
@@ -305,6 +311,9 @@ func (h *Handler) DashboardPage(w http.ResponseWriter, r *http.Request) {
 		"ActiveChannels": activeChannels,
 		"TotalRequests":  stats.Total,
 		"TotalCost":      stats.RealCostUSD,
+		"ShowQuickStart": showQuickStart,
+		"HasChannels":    len(channels) > 0,
+		"HasTokens":      len(tokens) > 0,
 	}
 	if err := h.renderer.Render(w, "dashboard_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

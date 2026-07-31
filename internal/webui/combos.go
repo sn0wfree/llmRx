@@ -100,6 +100,9 @@ func (h *Handler) ComboEditForm(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// comboFormFields is the canonical field list for combo forms.
+var comboFormFields = []string{"name", "mode", "models", "strategy", "status"}
+
 // ComboCreate handles form POST to create a new combo.
 func (h *Handler) ComboCreate(w http.ResponseWriter, r *http.Request) {
 	tokenID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
@@ -108,7 +111,7 @@ func (h *Handler) ComboCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "form parse error", http.StatusBadRequest)
+		h.renderComboFormError(w, r, tokenID, nil, "表单解析失败", r.Form, nil)
 		return
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
@@ -117,13 +120,23 @@ func (h *Handler) ComboCreate(w http.ResponseWriter, r *http.Request) {
 	strategy := r.FormValue("strategy")
 	enabled := r.FormValue("status") == "1"
 
-	if name == "" || modelsRaw == "" {
-		http.Error(w, "name and models are required", http.StatusBadRequest)
+	fieldErrors := map[string]string{}
+	if name == "" {
+		fieldErrors["name"] = "虚拟模型名必填"
+	} else if !isValidComboName(name) {
+		fieldErrors["name"] = "仅允许字母数字下划线连字符，≤64 字符"
+	}
+	if modelsRaw == "" {
+		fieldErrors["models"] = "至少需要一个底层模型"
+	}
+	if len(fieldErrors) > 0 {
+		h.renderComboFormError(w, r, tokenID, nil, "请修正表单错误", r.Form, fieldErrors)
 		return
 	}
 	models := splitLines(modelsRaw)
 	if len(models) == 0 {
-		http.Error(w, "models list must not be empty", http.StatusBadRequest)
+		fieldErrors["models"] = "模型列表解析为空"
+		h.renderComboFormError(w, r, tokenID, nil, "请修正表单错误", r.Form, fieldErrors)
 		return
 	}
 	if mode == "" {
@@ -138,7 +151,7 @@ func (h *Handler) ComboCreate(w http.ResponseWriter, r *http.Request) {
 		Enabled:  enabled,
 	}
 	if err := h.store.CreateComboModel(c); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		h.renderComboFormError(w, r, tokenID, nil, "创建失败: "+err.Error(), r.Form, nil)
 		return
 	}
 	logging.Info("combo.created",
@@ -150,6 +163,61 @@ func (h *Handler) ComboCreate(w http.ResponseWriter, r *http.Request) {
 	)
 	h.triggerReload()
 	http.Redirect(w, r, "/admin/tokens/"+strconv.FormatInt(tokenID, 10)+"/combos", http.StatusSeeOther)
+}
+
+// renderComboFormError is the combo-specific error renderer. It
+// delegates to the shared renderFormError but adds the token
+// lookup so the back-link works.
+func (h *Handler) renderComboFormError(w http.ResponseWriter, r *http.Request, tokenID int64, combo *model.TokenComboModel, msg string, form map[string][]string, fieldErrors map[string]string) {
+	token, _ := h.store.GetTokenByID(tokenID)
+	if token != nil {
+		// Build a tiny formData map so the template can echo
+		// back the user's input on retry.
+		fd := map[string]string{}
+		if form != nil {
+			fd["Name"] = firstOrEmpty(form["name"])
+			fd["Mode"] = firstOrEmpty(form["mode"])
+			fd["ModelsStr"] = firstOrEmpty(form["models"])
+			fd["Strategy"] = firstOrEmpty(form["strategy"])
+			fd["Status"] = firstOrEmpty(form["status"])
+		}
+		data := map[string]any{
+			"Body":        "combo_form_body",
+			"Title":       "组合模型表单",
+			"User":        userToView(getUser(r)),
+			"Active":      "tokens",
+			"Token":       token,
+			"Combo":       combo,
+			"FormError":   msg,
+			"FormData":    fd,
+			"FieldErrors": fieldErrors,
+		}
+		if err := h.renderer.Render(w, "combo_form_body", data); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	http.Error(w, msg, http.StatusBadRequest)
+}
+
+// isValidComboName mirrors the regex documented on the combo form:
+// `^[a-zA-Z0-9_-]{1,64}$`. Kept here (not in model) because the
+// model layer doesn't care — this is a UI affordance.
+func isValidComboName(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // ComboAction dispatches POST /tokens/{id}/combos/{cid} to update or
@@ -195,6 +263,18 @@ func (h *Handler) comboUpdateByID(w http.ResponseWriter, r *http.Request, tokenI
 	strategy := r.FormValue("strategy")
 	enabled := r.FormValue("status") == "1"
 
+	fieldErrors := map[string]string{}
+	if name != "" && !isValidComboName(name) {
+		fieldErrors["name"] = "仅允许字母数字下划线连字符，≤64 字符"
+	}
+	if modelsRaw != "" && len(splitLines(modelsRaw)) == 0 {
+		fieldErrors["models"] = "模型列表解析为空"
+	}
+	if len(fieldErrors) > 0 {
+		h.renderComboFormError(w, r, tokenID, existing, "请修正表单错误", r.Form, fieldErrors)
+		return
+	}
+
 	if name != "" {
 		existing.Name = name
 	}
@@ -208,7 +288,7 @@ func (h *Handler) comboUpdateByID(w http.ResponseWriter, r *http.Request, tokenI
 	existing.Enabled = enabled
 
 	if err := h.store.UpdateComboModel(existing); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		h.renderComboFormError(w, r, tokenID, existing, "更新失败: "+err.Error(), r.Form, nil)
 		return
 	}
 	logging.Info("combo.updated",

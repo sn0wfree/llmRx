@@ -47,22 +47,22 @@ func (h *Handler) UserNewForm(w http.ResponseWriter, r *http.Request) {
 // UserCreate handles form POST to create a new user.
 func (h *Handler) UserCreate(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		h.renderUserFormError(w, r, nil, "表单解析失败", nil)
+		h.renderUserFormError(w, r, nil, "表单解析失败", nil, nil)
 		return
 	}
 	username := strings.TrimSpace(r.FormValue("username"))
 	password := r.FormValue("password")
 	if username == "" || password == "" {
-		h.renderUserFormError(w, r, nil, "用户名和密码必填", r.Form)
+		h.renderUserFormError(w, r, nil, "用户名和密码必填", r.Form, nil)
 		return
 	}
 	if len(password) < 6 {
-		h.renderUserFormError(w, r, nil, "密码至少 6 字符", r.Form)
+		h.renderUserFormError(w, r, nil, "密码至少 6 字符", r.Form, nil)
 		return
 	}
 	hash, err := auth.Hash(password)
 	if err != nil {
-		h.renderUserFormError(w, r, nil, "密码哈希失败: "+err.Error(), r.Form)
+		h.renderUserFormError(w, r, nil, "密码哈希失败: "+err.Error(), r.Form, nil)
 		return
 	}
 	role := model.UserRole(parseIntDefault(r.FormValue("role"), 0))
@@ -74,7 +74,7 @@ func (h *Handler) UserCreate(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:    time.Now(),
 	}
 	if err := h.store.CreateUser(u); err != nil {
-		h.renderUserFormError(w, r, u, "创建失败: "+err.Error(), r.Form)
+		h.renderUserFormError(w, r, u, "创建失败: "+err.Error(), r.Form, nil)
 		return
 	}
 	h.triggerReload()
@@ -197,20 +197,21 @@ func (h *Handler) UserPasswordSubmit(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
 }
 
-func (h *Handler) renderUserFormError(w http.ResponseWriter, r *http.Request, u *model.User, msg string, form map[string][]string) {
+func (h *Handler) renderUserFormError(w http.ResponseWriter, r *http.Request, u *model.User, msg string, form map[string][]string, fieldErrors map[string]string) {
 	fd := map[string]string{}
 	if form != nil {
 		fd["Username"] = firstOrEmpty(form["username"])
 		fd["Role"] = firstOrEmpty(form["role"])
 	}
 	data := map[string]any{
-		"Body":      "users_form_body",
-		"Title":     "新建用户",
-		"User":      userToView(getUser(r)),
-		"Active":    "users",
-		"User2":     u,
-		"FormError": msg,
-		"FormData":  fd,
+		"Body":        "users_form_body",
+		"Title":       "新建用户",
+		"User":        userToView(getUser(r)),
+		"Active":      "users",
+		"User2":       u,
+		"FormError":   msg,
+		"FormData":    fd,
+		"FieldErrors": fieldErrors,
 	}
 	if err := h.renderer.Render(w, "users_form_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

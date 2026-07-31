@@ -7,22 +7,79 @@
   <div class="bg-white rounded-lg shadow p-5">
     <div class="text-sm font-medium text-gray-500">活跃 Token</div>
     <div class="mt-2 text-3xl font-bold text-gray-900">{{.ActiveTokens}}</div>
+    <a href="/admin/tokens" class="mt-2 text-xs text-blue-600 hover:underline">查看 →</a>
   </div>
   <div class="bg-white rounded-lg shadow p-5">
     <div class="text-sm font-medium text-gray-500">启用通道</div>
     <div class="mt-2 text-3xl font-bold text-gray-900">{{.ActiveChannels}}</div>
+    <a href="/admin/channels" class="mt-2 text-xs text-blue-600 hover:underline">查看 →</a>
   </div>
   <div class="bg-white rounded-lg shadow p-5">
     <div class="text-sm font-medium text-gray-500">请求总数</div>
     <div class="mt-2 text-3xl font-bold text-gray-900">{{.TotalRequests}}</div>
+    <a href="/admin/logs" class="mt-2 text-xs text-blue-600 hover:underline">查看日志 →</a>
   </div>
   <div class="bg-white rounded-lg shadow p-5">
     <div class="text-sm font-medium text-gray-500">累计花费</div>
     <div class="mt-2 text-3xl font-bold text-gray-900">${{printf "%.4f" .TotalCost}}</div>
+    <a href="/admin/analytics" class="mt-2 text-xs text-blue-600 hover:underline">分析 →</a>
   </div>
 </div>
 
-<div class="bg-white rounded-lg shadow p-6">
-  <h2 class="text-lg font-medium text-gray-900 mb-4">系统状态</h2>
-  <p class="text-sm text-gray-500">详细统计请前往 <a href="/admin/analytics" class="text-blue-600 hover:underline">分析</a> 页面（Phase 2 上线）</p>
+{{if .ShowQuickStart}}
+<div class="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-6 mb-6">
+  <h2 class="text-lg font-semibold text-blue-900">5 分钟快速上手</h2>
+  <p class="mt-1 text-sm text-blue-800">按顺序完成下面三步，第一笔请求就能跑通。</p>
+  <ol class="mt-4 space-y-3">
+    <li class="flex items-start gap-3">
+      <span class="flex-shrink-0 w-6 h-6 rounded-full {{if .HasChannels}}bg-green-200 text-green-700{{else}}bg-blue-200 text-blue-700{{end}} flex items-center justify-center text-xs font-bold">1</span>
+      <div class="flex-1">
+        <div class="font-medium text-gray-900">
+          {{if .HasChannels}}✅ 通道已配置{{else}}创建通道{{end}}
+        </div>
+        <div class="text-sm text-gray-600 mt-0.5">
+          添加至少一个上游 LLM Provider（OpenAI / Anthropic / Gemini / 自定义）。{{if .HasChannels}}继续下一步{{else}}<a href="/admin/channels/new" class="text-blue-600 hover:underline">立即新建通道 →</a>{{end}}
+        </div>
+      </div>
+    </li>
+    <li class="flex items-start gap-3">
+      <span class="flex-shrink-0 w-6 h-6 rounded-full {{if and .HasChannels .HasTokens}}bg-green-200 text-green-700{{else}}bg-blue-200 text-blue-700{{end}} flex items-center justify-center text-xs font-bold">2</span>
+      <div class="flex-1">
+        <div class="font-medium text-gray-900">
+          {{if and .HasChannels .HasTokens}}✅ Token 已创建{{else}}创建 Token{{end}}
+        </div>
+        <div class="text-sm text-gray-600 mt-0.5">
+          生成一个 API Key，并填入默认模型集。{{if not .HasTokens}}{{if .HasChannels}}<a href="/admin/tokens/new" class="text-blue-600 hover:underline">立即新建 Token →</a>{{else}}完成上一步后继续{{end}}{{end}}
+        </div>
+      </div>
+    </li>
+    <li class="flex items-start gap-3">
+      <span class="flex-shrink-0 w-6 h-6 rounded-full bg-blue-200 text-blue-700 flex items-center justify-center text-xs font-bold">3</span>
+      <div class="flex-1">
+        <div class="font-medium text-gray-900">发起第一次 API 调用</div>
+        <div class="text-sm text-gray-600 mt-0.5">
+          用上一步获得的 Token 替换 <code class="bg-white px-1 rounded font-mono">sk-&lt;your-token&gt;</code>，{{if .HasTokens}}<a href="/admin/tokens/help" class="text-blue-600 hover:underline">查看调用帮助 →</a>{{else}}完成上一步后继续{{end}}
+        </div>
+      </div>
+    </li>
+  </ol>
+</div>
+{{end}}
+
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+  <div class="bg-white rounded-lg shadow p-6">
+    <h2 class="text-base font-medium text-gray-900 mb-3">常用入口</h2>
+    <div class="grid grid-cols-2 gap-3 text-sm">
+      <a href="/admin/channels" class="block px-3 py-2 bg-gray-50 hover:bg-gray-100 rounded">通道管理</a>
+      <a href="/admin/tokens" class="block px-3 py-2 bg-gray-50 hover:bg-gray-100 rounded">Token 管理</a>
+      <a href="/admin/model-sets" class="block px-3 py-2 bg-gray-50 hover:bg-gray-100 rounded">模型集</a>
+      <a href="/admin/tokens/help" class="block px-3 py-2 bg-gray-50 hover:bg-gray-100 rounded">📖 调用帮助</a>
+      <a href="/admin/logs" class="block px-3 py-2 bg-gray-50 hover:bg-gray-100 rounded">请求日志</a>
+      <a href="/admin/analytics" class="block px-3 py-2 bg-gray-50 hover:bg-gray-100 rounded">用量分析</a>
+    </div>
+  </div>
+  <div class="bg-white rounded-lg shadow p-6">
+    <h2 class="text-base font-medium text-gray-900 mb-3">系统状态</h2>
+    <p class="text-sm text-gray-500">详细统计请前往 <a href="/admin/analytics" class="text-blue-600 hover:underline">分析</a> 页面，或在 <a href="/admin/effective" class="text-blue-600 hover:underline">运行时配置</a> 查看生效配置。</p>
+  </div>
 </div>{{end}}

@@ -5,9 +5,7 @@
   </h1>
 </div>
 
-{{if .FormError}}
-<div class="mb-4 p-3 rounded bg-red-100 text-red-800 border border-red-200 text-sm">{{.FormError}}</div>
-{{end}}
+{{template "partials/form_error.html" .}}
 
 <form method="POST"
       action="{{if .Plan}}/admin/plans/{{.Plan.ID}}{{else}}/admin/plans{{end}}"

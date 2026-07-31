@@ -92,6 +92,31 @@ func NewRenderer() (*Renderer, error) {
 			}
 			return s[:4] + "..." + s[len(s)-4:]
 		},
+		// fieldError returns the error message for a form field, or
+		// "" if the field is valid. Used by templates to render
+		// inline field-level error text. Renamed from "map" to avoid
+		// colliding with the common template helper.
+		"fieldError": func(fieldErrors any, key string) string {
+			mm, ok := fieldErrors.(map[string]string)
+			if !ok {
+				return ""
+			}
+			return mm[key]
+		},
+		// dict builds a map[string]any from alternating key/value
+		// pairs so partial templates can be invoked with a custom
+		// data scope. Used by form_error / field_error partials.
+		"dict": func(values ...any) map[string]any {
+			m := map[string]any{}
+			for i := 0; i+1 < len(values); i += 2 {
+				k, ok := values[i].(string)
+				if !ok {
+					continue
+				}
+				m[k] = values[i+1]
+			}
+			return m
+		},
 		// renderPartial executes a named template with the given data
 		// and returns the rendered HTML. Used by base.html to dispatch
 		// to a page-specific body template.

@@ -141,10 +141,36 @@ func (h *Handler) TokenEditForm(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// tokenFormFields is the canonical field list for token forms. The
+// "models_whitelist" entry is intentionally kept even though the
+// UI hides the textarea (Phase A4) — backend still reads the value
+// for migration paths.
+var tokenFormFields = []string{
+	"name", "plan_id", "rpm", "tpm", "models_whitelist",
+	"ip_whitelist", "expires_in_days", "status",
+	"combo_name", "combo_mode", "combo_strategy",
+}
+
+var tokenFormRenames = map[string]string{
+	"plan_id":          "PlanIDStr",
+	"rpm":              "RPMStr",
+	"tpm":              "TPMStr",
+	"models_whitelist": "ModelsStr",
+	"ip_whitelist":     "IPsStr",
+	"expires_in_days":  "ExpiresDaysStr",
+	"combo_name":       "ComboName",
+	"combo_mode":       "ComboMode",
+	"combo_strategy":   "ComboStrategy",
+}
+
 // TokenCreate handles form POST to create a new token.
 func (h *Handler) TokenCreate(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		h.renderTokenFormError(w, r, nil, "表单解析失败", nil)
+		h.renderFormError(w, r, formErrorView{
+			Body: "tokens_form_body", Title: "新建 Token",
+			Active: "tokens", Msg: "表单解析失败",
+			Fields: tokenFormFields, FieldRenames: tokenFormRenames,
+		})
 		return
 	}
 	plain := newAPIToken()
@@ -166,7 +192,11 @@ func (h *Handler) TokenCreate(w http.ResponseWriter, r *http.Request) {
 		t.ExpiresAt = time.Now().Add(time.Duration(days) * 24 * time.Hour)
 	}
 	if err := h.store.CreateToken(t); err != nil {
-		h.renderTokenFormError(w, r, nil, "创建失败: "+err.Error(), r.Form)
+		h.renderFormError(w, r, formErrorView{
+			Body: "tokens_form_body", Title: "新建 Token",
+			Active: "tokens", Msg: "创建失败: " + err.Error(), Form: r.Form,
+			Fields: tokenFormFields, FieldRenames: tokenFormRenames,
+		})
 		return
 	}
 	logging.Info("token.create",
@@ -264,7 +294,11 @@ func (h *Handler) updateTokenByID(w http.ResponseWriter, r *http.Request, id int
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		h.renderTokenFormError(w, r, cur, "表单解析失败", nil)
+		h.renderFormError(w, r, formErrorView{
+			Body: "tokens_form_body", Title: "编辑 Token",
+			Active: "tokens", Record: cur, Msg: "表单解析失败",
+			Fields: tokenFormFields, FieldRenames: tokenFormRenames,
+		})
 		return
 	}
 	if v := strings.TrimSpace(r.FormValue("name")); v != "" {
@@ -293,7 +327,12 @@ func (h *Handler) updateTokenByID(w http.ResponseWriter, r *http.Request, id int
 		}
 	}
 	if err := h.store.UpdateToken(cur); err != nil {
-		h.renderTokenFormError(w, r, cur, "更新失败: "+err.Error(), r.Form)
+		h.renderFormError(w, r, formErrorView{
+			Body: "tokens_form_body", Title: "编辑 Token",
+			Active: "tokens", Record: cur,
+			Msg: "更新失败: " + err.Error(), Form: r.Form,
+			Fields: tokenFormFields, FieldRenames: tokenFormRenames,
+		})
 		return
 	}
 	if r.FormValue("models_whitelist") != "" {
@@ -394,35 +433,6 @@ func (h *Handler) deleteTokenByID(w http.ResponseWriter, r *http.Request, id int
 	}
 	h.triggerReload()
 	w.WriteHeader(http.StatusOK)
-}
-
-func (h *Handler) renderTokenFormError(w http.ResponseWriter, r *http.Request, t *model.Token, msg string, form map[string][]string) {
-	fd := map[string]string{}
-	if form != nil {
-		fd["Name"] = firstOrEmpty(form["name"])
-		fd["PlanIDStr"] = firstOrEmpty(form["plan_id"])
-		fd["RPMStr"] = firstOrEmpty(form["rpm"])
-		fd["TPMStr"] = firstOrEmpty(form["tpm"])
-		fd["ModelsStr"] = firstOrEmpty(form["models_whitelist"])
-		fd["IPsStr"] = firstOrEmpty(form["ip_whitelist"])
-		fd["ExpiresDaysStr"] = firstOrEmpty(form["expires_in_days"])
-		fd["Status"] = firstOrEmpty(form["status"])
-		fd["ComboName"] = firstOrEmpty(form["combo_name"])
-		fd["ComboMode"] = firstOrEmpty(form["combo_mode"])
-		fd["ComboStrategy"] = firstOrEmpty(form["combo_strategy"])
-	}
-	data := map[string]any{
-		"Body":      "tokens_form_body",
-		"Title":     "Token 表单",
-		"User":      userToView(getUser(r)),
-		"Active":    "tokens",
-		"Token":     t,
-		"FormError": msg,
-		"FormData":  fd,
-	}
-	if err := h.renderer.Render(w, "tokens_form_body", data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
 }
 
 func parseInt64Default(s string, def int64) int64 {

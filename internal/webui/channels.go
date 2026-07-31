@@ -104,17 +104,39 @@ func (h *Handler) ChannelEditForm(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// channelFormFields is the canonical ordered list of field names
+// echoed back on validation errors. Referenced from multiple
+// handlers so they all preserve the same set.
+var channelFormFields = []string{
+	"name", "provider", "base_url", "models", "intents",
+	"priority", "input_price", "output_price", "status",
+}
+
+var channelFormRenames = map[string]string{
+	"models":       "ModelsStr",
+	"intents":      "IntentsStr",
+	"priority":     "PriorityStr",
+	"input_price":  "InputPriceStr",
+	"output_price": "OutputPriceStr",
+	"base_url":     "BaseURL",
+}
+
 // ChannelCreate handles form POST to create a new channel.
 func (h *Handler) ChannelCreate(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		h.renderFormError(w, r, nil, "表单解析失败", nil)
+		h.renderFormError(w, r, formErrorView{
+			Body: "channels_form_body", Title: "新建通道",
+			Active: "channels", Msg: "表单解析失败",
+			Fields: channelFormFields, FieldRenames: channelFormRenames,
+			Extras: map[string]any{"Providers": provider.AllProviders()},
+		})
 		return
 	}
 
-	provider := r.FormValue("provider")
+	providerVal := r.FormValue("provider")
 	ch := &model.Channel{
 		Name:      strings.TrimSpace(r.FormValue("name")),
-		Provider:  provider,
+		Provider:  providerVal,
 		Protocol:  "openai", // default
 		BaseURL:   strings.TrimSpace(r.FormValue("base_url")),
 		Models:    splitLines(r.FormValue("models")),
@@ -131,11 +153,22 @@ func (h *Handler) ChannelCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := validateChannel(ch); err != nil {
-		h.renderFormError(w, r, nil, err.Error(), r.Form)
+		h.renderFormError(w, r, formErrorView{
+			Body: "channels_form_body", Title: "新建通道",
+			Active: "channels", Msg: err.Error(), Form: r.Form,
+			Fields: channelFormFields, FieldRenames: channelFormRenames,
+			Extras: map[string]any{"Providers": provider.AllProviders()},
+		})
 		return
 	}
 	if err := h.store.CreateChannel(ch); err != nil {
-		h.renderFormError(w, r, ch, "创建失败: "+err.Error(), r.Form)
+		h.renderFormError(w, r, formErrorView{
+			Body: "channels_form_body", Title: "新建通道",
+			Active: "channels", Record: ch,
+			Msg: "创建失败: " + err.Error(), Form: r.Form,
+			Fields: channelFormFields, FieldRenames: channelFormRenames,
+			Extras: map[string]any{"Providers": provider.AllProviders()},
+		})
 		return
 	}
 	h.triggerReload()
@@ -161,7 +194,12 @@ func (h *Handler) updateChannelByID(w http.ResponseWriter, r *http.Request, id i
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		h.renderFormError(w, r, cur, "表单解析失败", nil)
+		h.renderFormError(w, r, formErrorView{
+			Body: "channels_form_body", Title: "编辑通道",
+			Active: "channels", Record: cur, Msg: "表单解析失败",
+			Fields: channelFormFields, FieldRenames: channelFormRenames,
+			Extras: map[string]any{"Providers": provider.AllProviders()},
+		})
 		return
 	}
 
@@ -194,11 +232,21 @@ func (h *Handler) updateChannelByID(w http.ResponseWriter, r *http.Request, id i
 	cur.UpdatedAt = time.Now()
 
 	if err := validateChannel(cur); err != nil {
-		h.renderFormError(w, r, cur, err.Error(), r.Form)
+		h.renderFormError(w, r, formErrorView{
+			Body: "channels_form_body", Title: "编辑通道",
+			Active: "channels", Record: cur, Msg: err.Error(), Form: r.Form,
+			Fields: channelFormFields, FieldRenames: channelFormRenames,
+			Extras: map[string]any{"Providers": provider.AllProviders()},
+		})
 		return
 	}
 	if err := h.store.UpdateChannel(cur); err != nil {
-		h.renderFormError(w, r, cur, "更新失败: "+err.Error(), r.Form)
+		h.renderFormError(w, r, formErrorView{
+			Body: "channels_form_body", Title: "编辑通道",
+			Active: "channels", Record: cur, Msg: "更新失败: " + err.Error(), Form: r.Form,
+			Fields: channelFormFields, FieldRenames: channelFormRenames,
+			Extras: map[string]any{"Providers": provider.AllProviders()},
+		})
 		return
 	}
 	h.triggerReload()
@@ -320,34 +368,6 @@ func (h *Handler) triggerReload() {
 		// Log to stderr; non-fatal
 		// (real logging would be wired through a logger)
 		_ = err
-	}
-}
-
-func (h *Handler) renderFormError(w http.ResponseWriter, r *http.Request, ch *model.Channel, msg string, form map[string][]string) {
-	fd := map[string]string{}
-	if form != nil {
-		fd["Name"] = firstOrEmpty(form["name"])
-		fd["Provider"] = firstOrEmpty(form["provider"])
-		fd["BaseURL"] = firstOrEmpty(form["base_url"])
-		fd["ModelsStr"] = firstOrEmpty(form["models"])
-		fd["IntentsStr"] = firstOrEmpty(form["intents"])
-		fd["PriorityStr"] = firstOrEmpty(form["priority"])
-		fd["InputPriceStr"] = firstOrEmpty(form["input_price"])
-		fd["OutputPriceStr"] = firstOrEmpty(form["output_price"])
-		fd["Status"] = firstOrEmpty(form["status"])
-	}
-	data := map[string]any{
-		"Body":      "channels_form_body",
-		"Title":     "通道表单",
-		"User":      userToView(getUser(r)),
-		"Active":    "channels",
-		"Channel":   ch,
-		"FormError": msg,
-		"FormData":  fd,
-		"Providers": provider.AllProviders(),
-	}
-	if err := h.renderer.Render(w, "channels_form_body", data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
 

@@ -6,6 +6,8 @@
   <p class="mt-1 text-sm text-gray-500">Token「{{.Token.Name}}」(#{{.Token.ID}})</p>
 </div>
 
+{{template "partials/form_error.html" .}}
+
 <form method="POST"
       action="{{if .Combo}}/admin/tokens/{{.Token.ID}}/combos/{{.Combo.ID}}{{else}}/admin/tokens/{{.Token.ID}}/combos{{end}}"
       class="bg-white shadow rounded-lg p-6 space-y-6 max-w-3xl">
@@ -18,8 +20,11 @@
         <label class="block text-sm font-medium text-gray-700">虚拟模型名 *</label>
         <input type="text" name="name" required value="{{if .Combo}}{{.Combo.Name}}{{end}}"
                placeholder="smart-1"
-               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono">
+               class="mt-1 block w-full px-3 py-2 border {{if .FieldErrors.name}}border-red-500{{else}}border-gray-300{{end}} rounded-md text-sm font-mono"
+               pattern="^[a-zA-Z0-9_-]{1,64}$"
+               title="字母数字下划线连字符，1-64 字符">
         <p class="mt-1 text-xs text-gray-500">字母数字下划线连字符，≤64 字符。不可与真实模型名冲突。</p>
+        {{template "partials/field_error.html" (dict "Msg" (fieldError .FieldErrors "name"))}}
       </div>
       <div>
         <label class="block text-sm font-medium text-gray-700">模式</label>
@@ -35,9 +40,10 @@
     <label class="block text-sm font-medium text-gray-700 mb-2">底层模型列表 *</label>
     <textarea name="models" id="combo-models" rows="5" required
               placeholder="gpt-4o&#10;claude-3-5-sonnet&#10;gemini-2.5-flash"
-              class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm">{{if .Combo}}{{range .Combo.Models}}{{.}}
+              class="mt-1 block w-full px-3 py-2 border {{if .FieldErrors.models}}border-red-500{{else}}border-gray-300{{end}} rounded-md font-mono text-sm">{{if .Combo}}{{range .Combo.Models}}{{.}}
 {{end}}{{end}}</textarea>
     <p class="mt-1 text-xs text-gray-500">每行一个模型名，至少 1 项，最多 100 项。</p>
+    {{template "partials/field_error.html" (dict "Msg" (fieldError .FieldErrors "models"))}}
 
     <div class="mt-3 p-3 rounded border border-gray-200 bg-gray-50">
       <div class="flex items-center gap-2 mb-2 border-b border-gray-200 pb-2">
@@ -319,5 +325,28 @@ document.getElementById('combo-provider-select').addEventListener('change', func
 (function() {
   loadComboProviderOptions();
   loadComboConfigured();
+  setupComboClientValidation();
 })();
+
+function setupComboClientValidation() {
+  var nameInput = document.querySelector('input[name="name"]');
+  var modelsTa = document.getElementById('combo-models');
+  var submitBtn = document.querySelector('form[action*="/combos"] button[type="submit"]');
+  if (!nameInput || !modelsTa || !submitBtn) return;
+
+  function validate() {
+    var name = nameInput.value.trim();
+    var models = modelsTa.value.split('\n').map(function(s){return s.trim();}).filter(function(s){return s;});
+    var nameOk = /^[a-zA-Z0-9_-]{1,64}$/.test(name);
+    var modelsOk = models.length > 0;
+    nameInput.classList.toggle('border-red-500', !nameOk);
+    modelsTa.classList.toggle('border-red-500', !modelsOk);
+    submitBtn.disabled = !(nameOk && modelsOk);
+    submitBtn.classList.toggle('opacity-50', submitBtn.disabled);
+  }
+
+  nameInput.addEventListener('input', validate);
+  modelsTa.addEventListener('input', validate);
+  validate();
+}
 </script>{{end}}

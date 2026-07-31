@@ -67,10 +67,21 @@ func (h *Handler) PlanEditForm(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+var planFormFields = []string{"name", "budget_usd", "markup_ratio", "status"}
+
+var planFormRenames = map[string]string{
+	"budget_usd":   "BudgetStr",
+	"markup_ratio": "MarkupStr",
+}
+
 // PlanCreate handles form POST to create a new plan.
 func (h *Handler) PlanCreate(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		h.renderPlanFormError(w, r, nil, "表单解析失败", nil)
+		h.renderFormError(w, r, formErrorView{
+			Body: "plans_form_body", Title: "新建计划",
+			Active: "plans", Msg: "表单解析失败",
+			Fields: planFormFields, FieldRenames: planFormRenames,
+		})
 		return
 	}
 	p := &model.Plan{
@@ -85,14 +96,22 @@ func (h *Handler) PlanCreate(w http.ResponseWriter, r *http.Request) {
 		p.Status = 0
 	}
 	if p.Name == "" {
-		h.renderPlanFormError(w, r, nil, "名称必填", r.Form)
+		h.renderFormError(w, r, formErrorView{
+			Body: "plans_form_body", Title: "新建计划",
+			Active: "plans", Msg: "名称必填", Form: r.Form,
+			Fields: planFormFields, FieldRenames: planFormRenames,
+		})
 		return
 	}
 	if p.MarkupRatio <= 0 {
 		p.MarkupRatio = 1.0
 	}
 	if err := h.store.CreatePlan(p); err != nil {
-		h.renderPlanFormError(w, r, p, "创建失败: "+err.Error(), r.Form)
+		h.renderFormError(w, r, formErrorView{
+			Body: "plans_form_body", Title: "新建计划",
+			Active: "plans", Record: p, Msg: "创建失败: " + err.Error(), Form: r.Form,
+			Fields: planFormFields, FieldRenames: planFormRenames,
+		})
 		return
 	}
 	h.triggerReload()
@@ -127,7 +146,11 @@ func (h *Handler) updatePlanByID(w http.ResponseWriter, r *http.Request, id int6
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		h.renderPlanFormError(w, r, cur, "表单解析失败", nil)
+		h.renderFormError(w, r, formErrorView{
+			Body: "plans_form_body", Title: "编辑计划",
+			Active: "plans", Record: cur, Msg: "表单解析失败",
+			Fields: planFormFields, FieldRenames: planFormRenames,
+		})
 		return
 	}
 	if v := strings.TrimSpace(r.FormValue("name")); v != "" {
@@ -147,7 +170,12 @@ func (h *Handler) updatePlanByID(w http.ResponseWriter, r *http.Request, id int6
 	}
 	cur.UpdatedAt = time.Now()
 	if err := h.store.UpdatePlan(cur); err != nil {
-		h.renderPlanFormError(w, r, cur, "更新失败: "+err.Error(), r.Form)
+		h.renderFormError(w, r, formErrorView{
+			Body: "plans_form_body", Title: "编辑计划",
+			Active: "plans", Record: cur,
+			Msg: "更新失败: " + err.Error(), Form: r.Form,
+			Fields: planFormFields, FieldRenames: planFormRenames,
+		})
 		return
 	}
 	h.triggerReload()
@@ -169,26 +197,4 @@ func (h *Handler) deletePlanByID(w http.ResponseWriter, r *http.Request, id int6
 	}
 	h.triggerReload()
 	w.WriteHeader(http.StatusOK)
-}
-
-func (h *Handler) renderPlanFormError(w http.ResponseWriter, r *http.Request, p *model.Plan, msg string, form map[string][]string) {
-	fd := map[string]string{}
-	if form != nil {
-		fd["Name"] = firstOrEmpty(form["name"])
-		fd["BudgetStr"] = firstOrEmpty(form["budget_usd"])
-		fd["MarkupStr"] = firstOrEmpty(form["markup_ratio"])
-		fd["Status"] = firstOrEmpty(form["status"])
-	}
-	data := map[string]any{
-		"Body":      "plans_form_body",
-		"Title":     "计划表单",
-		"User":      userToView(getUser(r)),
-		"Active":    "plans",
-		"Plan":      p,
-		"FormError": msg,
-		"FormData":  fd,
-	}
-	if err := h.renderer.Render(w, "plans_form_body", data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
 }

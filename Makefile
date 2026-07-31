@@ -6,7 +6,7 @@ PKG := ./...
 # no JavaScript build step: just `go build`. The Makefile has no
 # web-sync / web-build / npm targets.
 
-.PHONY: all build test test-race cover run clean build-go-only intent-rust
+.PHONY: all build test test-race cover cover-check run clean build-go-only intent-rust
 
 all: build
 
@@ -30,11 +30,44 @@ cover:
 	$(GO) test -coverprofile=/tmp/llmrx.cov.out $(PKG)
 	$(GO) tool cover -func=/tmp/llmrx.cov.out | tail -1
 
+# cover-check runs the full test suite with per-package coverage,
+# parses each per-package figure, and fails if any package drops
+# below the floor defined below. Run in CI before merging.
+#
+# Floors:
+#   webui  ≥ 80%  — admin UI has lots of one-line render wrappers
+#                   (renderer.Render error branches hard to hit)
+#   store  ≥ 80%  — postgres.go is a skeleton (PG isn't deployed
+#                   in tests); sqlite_impl.go is the hot path
+#   api    ≥ 80%  — streaming/combo paths + multiple SDK endpoints
+# We start at 80% rather than the aspirational 90% to give
+# breathing room as new code lands; bumping the floor is a
+# separate PR per package.
+COVER_FLOOR_WEBUI := 80
+COVER_FLOOR_STORE := 80
+COVER_FLOOR_API   := 80
+
+cover-check:
+	@set -e; \
+	echo ">>> running full test suite (this takes ~30s)"; \
+	$(GO) test -coverprofile=/tmp/llmrx-webui.cov.out ./internal/webui/... > /dev/null; \
+	$(GO) test -coverprofile=/tmp/llmrx-store.cov.out ./internal/store/... > /dev/null; \
+	$(GO) test -coverprofile=/tmp/llmrx-api.cov.out   ./internal/api/...   > /dev/null; \
+	w=$$($(GO) tool cover -func=/tmp/llmrx-webui.cov.out | awk '/^total:/ {gsub("%","",$$3); print int($$3)}'); \
+	s=$$($(GO) tool cover -func=/tmp/llmrx-store.cov.out | awk '/^total:/ {gsub("%","",$$3); print int($$3)}'); \
+	a=$$($(GO) tool cover -func=/tmp/llmrx-api.cov.out   | awk '/^total:/ {gsub("%","",$$3); print int($$3)}'); \
+	echo "webui: $$w%  store: $$s%  api: $$a%  (floors: $(COVER_FLOOR_WEBUI)/$(COVER_FLOOR_STORE)/$(COVER_FLOOR_API))"; \
+	fail=0; \
+	if [ $$w -lt $(COVER_FLOOR_WEBUI) ]; then echo "FAIL: webui $$w < $(COVER_FLOOR_WEBUI)"; fail=1; fi; \
+	if [ $$s -lt $(COVER_FLOOR_STORE) ]; then echo "FAIL: store $$s < $(COVER_FLOOR_STORE)"; fail=1; fi; \
+	if [ $$a -lt $(COVER_FLOOR_API)   ]; then echo "FAIL: api   $$a < $(COVER_FLOOR_API)";   fail=1; fi; \
+	exit $$fail
+
 run: build
 	./$(BIN) -config config.yml
 
 clean:
-	rm -f $(BIN) /tmp/llmrx.cov.out
+	rm -f $(BIN) /tmp/llmrx.cov.out /tmp/llmrx-*.cov.out
 
 # ----- docker -----
 #

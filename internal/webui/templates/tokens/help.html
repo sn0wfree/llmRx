@@ -71,8 +71,8 @@ print(resp.choices[0].message.content)
 #     print(chunk.choices[0].delta.content or "", end="")</code></pre>
   </section>
 
-  <section class="bg-white shadow rounded-lg p-6">
-    <h2 class="text-lg font-medium text-gray-900 mb-3">Token 字段含义</h2>
+<section class="bg-white shadow rounded-lg p-6">
+    <h2 class="text-lg font-medium text-gray-900 mb-3">字段含义</h2>
     <table class="min-w-full text-sm">
       <thead class="bg-gray-50">
         <tr>
@@ -98,8 +98,8 @@ print(resp.choices[0].message.content)
           <td class="px-4 py-2 text-gray-700">每分钟 token 数上限（输入 + 输出）。<code class="bg-gray-100 px-1 rounded">0</code> = llmRx 不限。</td>
         </tr>
         <tr>
-          <td class="px-4 py-2 font-mono whitespace-nowrap">模型白名单</td>
-          <td class="px-4 py-2 text-gray-700">每行一个模型名。留空 = 不限；<code class="bg-gray-100 px-1 rounded">*</code> = 通配所有模型。</td>
+          <td class="px-4 py-2 font-mono whitespace-nowrap">默认模型集</td>
+          <td class="px-4 py-2 text-gray-700">组合模型的名称 + 模式 + 成本策略。请求 <code class="bg-gray-100 px-1 rounded">model:"auto"</code> 时从这个集合自动挑选通道。</td>
         </tr>
         <tr>
           <td class="px-4 py-2 font-mono whitespace-nowrap">IP 白名单</td>
@@ -115,6 +115,20 @@ print(resp.choices[0].message.content)
         </tr>
       </tbody>
     </table>
+  </section>
+
+  <section class="bg-white shadow rounded-lg p-6">
+    <h2 class="text-lg font-medium text-gray-900 mb-3">使用 <code class="bg-gray-100 px-1 rounded">model:"auto"</code> 智能路由</h2>
+    <p class="text-sm text-gray-600 mb-3">
+      将 <code class="bg-gray-100 px-1 rounded">model</code> 设为 <code class="bg-gray-100 px-1 rounded">auto</code> 时，llmRx 会按 token 的默认模型集自动挑选一个最合适的通道（基于成本、延迟、健康度）。无需关心上游具体模型名称。
+    </p>
+    <pre class="bg-gray-900 text-gray-100 p-4 rounded text-xs overflow-x-auto"><code>curl -X POST {{.BaseURL}}/v1/chat/completions \
+  -H "Authorization: Bearer sk-&lt;your-token&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "auto",
+    "messages": [{"role": "user", "content": "你好"}]
+  }'</code></pre>
   </section>
 
   <section class="bg-white shadow rounded-lg p-6">
