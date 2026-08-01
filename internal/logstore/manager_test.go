@@ -15,6 +15,7 @@ func newTestManager(t *testing.T) (*Manager, string) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	m.SetAsyncConfig(AsyncConfig{Enabled: false})
 	t.Cleanup(func() { _ = m.Close() })
 	return m, dir
 }

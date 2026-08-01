@@ -74,6 +74,7 @@ func New(t *testing.T) *App {
 	if err != nil {
 		t.Fatalf("logstore.New: %v", err)
 	}
+	logStore.SetAsyncConfig(logstore.AsyncConfig{Enabled: false})
 	t.Cleanup(func() { _ = logStore.Close() })
 
 	if err := st.CreateUser(&model.User{
@@ -171,6 +172,7 @@ func NewWithStore(t *testing.T, st store.Store) *App {
 	if err != nil {
 		t.Fatalf("logstore.New: %v", err)
 	}
+	logStore.SetAsyncConfig(logstore.AsyncConfig{Enabled: false})
 	t.Cleanup(func() { _ = logStore.Close() })
 
 	limiter := ratelimit.New()

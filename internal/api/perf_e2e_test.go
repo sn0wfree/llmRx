@@ -93,16 +93,18 @@ func BenchmarkE2E_Parallel(b *testing.B) {
 // ---------- helpers ----------
 
 type benchEnv struct {
-	store store.Store
-	pool  *pool.ChannelPool
-	tc    *tokencache.Cache
-	eng   *router.RouterEngine
-	srv   http.Handler
-	token string
+	store   store.Store
+	logs    *logstore.Manager
+	pool    *pool.ChannelPool
+	tc      *tokencache.Cache
+	eng     *router.RouterEngine
+	srv     http.Handler
+	token   string
 }
 
 func (e *benchEnv) Close() {
 	provider.SetFactoryOverride(nil)
+	_ = e.logs.Close()
 	_ = e.store.Close()
 }
 
@@ -178,6 +180,7 @@ func newBenchEnv(tb testing.TB) *benchEnv {
 
 	return &benchEnv{
 		store: st,
+		logs:  ls,
 		pool:  cp,
 		tc:    tc,
 		eng:   eng,

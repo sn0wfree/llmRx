@@ -14,6 +14,28 @@ import (
 	"github.com/sn0wfree/llmRx/internal/model"
 )
 
+// AsyncConfig controls the async batch log writer. The default
+// config (DefaultAsyncConfig) is used when New creates a Manager.
+// Call SetAsyncConfig before the first Insert to override.
+type AsyncConfig struct {
+	Enabled       bool
+	BatchSize     int
+	FlushInterval time.Duration
+	ChannelSize   int
+}
+
+// DefaultAsyncConfig is the default async configuration.
+//  - Enabled:       true (async on by default)
+//  - BatchSize:     500 (flush when batch reaches this size)
+//  - FlushInterval: 100ms (flush on timer even if batch is below size)
+//  - ChannelSize:   2000 (backpressure buffer, ~2s at 1000 req/s)
+var DefaultAsyncConfig = AsyncConfig{
+	Enabled:       true,
+	BatchSize:     500,
+	FlushInterval: 100 * time.Millisecond,
+	ChannelSize:   2000,
+}
+
 // Manager is the package-level façade over a Driver. The store
 // package and the admin handlers talk to Manager, not to Driver
 // directly, so we have one place to log lifecycle events and to
@@ -25,10 +47,19 @@ type Manager struct {
 	mu        sync.RWMutex
 	started   bool
 	closeOnce sync.Once
+
+	// Async batch fields.
+	asyncCfg    AsyncConfig
+	ch          chan *model.Log
+	flushCh     chan chan struct{}
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	startWorker sync.Once
 }
 
 // New constructs a Manager rooted at dir using the provided
-// driver. If driver is nil, NewSQLiteDriver is used.
+// driver. If driver is nil, NewSQLiteDriver is used. The async
+// batch worker is started automatically (see DefaultAsyncConfig).
 func New(dir string, driver Driver) (*Manager, error) {
 	if dir == "" {
 		return nil, errors.New("logstore: empty dir")
@@ -39,15 +70,50 @@ func New(dir string, driver Driver) (*Manager, error) {
 	if err := driver.Open(dir); err != nil {
 		return nil, err
 	}
-	return &Manager{driver: driver, dir: dir}, nil
+	m := &Manager{driver: driver, dir: dir, asyncCfg: DefaultAsyncConfig}
+	return m, nil
+}
+
+// SetAsyncConfig overrides the async configuration. Must be called
+// before any Insert. When called with Enabled=false, Insert reverts
+// to synchronous.
+func (m *Manager) SetAsyncConfig(cfg AsyncConfig) {
+	m.asyncCfg = cfg
+}
+
+// Flush forces the async worker to flush any pending entries. This
+// is a no-op when async is disabled or the worker has not been
+// started. Useful for tests and graceful shutdown.
+func (m *Manager) Flush() {
+	if m.ch == nil {
+		return
+	}
+	done := make(chan struct{})
+	m.flushCh <- done
+	<-done
 }
 
 // Dir returns the storage directory. Useful for diagnostics.
 func (m *Manager) Dir() string { return m.dir }
 
-// Insert writes a single log entry.
+// Insert writes a single log entry. When async is enabled the entry
+// is enqueued to the batch worker. If the channel is full the call
+// falls back to a synchronous insert so the request is never lost.
 func (m *Manager) Insert(entry *model.Log) error {
-	return m.driver.Insert(entry)
+	if !m.asyncCfg.Enabled {
+		return m.driver.Insert(entry)
+	}
+	m.startWorker.Do(func() {
+		m.startBatchWorker()
+	})
+	select {
+	case m.ch <- entry:
+		return nil
+	default:
+		// Channel full — fall back to synchronous insert to avoid
+		// backpressure on the caller.
+		return m.driver.Insert(entry)
+	}
 }
 
 // BatchInsert inserts multiple log entries in a single transaction.
@@ -88,11 +154,116 @@ func (m *Manager) DeleteFiles(days []string) error {
 	return m.driver.DeleteFiles(days)
 }
 
-// Close releases driver resources.
+// Close flushes any pending entries and releases driver resources.
 func (m *Manager) Close() error {
 	var err error
-	m.closeOnce.Do(func() { err = m.driver.Close() })
+	m.closeOnce.Do(func() {
+		if m.ch != nil {
+			m.cancel()
+			m.wg.Wait()
+		}
+		err = m.driver.Close()
+	})
 	return err
+}
+
+// startBatchWorker launches the async batch goroutine.
+// Called once via sync.Once. Safe to call even when async is disabled
+// (creates a channel that will never receive entries, but Close will
+// drain it correctly).
+func (m *Manager) startBatchWorker() {
+	m.ch = make(chan *model.Log, m.asyncCfg.ChannelSize)
+	m.flushCh = make(chan chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	m.wg.Add(1)
+	go m.runBatchLoop(ctx)
+}
+
+// runBatchLoop is the inner loop of the batch worker. It drains
+// entries from the channel, flushes on batch size or timer, and
+// exits when ctx is cancelled. Panic recovery restarts the loop.
+func (m *Manager) runBatchLoop(ctx context.Context) {
+	defer m.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			logging.Error("logstore worker panic",
+				logging.F("recover", r),
+			)
+			time.Sleep(100 * time.Millisecond)
+			m.startBatchWorker()
+		}
+	}()
+	ticker := time.NewTicker(m.asyncCfg.FlushInterval)
+	defer ticker.Stop()
+	batch := make([]*model.Log, 0, m.asyncCfg.BatchSize)
+	for {
+		select {
+		case <-ctx.Done():
+			// Drain the channel before flushing.
+			for {
+				select {
+				case entry := <-m.ch:
+					batch = append(batch, entry)
+					if len(batch) >= m.asyncCfg.BatchSize {
+						m.flush(batch)
+						batch = make([]*model.Log, 0, m.asyncCfg.BatchSize)
+					}
+				default:
+					if len(batch) > 0 {
+						m.flush(batch)
+					}
+					return
+				}
+			}
+		case entry := <-m.ch:
+			batch = append(batch, entry)
+			if len(batch) >= m.asyncCfg.BatchSize {
+				m.flush(batch)
+				batch = make([]*model.Log, 0, m.asyncCfg.BatchSize)
+			}
+		case done := <-m.flushCh:
+			// Drain the channel completely before flushing.
+		drainLoop:
+			for {
+				select {
+				case entry := <-m.ch:
+					batch = append(batch, entry)
+					if len(batch) >= m.asyncCfg.BatchSize {
+						m.flush(batch)
+						batch = make([]*model.Log, 0, m.asyncCfg.BatchSize)
+					}
+				default:
+					break drainLoop
+				}
+			}
+			if len(batch) > 0 {
+				m.flush(batch)
+				batch = make([]*model.Log, 0, m.asyncCfg.BatchSize)
+			}
+			close(done)
+		case <-ticker.C:
+			if len(batch) > 0 {
+				m.flush(batch)
+				batch = make([]*model.Log, 0, m.asyncCfg.BatchSize)
+			}
+		}
+	}
+}
+
+// flush sends the accumulated batch to the driver. Errors are
+// logged but not returned (the worker has no caller to propagate
+// to). Empty batches are a no-op.
+func (m *Manager) flush(batch []*model.Log) {
+	if len(batch) == 0 {
+		return
+	}
+	if _, err := m.driver.BatchInsert(batch); err != nil {
+		logging.Warn("logstore batch insert failed",
+			logging.F("count", len(batch)),
+			logging.F("error", err.Error()),
+		)
+	}
 }
 
 // RunRetention periodically deletes log files older than the

@@ -164,6 +164,7 @@ func TestManager_Stats(t *testing.T) {
 	now := time.Now().UTC()
 	ls.Insert(makeLog(1, 1, "m", 200, now))
 	ls.Insert(makeLog(1, 1, "m", 500, now))
+	ls.Flush()
 
 	r, err := ls.Stats(nil)
 	if err != nil {
