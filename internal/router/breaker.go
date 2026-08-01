@@ -56,9 +56,10 @@ type CircuitBreaker struct {
 	cfgCache map[int64]breakerCfg
 	cfgMu    sync.RWMutex
 
-	// entries are the per-channel breaker state machines.
-	entries map[int64]*breakerEntry
-	mu      sync.RWMutex
+	// entries are the per-channel breaker state machines, keyed by
+	// channelID. sync.Map provides lock-free reads on the hot path
+	// (Filter, RecordSuccess, RecordFailure).
+	entries sync.Map
 }
 
 // BreakerStore is the narrow contract the breaker actually depends
@@ -71,7 +72,6 @@ type BreakerStore interface {
 func NewCircuitBreaker(st store.Store) *CircuitBreaker {
 	b := &CircuitBreaker{
 		store:    st,
-		entries:  make(map[int64]*breakerEntry),
 		cfgCache: make(map[int64]breakerCfg),
 	}
 	// Seed cachedDefaults with built-in values.
@@ -179,20 +179,8 @@ func (b *CircuitBreaker) resolveDefaults() breakerCfg {
 }
 
 func (b *CircuitBreaker) getEntry(channelID int64) *breakerEntry {
-	b.mu.RLock()
-	entry, ok := b.entries[channelID]
-	b.mu.RUnlock()
-	if ok {
-		return entry
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if entry, ok = b.entries[channelID]; ok {
-		return entry
-	}
-	entry = &breakerEntry{}
-	b.entries[channelID] = entry
-	return entry
+	actual, _ := b.entries.LoadOrStore(channelID, &breakerEntry{})
+	return actual.(*breakerEntry)
 }
 
 func (b *CircuitBreaker) reload(channelID int64) {
@@ -212,9 +200,10 @@ func (b *CircuitBreaker) reload(channelID int64) {
 // reloadAll clears every breaker's state, returning every channel
 // to the closed position. Called by admin /reload.
 func (b *CircuitBreaker) reloadAll() {
-	b.mu.Lock()
-	b.entries = make(map[int64]*breakerEntry)
-	b.mu.Unlock()
+	b.entries.Range(func(key, _ any) bool {
+		b.entries.Delete(key)
+		return true
+	})
 	b.cfgMu.Lock()
 	b.cfgCache = make(map[int64]breakerCfg)
 	b.cfgMu.Unlock()

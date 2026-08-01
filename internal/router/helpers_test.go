@@ -12,12 +12,12 @@ func TestSplitByIntent(t *testing.T) {
 		{ID: 2, Name: "b", Intents: []string{"chat"}},
 		{ID: 3, Name: "c", Intents: nil},
 	}
-	matched, unmatched := splitByIntent(channels, "code")
-	if len(matched) != 1 || matched[0].Name != "a" {
-		t.Fatalf("matched: expected only 'a', got %v", matched)
+	n := splitByIntent(channels, "code")
+	if n != 1 || channels[0].Name != "a" {
+		t.Fatalf("matched: expected only 'a' at index 0, got n=%d head=%s", n, channels[0].Name)
 	}
-	if len(unmatched) != 2 {
-		t.Fatalf("unmatched: expected 2, got %d", len(unmatched))
+	if channels[1].Name != "b" || channels[2].Name != "c" {
+		t.Fatalf("unmatched: expected b,c after partition, got %s,%s", channels[1].Name, channels[2].Name)
 	}
 }
 

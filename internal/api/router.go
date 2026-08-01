@@ -45,6 +45,14 @@ var (
 	eventSuffix = []byte("\n\n")
 )
 
+// modelsCacheTTL is how long a /models response stays fresh.
+const modelsCacheTTL = 30 * time.Second
+
+type modelsCacheEntry struct {
+	data      []byte
+	expiresAt time.Time
+}
+
 type retryingCache struct {
 	cfg     provider.RetryConfig
 	wrapped map[string]provider.Provider
@@ -68,6 +76,10 @@ type Handler struct {
 	// atomic.Load — lock-free. The write path (admin config change)
 	// atomically swaps the whole snapshot.
 	retryingCache atomic.Value // holds *retryingCache
+
+	// modelsCache caches the /models response for 30s to avoid
+	// scanning all channels on every ListModels call.
+	modelsCache   atomic.Value // holds *modelsCacheEntry
 
 	// Extracted components for single responsibility.
 	costCalc *CostCalculator
@@ -223,6 +235,12 @@ func (h *Handler) providerFor(channelProtocol string, streaming bool) provider.P
 // changes to retry/timeout config.
 func (h *Handler) InvalidateRetryWrappers() {
 	h.retryingCache.Store(&retryingCache{cfg: provider.RetryConfig{}, wrapped: make(map[string]provider.Provider)})
+}
+
+// InvalidateModelsCache forces the next /models call to rebuild the
+// response. Call after channels are added/removed/updated.
+func (h *Handler) InvalidateModelsCache() {
+	h.modelsCache.Store((*modelsCacheEntry)(nil))
 }
 
 // Markup returns the current per-request billing multiplier.
@@ -740,6 +758,18 @@ func (h *Handler) billedCost(ctx context.Context, real float64) float64 {
 func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 	details := r.URL.Query().Get("details") == "true"
 
+	// Cache hit: return cached response for non-details requests.
+	if !details {
+		if v := h.modelsCache.Load(); v != nil {
+			entry := v.(*modelsCacheEntry)
+			if time.Now().Before(entry.expiresAt) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write(entry.data)
+				return
+			}
+		}
+	}
+
 	type modelPricing struct {
 		Input  float64 `json:"input"`
 		Output float64 `json:"output"`
@@ -801,7 +831,19 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 		OwnedBy: "llmrx",
 	})
 
-	writeJSON(w, modelsResp{Object: "list", Data: data})
+	resp := modelsResp{Object: "list", Data: data}
+	payload, _ := json.Marshal(resp)
+
+	// Cache non-details responses for 30s.
+	if !details {
+		h.modelsCache.Store(&modelsCacheEntry{
+			data:      payload,
+			expiresAt: time.Now().Add(modelsCacheTTL),
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(payload)
 }
 
 // Embeddings handles POST /v1/embeddings — OpenAI-compatible embedding

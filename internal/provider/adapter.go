@@ -66,6 +66,10 @@ type Message struct {
 	ToolCallID   string      `json:"tool_call_id,omitempty"`
 	CacheControl *CacheCtl   `json:"cache_control,omitempty"` // Anthropic extension
 	Refusal      string      `json:"refusal,omitempty"`
+
+	// contentStr caches the result of ContentString() after the first
+	// call, avoiding repeated allocation on the hot path.
+	contentStr string
 }
 
 // ContentPart is one item in a multimodal message Content array.
@@ -207,19 +211,22 @@ type PromptTokensDetails struct {
 // upstream supplied a multimodal Content array, only the text parts
 // are concatenated; image parts are dropped (the upstream typically
 // understands a clean text-only summary).
-func (m Message) ContentString() string {
+func (m *Message) ContentString() string {
+	if m.contentStr != "" || m.Content == nil {
+		return m.contentStr
+	}
 	switch v := m.Content.(type) {
 	case nil:
 		return ""
 	case string:
+		m.contentStr = v
 		return v
 	case []byte:
-		return string(v)
+		m.contentStr = string(v)
+		return m.contentStr
 	}
-	// array of parts
 	parts, _ := m.Content.([]any)
 	if parts == nil {
-		// Try typed slice (decoded into []ContentPart).
 		if cp, ok := m.Content.([]ContentPart); ok {
 			parts = make([]any, len(cp))
 			for i := range cp {
@@ -231,7 +238,6 @@ func (m Message) ContentString() string {
 	for _, p := range parts {
 		cp, ok := p.(ContentPart)
 		if !ok {
-			// json decoded into map[string]any instead of typed struct
 			if mm, ok2 := p.(map[string]any); ok2 {
 				if t, _ := mm["type"].(string); t == "text" {
 					if txt, ok3 := mm["text"].(string); ok3 {
@@ -245,7 +251,8 @@ func (m Message) ContentString() string {
 			b.WriteString(cp.Text)
 		}
 	}
-	return b.String()
+	m.contentStr = b.String()
+	return m.contentStr
 }
 
 // FloatPtr returns *f so request fields can be encoded only when set.

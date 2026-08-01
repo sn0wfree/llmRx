@@ -104,15 +104,24 @@ func joinLog(parts []string) string {
 	return s
 }
 
-func splitByIntent(channels []*model.Channel, kind string) (matched, unmatched []*model.Channel) {
-	for _, c := range channels {
-		if containsString(c.Intents, kind) {
-			matched = append(matched, c)
-		} else {
-			unmatched = append(unmatched, c)
+// splitByIntent partitions channels in place so that channels whose
+// Intents list contains kind occupy channels[:n] and the rest fill
+// channels[n:]. Returns the boundary n. Stable: relative order is
+// preserved within each group.
+func splitByIntent(channels []*model.Channel, kind string) int {
+	// Two-pointer in-place stable partition. We walk the slice
+	// looking for matches; when we find one, we slide it forward
+	// into the matched region via adjacent swaps.
+	matched := 0
+	for i := 0; i < len(channels); i++ {
+		if containsString(channels[i].Intents, kind) {
+			if i != matched {
+				channels[i], channels[matched] = channels[matched], channels[i]
+			}
+			matched++
 		}
 	}
-	return
+	return matched
 }
 
 func containsString(xs []string, s string) bool {
@@ -174,9 +183,10 @@ func (s *intentStage) Apply(_ context.Context, rctx *RouteContext) {
 	if intn.Kind == "unknown" || intn.Kind == "general" || len(rctx.Candidates) <= 1 {
 		return
 	}
-	matched, unmatched := splitByIntent(rctx.Candidates, intn.Kind)
-	if len(matched) > 0 {
-		rctx.Candidates = append(matched, unmatched...)
+	n := splitByIntent(rctx.Candidates, intn.Kind)
+	if n > 0 {
+		// In-place partition: matched channels already occupy
+		// Candidates[:n], so the ordering is already correct.
 		rctx.LogParts = append(rctx.LogParts, "L4(intent="+intn.Kind+")")
 	}
 }

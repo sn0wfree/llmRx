@@ -14,6 +14,7 @@ package ratelimit
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -42,17 +43,16 @@ type shard struct {
 // exactly 60 seconds; entries older than that are evicted on the
 // next Allow call for the same key.
 type Limiter struct {
-	shards    []shard
-	now       func() time.Time // injected for tests
-	nowMu     sync.RWMutex     // guards reads of now
+	shards []shard
+	now    atomic.Value // holds func() time.Time
 }
 
 // New returns a fresh Limiter. now defaults to time.Now.
 func New() *Limiter {
 	l := &Limiter{
 		shards: make([]shard, defaultShardCount),
-		now:    time.Now,
 	}
+	l.now.Store(func() time.Time { return time.Now() })
 	for i := range l.shards {
 		l.shards[i].state = make(map[int64]*bucket)
 	}
@@ -86,9 +86,7 @@ func (l *Limiter) Allow(key int64, rpm, tpm int, promptTokens int, budgetUSD, us
 		return true, ""
 	}
 	s := l.pickShard(key)
-	l.nowMu.RLock()
-	nowFn := l.now
-	l.nowMu.RUnlock()
+	nowFn := l.now.Load().(func() time.Time)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -168,7 +166,5 @@ func (l *Limiter) TrackedKeys() int {
 
 // SetNow overrides the wall clock. Tests only.
 func (l *Limiter) SetNow(now func() time.Time) {
-	l.nowMu.Lock()
-	l.now = now
-	l.nowMu.Unlock()
+	l.now.Store(now)
 }

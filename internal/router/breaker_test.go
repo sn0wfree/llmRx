@@ -121,7 +121,6 @@ func TestBreaker_DefaultsWhenChannelMissing(t *testing.T) {
 	// channel id 99 not in store → defaults (5/60s) apply
 	b := &CircuitBreaker{
 		store:   &stubStore{channels: map[int64]*model.Channel{}},
-		entries: make(map[int64]*breakerEntry),
 	}
 
 	for i := 0; i < 5; i++ {
@@ -142,7 +141,6 @@ func TestBreaker_LiveDefaultsTakeEffect(t *testing.T) {
 	b := &CircuitBreaker{
 		store:    &stubStore{channels: map[int64]*model.Channel{}},
 		defaults: live,
-		entries:  make(map[int64]*breakerEntry),
 	}
 
 	// Trip the breaker at the live-defaults threshold (2).
