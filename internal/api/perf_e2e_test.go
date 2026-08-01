@@ -17,6 +17,7 @@ import (
 
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/config"
+	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
@@ -112,6 +113,7 @@ func newBenchEnv(tb testing.TB) *benchEnv {
 	// Silence stdout-spammy log messages from the router / store
 	// during benchmarks so the output is readable.
 	log.SetOutput(io.Discard)
+	logging.SetOutput(io.Discard)
 
 	// Generate a fixed 32-byte key for deterministic benchmarks.
 	hexKey := "000102030405060708090a0b0c0d0e0f" +
