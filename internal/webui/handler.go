@@ -4,12 +4,14 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sn0wfree/llmRx/internal/auth"
 	"github.com/sn0wfree/llmRx/internal/cache"
 	"github.com/sn0wfree/llmRx/internal/logstore"
+	"github.com/sn0wfree/llmRx/internal/mcp"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/prober"
 	"github.com/sn0wfree/llmRx/internal/store"
@@ -24,6 +26,7 @@ type Handler struct {
 	configPath string
 	prober     *prober.Cache
 	responseCache cache.Cache
+	mcpClientMgr  *mcp.ClientManager
 }
 
 // New creates a web UI handler. adminAPI provides the legacy
@@ -50,6 +53,8 @@ func (h *Handler) SetLogStore(ls *logstore.Manager) { h.logStore = ls }
 func (h *Handler) SetProber(p *prober.Cache) { h.prober = p }
 
 func (h *Handler) SetCache(c cache.Cache) { h.responseCache = c }
+
+func (h *Handler) SetMCPClientManager(m *mcp.ClientManager) { h.mcpClientMgr = m }
 
 // Routes returns the http handler that serves /admin/*.
 func (h *Handler) Routes() http.Handler {
@@ -125,6 +130,12 @@ func (h *Handler) Routes() http.Handler {
 		r.Get("/plans/{id}/edit", h.PlanEditForm)
 		r.Post("/plans", h.PlanCreate)
 		r.Post("/plans/{id}", h.PlanAction)
+
+		r.Get("/mcp-servers", h.MCPServersPage)
+		r.Post("/mcp-servers", h.MCPServerCreate)
+		r.Post("/mcp-servers/{id}/refresh", h.MCPServerRefresh)
+		r.Post("/mcp-servers/{id}/pricing", h.MCPServerPricingUpdate)
+		r.Delete("/mcp-servers/{id}", h.MCPServerDelete)
 
 		// Logs / Alerts / Analytics / Health / Effective
 		r.Get("/logs", h.LogsPage)
@@ -324,6 +335,23 @@ func (h *Handler) DashboardPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// MCP stats: calls and spend in the last 24h.
+	var mcpCalls24h int64
+	var mcpSpend24h float64
+	now := time.Now().Unix()
+	dayAgo := now - 86400
+	mcpLogs, _, err := h.logStore.Query(logstore.QueryFilter{
+		Endpoint:    "mcp",
+		CreatedFrom: dayAgo,
+		Limit:       10000,
+	}, nil)
+	if err == nil {
+		for _, l := range mcpLogs {
+			mcpCalls24h += int64(l.Units)
+			mcpSpend24h += l.BilledCostUSD
+		}
+	}
+
 	data := map[string]any{
 		"Body":           "dashboard_body",
 		"Title":          "仪表盘",
@@ -338,6 +366,8 @@ func (h *Handler) DashboardPage(w http.ResponseWriter, r *http.Request) {
 		"HasTokens":      len(tokens) > 0,
 		"CacheHitRate":   cacheHitRate,
 		"CacheSize":      cacheSize,
+		"MCPCalls24h":    mcpCalls24h,
+		"MCPSpend24h":    mcpSpend24h,
 	}
 	if err := h.renderer.Render(w, "dashboard_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

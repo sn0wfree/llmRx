@@ -193,6 +193,7 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	if responseCache != nil {
 		webUI.SetCache(responseCache)
 	}
+	webUI.SetMCPClientManager(s.mcpClientMgr)
 	s.engine.Mount("/admin", webUI.Routes())
 	s.engine.Mount("/admin/api/v1", adminHandler.Routes())
 }

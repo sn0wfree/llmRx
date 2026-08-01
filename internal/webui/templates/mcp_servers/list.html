@@ -1,0 +1,93 @@
+{{define "mcp_servers_list_body"}}
+<div class="mb-6 flex items-center justify-between">
+  <div>
+    <a href="/admin/dashboard" class="text-sm text-gray-500 hover:text-gray-700">← 控制台</a>
+    <h1 class="text-2xl font-bold text-gray-900 mt-2">MCP 服务器</h1>
+    <p class="text-sm text-gray-500 mt-1">管理外部 MCP 服务器及其工具定价</p>
+  </div>
+</div>
+
+<div class="bg-white shadow rounded-lg p-6 mb-6">
+  <h2 class="text-lg font-medium text-gray-900 mb-4">添加 MCP 服务器</h2>
+  <form method="POST" action="/admin/mcp-servers" class="grid grid-cols-4 gap-4">
+    <div>
+      <label class="block text-sm font-medium text-gray-700">名称 *</label>
+      <input type="text" name="name" required placeholder="github"
+             class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-gray-700">URL *</label>
+      <input type="url" name="url" required placeholder="https://api.github.com/mcp"
+             class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-gray-700">认证头</label>
+      <input type="text" name="auth_header" placeholder="Bearer ghp_xxx"
+             class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+    </div>
+    <div class="flex items-end">
+      <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium w-full">添加</button>
+    </div>
+  </form>
+</div>
+
+<div class="space-y-4">
+  {{range .Servers}}
+  <div class="bg-white shadow rounded-lg overflow-hidden">
+    <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <h3 class="text-lg font-medium text-gray-900">{{.Name}}</h3>
+        <span class="px-2 py-0.5 text-xs rounded {{if .Enabled}}bg-green-100 text-green-800{{else}}bg-gray-100 text-gray-500{{end}}">
+          {{if .Enabled}}启用{{else}}禁用{{end}}
+        </span>
+      </div>
+      <div class="flex items-center gap-2">
+        <form method="POST" action="/admin/mcp-servers/{{.ID}}/refresh" style="display:inline">
+          <button type="submit" class="px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200">刷新工具</button>
+        </form>
+        <button hx-delete="/admin/mcp-servers/{{.ID}}" hx-confirm="确认删除服务器 {{.Name}}？"
+                class="px-3 py-1.5 text-sm bg-red-100 text-red-700 rounded-md hover:bg-red-200">删除</button>
+      </div>
+    </div>
+    <div class="px-6 py-2 text-sm text-gray-500 font-mono truncate">{{.URL}}</div>
+    {{if .Tools}}
+    <table class="min-w-full divide-y divide-gray-200">
+      <thead class="bg-gray-50">
+        <tr>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">工具名称</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">描述</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">每次调用费用 ($)</th>
+          <th class="px-6 py-3"></th>
+        </tr>
+      </thead>
+      <tbody class="bg-white divide-y divide-gray-200">
+        {{range .Tools}}
+        <tr>
+          <td class="px-6 py-3 text-sm font-mono text-gray-900">{{.Name}}</td>
+          <td class="px-6 py-3 text-sm text-gray-500 truncate max-w-xs">{{.Description}}</td>
+          <td class="px-6 py-3 text-sm">
+            <form method="POST" action="/admin/mcp-servers/{{$.ID}}/pricing" class="flex items-center gap-2">
+              <input type="hidden" name="tool_id" value="{{.ID}}">
+              <input type="number" step="0.0001" min="0" name="price_per_call_usd"
+                     value="{{if .Pricing}}{{printf "%.4f" .Pricing.PricePerCallUSD}}{{else}}0{{end}}"
+                     class="w-24 px-2 py-1 border border-gray-300 rounded text-sm text-right">
+              <button type="submit" class="px-2 py-1 text-xs bg-blue-50 text-blue-600 rounded hover:bg-blue-100">更新</button>
+            </form>
+          </td>
+          <td class="px-6 py-3 text-right text-xs text-gray-400">ID: {{.ID}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <div class="px-6 py-4 text-sm text-gray-400">暂未发现工具，点击"刷新工具"从服务器获取</div>
+    {{end}}
+  </div>
+  {{else}}
+  <div class="bg-white shadow rounded-lg p-8 text-center">
+    <p class="text-gray-500">暂未配置 MCP 服务器</p>
+    <p class="text-sm text-gray-400 mt-1">使用上方表单添加外部 MCP 服务器</p>
+  </div>
+  {{end}}
+</div>
+{{end}}

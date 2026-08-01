@@ -88,4 +88,10 @@
     <div class="mt-1 text-xs text-gray-500">缓存条目: {{.CacheSize}}</div>
     <a href="/admin/effective" class="mt-2 text-xs text-blue-600 hover:underline">缓存配置 →</a>
   </div>
+  <div class="bg-white rounded-lg shadow p-5">
+    <div class="text-sm font-medium text-gray-500">MCP 调用 (24h)</div>
+    <div class="mt-2 text-3xl font-bold text-gray-900">{{.MCPCalls24h}}</div>
+    <div class="mt-1 text-xs text-gray-500">花费: {{printf "%.4f" .MCPSpend24h}} USD</div>
+    <a href="/admin/mcp-servers" class="mt-2 text-xs text-blue-600 hover:underline">MCP 管理 →</a>
+  </div>
 </div>{{end}}

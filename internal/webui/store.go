@@ -1,7 +1,10 @@
 package webui
 
 import (
+	"context"
+
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/store"
 )
 
 // UserLookup is the narrow interface SessionMiddleware needs from the store.
@@ -74,4 +77,13 @@ type WebuiStore interface {
 	UpdateComboModel(c *model.TokenComboModel) error
 	DeleteComboModel(id int64) error
 	SetDefaultModelSet(tokenID, comboID int64) error
+
+	// MCP Servers
+	GetMCPServers(ctx context.Context) ([]store.MCPServer, error)
+	GetMCPServer(ctx context.Context, id int64) (*store.MCPServer, error)
+	CreateMCPServer(ctx context.Context, s *store.MCPServer) error
+	DeleteMCPServer(ctx context.Context, id int64) error
+	GetMCPTools(ctx context.Context, serverID int64) ([]store.MCPTool, error)
+	GetMCPToolPricing(ctx context.Context, toolID int64) (*store.MCPToolPricing, error)
+	SetMCPToolPricing(ctx context.Context, p *store.MCPToolPricing) error
 }
