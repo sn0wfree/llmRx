@@ -17,6 +17,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/cache"
 	"github.com/sn0wfree/llmRx/internal/config"
+	"github.com/sn0wfree/llmRx/internal/guardrail"
 	"github.com/sn0wfree/llmRx/internal/mcp"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
@@ -45,6 +46,7 @@ type Handler struct {
 	alertMgr   AlertReloader
 	responseCache cache.Cache
 	mcpClientMgr *mcp.ClientManager
+	guardrailEngine *guardrail.GuardrailEngine
 }
 
 // AlertReloader is the narrow contract the admin /reload handler
@@ -74,6 +76,8 @@ func (h *Handler) SetAlertManager(m AlertReloader) { h.alertMgr = m }
 func (h *Handler) SetCache(c cache.Cache) { h.responseCache = c }
 
 func (h *Handler) SetMCPClientManager(m *mcp.ClientManager) { h.mcpClientMgr = m }
+
+func (h *Handler) SetGuardrailEngine(g *guardrail.GuardrailEngine) { h.guardrailEngine = g }
 
 // SetSessionTTL overrides the default 24h session lifetime.
 func (h *Handler) SetSessionTTL(d time.Duration) { h.sessionTTL = d }
@@ -139,6 +143,11 @@ func (h *Handler) Routes() http.Handler {
 		r.Get("/effective", h.EffectiveConfig)
 		r.Get("/cache/stats", h.CacheStats)
 		r.Post("/cache/purge", h.CachePurge)
+		r.Get("/guardrails", h.ListGuardrailRules)
+		r.Post("/guardrails", h.CreateGuardrailRule)
+		r.Put("/guardrails/{id}", h.UpdateGuardrailRule)
+		r.Delete("/guardrails/{id}", h.DeleteGuardrailRule)
+		r.Get("/guardrails/events", h.ListGuardrailEvents)
 		r.Get("/mcp-servers", h.ListMCPServers)
 		r.Post("/mcp-servers", h.CreateMCPServer)
 		r.Put("/mcp-servers/{id}", h.UpdateMCPServer)

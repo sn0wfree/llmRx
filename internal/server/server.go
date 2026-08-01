@@ -151,6 +151,7 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 		adminHandler.SetCache(responseCache)
 	}
 	adminHandler.SetMCPClientManager(s.mcpClientMgr)
+	adminHandler.SetGuardrailEngine(handler.GuardrailEngine())
 
 	// WithLimitsAndOptions (vs. WithLimits) is what actually
 	// fires the BYOK hook when an unknown bearer arrives. If

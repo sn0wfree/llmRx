@@ -137,6 +137,10 @@ func (h *Handler) Routes() http.Handler {
 		r.Post("/mcp-servers/{id}/pricing", h.MCPServerPricingUpdate)
 		r.Delete("/mcp-servers/{id}", h.MCPServerDelete)
 
+		r.Get("/guardrails", h.GuardrailsPage)
+		r.Post("/guardrails", h.GuardrailRuleCreate)
+		r.Post("/guardrails/delete", h.GuardrailRuleDelete)
+
 		// Logs / Alerts / Analytics / Health / Effective
 		r.Get("/logs", h.LogsPage)
 		r.Get("/logs/stream", h.LogsStream)

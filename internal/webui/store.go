@@ -86,4 +86,9 @@ type WebuiStore interface {
 	GetMCPTools(ctx context.Context, serverID int64) ([]store.MCPTool, error)
 	GetMCPToolPricing(ctx context.Context, toolID int64) (*store.MCPToolPricing, error)
 	SetMCPToolPricing(ctx context.Context, p *store.MCPToolPricing) error
+
+	// Guardrails
+	GetGuardrailRules() ([]model.GuardrailRule, error)
+	CreateGuardrailRule(r *model.GuardrailRule) error
+	DeleteGuardrailRule(id int64) error
 }

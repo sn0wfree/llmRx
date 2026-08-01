@@ -163,6 +163,9 @@ func (h *Handler) SetCache(c cache.Cache) { h.responseCache = c }
 
 func (h *Handler) SetMCPLoop(a *mcp.AgenticLoop) { h.mcpLoop = a }
 
+// GuardrailEngine returns the guardrail engine for admin wiring.
+func (h *Handler) GuardrailEngine() *guardrail.GuardrailEngine { return h.guardrails }
+
 // lookupTokenInfo extracts the TokenInfo placed in the request
 // context by middleware.Token. Returns ok=false when the request
 // was authenticated without a TokenInfo in context (some unit tests
