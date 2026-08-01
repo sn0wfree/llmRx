@@ -1,31 +1,59 @@
 package webui
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sn0wfree/llmRx/internal/logstore"
 )
 
-// LogsPage renders the logs list with SSE stream.
+// LogsPage renders the logs list with filter form.
 func (h *Handler) LogsPage(w http.ResponseWriter, r *http.Request) {
 	f := logstore.QueryFilter{Limit: 100, Offset: 0}
+	if model := r.URL.Query().Get("model"); model != "" {
+		f.Model = model
+	}
+	if tid := r.URL.Query().Get("token_id"); tid != "" {
+		f.TokenID, _ = strconv.ParseInt(tid, 10, 64)
+	}
+	if cid := r.URL.Query().Get("channel_id"); cid != "" {
+		f.ChannelID, _ = strconv.ParseInt(cid, 10, 64)
+	}
+	if sc := r.URL.Query().Get("status_code"); sc != "" {
+		f.StatusCode, _ = strconv.Atoi(sc)
+	}
+	if from := r.URL.Query().Get("from"); from != "" {
+		if t, err := time.Parse("2006-01-02", from); err == nil {
+			f.CreatedFrom = t.Unix()
+		}
+	}
+	if to := r.URL.Query().Get("to"); to != "" {
+		if t, err := time.Parse("2006-01-02", to); err == nil {
+			f.CreatedTo = t.Unix() + 86400
+		}
+	}
 	logs, _, err := h.logStore.Query(f, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	data := map[string]any{
-		"Body":   "logs_index_body",
-		"Title":  "日志",
-		"User":   userToView(getUser(r)),
-		"Active": "logs",
-		"Logs":   logs,
+		"Body":      "logs_index_body",
+		"Title":     "日志",
+		"User":      userToView(getUser(r)),
+		"Active":    "logs",
+		"Logs":      logs,
+		"Filter":    f,
+		"FilterStr": r.URL.RawQuery,
+		"FilterFrom": r.URL.Query().Get("from"),
+		"FilterTo":   r.URL.Query().Get("to"),
 	}
 	if err := h.renderer.Render(w, "logs_index_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -183,19 +211,65 @@ func (h *Handler) alertSave(w http.ResponseWriter, r *http.Request, existing int
 	http.Error(w, "alert save not yet wired", http.StatusNotImplemented)
 }
 
-// AnalyticsPage renders the analytics dashboard.
+// AnalyticsPage renders the analytics dashboard with time range
+// selector, trend chart, and breakdowns by model / channel / token.
 func (h *Handler) AnalyticsPage(w http.ResponseWriter, r *http.Request) {
+	rangeVal := r.URL.Query().Get("range")
+	now := time.Now().UTC()
+	var createdFrom int64
+	switch rangeVal {
+	case "24h":
+		createdFrom = now.Add(-24 * time.Hour).Unix()
+	case "7d":
+		createdFrom = now.Add(-7 * 24 * time.Hour).Unix()
+	case "30d":
+		createdFrom = now.Add(-30 * 24 * time.Hour).Unix()
+	case "90d":
+		createdFrom = now.Add(-90 * 24 * time.Hour).Unix()
+	}
+	filter := logstore.QueryFilter{Limit: 20}
+	if createdFrom > 0 {
+		filter.CreatedFrom = createdFrom
+	}
 	stats, _ := h.logStore.Stats(nil)
-	byModel, _ := h.logStore.TopByField(logstore.QueryFilter{Limit: 20}, "model", 20, nil)
-	byChannel, _ := h.logStore.TopByField(logstore.QueryFilter{Limit: 20}, "channel_id", 20, nil)
+	if createdFrom > 0 {
+		series, _ := h.logStore.TimeSeries(filter, 0, nil)
+		var s logstore.LogStatsResult
+		for _, b := range series {
+			s.Total += b.Requests
+			s.Errors += b.Errors
+			s.PromptTokens += b.PromptTokens
+			s.CompletionTokens += b.CompletionTokens
+			s.RealCostUSD += b.RealCostUSD
+			s.BilledCostUSD += b.BilledCostUSD
+		}
+		stats = s
+	}
+
+	series, _ := h.logStore.TimeSeries(filter, 3600, nil)
+	byModel, _ := h.logStore.TopByField(filter, "model", 20, nil)
+	byChannel, _ := h.logStore.TopByField(filter, "channel_id", 20, nil)
+	byToken, _ := h.logStore.TopByField(filter, "token_id", 20, nil)
+
+	seriesJSON := "[]"
+	if len(series) > 0 {
+		b, err := json.Marshal(series)
+		if err == nil {
+			seriesJSON = string(b)
+		}
+	}
+
 	data := map[string]any{
-		"Body":      "analytics_dashboard_body",
-		"Title":     "分析",
-		"User":      userToView(getUser(r)),
-		"Active":    "analytics",
-		"Stats":     stats,
-		"ByModel":   byModel,
-		"ByChannel": byChannel,
+		"Body":       "analytics_dashboard_body",
+		"Title":      "分析",
+		"User":       userToView(getUser(r)),
+		"Active":     "analytics",
+		"Stats":      stats,
+		"ByModel":    byModel,
+		"ByChannel":  byChannel,
+		"ByToken":    byToken,
+		"SeriesJSON": seriesJSON,
+		"Range":      rangeVal,
 	}
 	if err := h.renderer.Render(w, "analytics_dashboard_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

@@ -148,6 +148,7 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	if err != nil {
 		fatalf("webui init failed", logging.F("error", err.Error()))
 	}
+	webUI.SetProber(proberCache)
 	s.engine.Mount("/admin", webUI.Routes())
 	s.engine.Mount("/admin/api/v1", adminHandler.Routes())
 }

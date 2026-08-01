@@ -1,6 +1,16 @@
-{{define "analytics_dashboard_body"}}<div class="mb-6">
-  <h1 class="text-2xl font-bold text-gray-900">分析</h1>
-  <p class="mt-1 text-sm text-gray-500">用量、错误率、成本趋势</p>
+{{define "analytics_dashboard_body"}}<div class="mb-6 flex justify-between items-end">
+  <div>
+    <h1 class="text-2xl font-bold text-gray-900">分析</h1>
+    <p class="mt-1 text-sm text-gray-500">用量、错误率、成本趋势</p>
+  </div>
+  <div class="flex gap-1 text-sm">
+    {{$r := or .Range ""}}
+    <a href="/admin/analytics?range=24h" class="px-3 py-1.5 rounded-md {{if eq $r "24h"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">24h</a>
+    <a href="/admin/analytics?range=7d" class="px-3 py-1.5 rounded-md {{if eq $r "7d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">7d</a>
+    <a href="/admin/analytics?range=30d" class="px-3 py-1.5 rounded-md {{if eq $r "30d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">30d</a>
+    <a href="/admin/analytics?range=90d" class="px-3 py-1.5 rounded-md {{if eq $r "90d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">90d</a>
+    <a href="/admin/analytics" class="px-3 py-1.5 rounded-md {{if eq $r ""}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">全部</a>
+  </div>
 </div>
 
 <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
@@ -17,19 +27,34 @@
     <div class="mt-2 text-3xl font-bold text-gray-900">{{.Stats.PromptTokens}}</div>
   </div>
   <div class="bg-white rounded-lg shadow p-5">
-    <div class="text-sm font-medium text-gray-500">总成本 (USD)</div>
+    <div class="text-sm font-medium text-gray-500">成本 (实付/结算)</div>
     <div class="mt-2 text-3xl font-bold text-gray-900">${{printf "%.4f" .Stats.RealCostUSD}}</div>
+    <div class="text-xs text-gray-400">结算: ${{printf "%.4f" .Stats.BilledCostUSD}}</div>
   </div>
 </div>
 
-<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+<div class="bg-white rounded-lg shadow p-5 mb-6">
+  <h2 class="text-lg font-medium text-gray-900 mb-3">趋势</h2>
+  {{if gt (len .SeriesJSON) 4}}
+  <canvas id="trendChart" data-series="{{.SeriesJSON}}" class="w-full" height="240"></canvas>
+  <div class="flex gap-4 mt-3 text-xs text-gray-500">
+    <label class="flex items-center gap-1"><input type="checkbox" class="rounded" checked data-series="requests"> 请求</label>
+    <label class="flex items-center gap-1"><input type="checkbox" class="rounded" checked data-series="cost"> 成本</label>
+    <label class="flex items-center gap-1"><input type="checkbox" class="rounded" checked data-series="errors"> 错误率</label>
+  </div>
+  {{else}}
+  <p class="text-sm text-gray-400 py-8 text-center">选择时间范围后显示趋势图</p>
+  {{end}}
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4">
   <div class="bg-white rounded-lg shadow p-5">
     <h2 class="text-lg font-medium text-gray-900 mb-3">按 Model</h2>
     <table class="min-w-full text-sm">
       <thead><tr class="text-xs text-gray-500"><th class="text-left">Model</th><th class="text-right">请求</th><th class="text-right">Tokens</th><th class="text-right">$</th></tr></thead>
       <tbody>
         {{range .ByModel}}
-        <tr class="border-t"><td class="py-1">{{.Label}}</td><td class="text-right">{{.Count}}</td><td class="text-right">{{.Tokens}}</td><td class="text-right">${{printf "%.4f" .Cost}}</td></tr>
+        <tr class="border-t"><td class="py-1 font-mono">{{.Label}}</td><td class="text-right">{{.Count}}</td><td class="text-right">{{.Tokens}}</td><td class="text-right">${{printf "%.4f" .Cost}}</td></tr>
         {{else}}<tr><td colspan="4" class="py-2 text-center text-gray-400">无数据</td></tr>{{end}}
       </tbody>
     </table>
@@ -45,5 +70,140 @@
       </tbody>
     </table>
   </div>
+  <div class="bg-white rounded-lg shadow p-5">
+    <h2 class="text-lg font-medium text-gray-900 mb-3">按 Token</h2>
+    <table class="min-w-full text-sm">
+      <thead><tr class="text-xs text-gray-500"><th class="text-left">Token</th><th class="text-right">请求</th><th class="text-right">Tokens</th><th class="text-right">$</th></tr></thead>
+      <tbody>
+        {{range .ByToken}}
+        <tr class="border-t"><td class="py-1">#{{.Label}}</td><td class="text-right">{{.Count}}</td><td class="text-right">{{.Tokens}}</td><td class="text-right">${{printf "%.4f" .Cost}}</td></tr>
+        {{else}}<tr><td colspan="4" class="py-2 text-center text-gray-400">无数据</td></tr>{{end}}
+      </tbody>
+    </table>
+  </div>
 </div>
+
+<script>
+(function() {
+  var canvas = document.getElementById('trendChart');
+  if (!canvas) return;
+  var raw = canvas.getAttribute('data-series');
+  if (!raw || raw.length < 10) return;
+  var data;
+  try { data = JSON.parse(raw); } catch(e) { return; }
+  if (!data || data.length === 0) return;
+
+  var ctx = canvas.getContext('2d');
+  var parent = canvas.parentElement;
+  canvas.width = parent.clientWidth || 800;
+  canvas.height = 240;
+
+  var W = canvas.width, H = canvas.height;
+  var pad = { top: 20, bottom: 30, left: 50, right: 60 };
+  var plotW = W - pad.left - pad.right;
+  var plotH = H - pad.top - pad.bottom;
+
+  var maxReq = 0, maxCost = 0;
+  for (var i = 0; i < data.length; i++) {
+    if (data[i].requests > maxReq) maxReq = data[i].requests;
+    if (data[i].real_cost_usd > maxCost) maxCost = data[i].real_cost_usd;
+  }
+  maxReq = Math.max(maxReq, 1);
+  maxCost = Math.max(maxCost, 0.001);
+
+  function xPos(i) { return pad.left + (i / (data.length - 1 || 1)) * plotW; }
+  function yReq(v) { return pad.top + plotH - (v / maxReq) * plotH; }
+  function yCost(v) { return pad.top + plotH - (v / maxCost) * plotH; }
+
+  function drawLine(ctx, values, yFn, color) {
+    ctx.beginPath();
+    for (var i = 0; i < values.length; i++) {
+      var x = xPos(i), y = yFn(values[i]);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  ctx.clearRect(0, 0, W, H);
+
+  var labels = document.querySelectorAll('[data-series]');
+  var showRequests = true, showCost = true, showErrors = true;
+  var checkboxes = parent.querySelectorAll('input[type="checkbox"]');
+  if (checkboxes.length >= 3) {
+    showRequests = checkboxes[0].checked;
+    showCost = checkboxes[1].checked;
+    showErrors = checkboxes[2].checked;
+    for (var ci = 0; ci < checkboxes.length; ci++) {
+      checkboxes[ci].addEventListener('change', function() { drawChart(); });
+    }
+  }
+
+  function drawChart() {
+    ctx.clearRect(0, 0, W, H);
+
+    ctx.strokeStyle = '#e5e7eb';
+    ctx.lineWidth = 1;
+    for (var y = 0; y <= 4; y++) {
+      var yy = pad.top + (y / 4) * plotH;
+      ctx.beginPath(); ctx.moveTo(pad.left, yy); ctx.lineTo(W - pad.right, yy); ctx.stroke();
+    }
+
+    var showR = checkboxes[0] ? checkboxes[0].checked : true;
+    var showC = checkboxes[1] ? checkboxes[1].checked : true;
+    var showE = checkboxes[2] ? checkboxes[2].checked : true;
+
+    if (showR) drawLine(ctx, data.map(function(d) { return d.requests; }), yReq, '#3b82f6');
+    if (showC) drawLine(ctx, data.map(function(d) { return d.real_cost_usd; }), yCost, '#22c55e');
+    if (showE) {
+      var errorRate = data.map(function(d) {
+        return d.requests > 0 ? (d.errors / d.requests) * 100 : 0;
+      });
+      var maxErr = 1;
+      for (var ei = 0; ei < errorRate.length; ei++) {
+        if (errorRate[ei] > maxErr) maxErr = errorRate[ei];
+      }
+      function yErr(v) { return pad.top + plotH - (v / maxErr) * plotH; }
+      ctx.beginPath();
+      for (var i = 0; i < errorRate.length; i++) {
+        var x = xPos(i), y = yErr(errorRate[i]);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = '#ef4444';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = '#6b7280';
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'center';
+    var steps = Math.min(data.length, 8);
+    var step = Math.max(1, Math.floor((data.length - 1) / (steps - 1)));
+    for (var i = 0; i < data.length; i += step) {
+      var d = new Date(data[i].bucket * 1000);
+      var label = d.getMonth()+1 + '/' + d.getDate() + ' ' + d.getHours() + ':00';
+      ctx.fillText(label, xPos(i), H - 5);
+    }
+
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#3b82f6';
+    if (showR) ctx.fillText('请求', W - 5, pad.top + 14);
+    ctx.fillStyle = '#22c55e';
+    if (showC) ctx.fillText('成本', W - 5, pad.top + 28);
+    ctx.fillStyle = '#ef4444';
+    if (showE) ctx.fillText('错误率%', W - 5, pad.top + 42);
+  }
+
+  drawChart();
+  window.addEventListener('resize', function() {
+    canvas.width = parent.clientWidth || 800;
+    W = canvas.width;
+    plotW = W - pad.left - pad.right;
+    drawChart();
+  });
+})();
+</script>
 <div id="flash"></div>{{end}}

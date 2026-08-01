@@ -10,6 +10,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/auth"
 	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/prober"
 	"github.com/sn0wfree/llmRx/internal/store"
 )
 
@@ -20,6 +21,7 @@ type Handler struct {
 	renderer   *Renderer
 	adminH     *webAPIBridge
 	configPath string
+	prober     *prober.Cache
 }
 
 // New creates a web UI handler. adminAPI provides the legacy
@@ -40,6 +42,10 @@ func (h *Handler) SetStore(st WebuiStore) { h.store = st }
 
 // SetLogStore replaces the handler's log store. Intended for tests.
 func (h *Handler) SetLogStore(ls *logstore.Manager) { h.logStore = ls }
+
+// SetProber injects the channel health probe cache. Must be called
+// before the first health page request or the page shows no data.
+func (h *Handler) SetProber(p *prober.Cache) { h.prober = p }
 
 // Routes returns the http handler that serves /admin/*.
 func (h *Handler) Routes() http.Handler {
@@ -116,7 +122,7 @@ func (h *Handler) Routes() http.Handler {
 		r.Post("/plans", h.PlanCreate)
 		r.Post("/plans/{id}", h.PlanAction)
 
-		// Logs / Alerts / Analytics / Effective
+		// Logs / Alerts / Analytics / Health / Effective
 		r.Get("/logs", h.LogsPage)
 		r.Get("/logs/stream", h.LogsStream)
 
@@ -127,6 +133,8 @@ func (h *Handler) Routes() http.Handler {
 		r.Post("/alerts/{id}", h.AlertAction)
 
 		r.Get("/analytics", h.AnalyticsPage)
+		r.Get("/health", h.ChannelHealthPage)
+		r.Post("/health/{id}/probe", h.ChannelProbeNow)
 
 		r.Get("/config", h.ConfigPage)
 		r.Get("/effective", h.EffectivePage)
