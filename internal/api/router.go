@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -72,6 +73,16 @@ type modelsCacheEntry struct {
 type retryingCache struct {
 	cfg     provider.RetryConfig
 	wrapped map[string]provider.Provider
+}
+
+// toolCallAccum accumulates streaming delta.tool_calls keyed by
+// Index, reassembling fragments from multiple SSE chunks into a
+// complete tool call.
+type toolCallAccum struct {
+	Index     int
+	ID        string
+	Name      strings.Builder
+	Arguments strings.Builder
 }
 
 type Handler struct {
@@ -1482,6 +1493,11 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 		bytesSent       = int64(0)
 		contentBuilder  strings.Builder
 		streamBuf       bytes.Buffer
+		// toolCallAcc accumulates streaming delta.tool_calls keyed by
+		// Index. When finish_reason with tool_calls is seen, the
+		// accumulator is used to build the full assistant message.
+		toolCallAcc = map[int]*toolCallAccum{}
+		hasToolCalls bool
 	)
 	for {
 		select {
@@ -1516,6 +1532,30 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 			// Accumulate delta content for output guardrail check.
 			for _, c := range ev.Chunk.Choices {
 				contentBuilder.WriteString(c.Delta.ContentString())
+				// Accumulate delta.tool_calls for agentic loop bridge.
+				for _, tc := range c.Delta.ToolCalls {
+					if tc.Index == nil {
+						continue
+					}
+					idx := *tc.Index
+					acc, ok := toolCallAcc[idx]
+					if !ok {
+						acc = &toolCallAccum{Index: idx}
+						toolCallAcc[idx] = acc
+					}
+					if tc.ID != "" {
+						acc.ID = tc.ID
+					}
+					if tc.Function.Name != "" {
+						acc.Name.WriteString(tc.Function.Name)
+					}
+					if tc.Function.Arguments != "" {
+						acc.Arguments.WriteString(tc.Function.Arguments)
+					}
+				}
+				if c.FinishReason == "tool_calls" {
+					hasToolCalls = true
+				}
 			}
 			buf := chunkBufPool.Get().(*bytes.Buffer)
 			buf.Reset()
@@ -1558,6 +1598,139 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 done:
+	// If the stream produced tool_calls and we have an agentic loop,
+	// enter the streaming bridge: emit event: agentic-loop, resolve
+	// tools via ResolveTools, then issue a second StreamChat with the
+	// accumulated messages and pipe the final answer.
+	if hasToolCalls && h.mcpLoop != nil {
+		// Build the full assistant message from accumulated deltas.
+		assistantMsg := provider.Message{Role: "assistant"}
+		indices := make([]int, 0, len(toolCallAcc))
+		for idx := range toolCallAcc {
+			indices = append(indices, idx)
+		}
+		sort.Ints(indices)
+		for _, idx := range indices {
+			acc := toolCallAcc[idx]
+			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, provider.ToolCall{
+				ID:   acc.ID,
+				Type: "function",
+				Function: provider.FunctionCall{
+					Name:      acc.Name.String(),
+					Arguments: acc.Arguments.String(),
+				},
+			})
+		}
+
+		// Emit agentic-loop SSE event.
+		agenticEvent := []byte("event: agentic-loop\ndata: {}\n\n")
+		streamBuf.Write(agenticEvent)
+		w.Write(agenticEvent)
+		flusher.Flush()
+
+		// Append the assistant message to the request and resolve tools.
+		req.Messages = append(req.Messages, assistantMsg)
+		msgs, mcpUsage, loopErr := h.mcpLoop.ResolveTools(r.Context(), req, route.KeyValue, route.Channel.BaseURL)
+		if loopErr != nil {
+			h.router.RecordFailure(route.Channel.ID)
+			errMsg := fmt.Sprintf("event: error\ndata: {\"message\":%q}\n\n", loopErr.Error())
+			streamBuf.WriteString(errMsg)
+			w.Write([]byte(errMsg))
+			flusher.Flush()
+			h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
+				time.Since(start).Milliseconds(), http.StatusInternalServerError, true, h.clientIP(r))
+			return
+		}
+		if len(mcpUsage.Calls) > 0 {
+			h.emitter.EmitMCP(r.Context(), lookupTokenID(r.Context(), h.store), route, mcpUsage, h.clientIP(r))
+		}
+
+		// Issue a second StreamChat with the accumulated messages.
+		req.Messages = msgs
+		ch2, err := sp.StreamChat(ctx, req, route.KeyValue, route.Channel.BaseURL)
+		if err != nil {
+			h.router.RecordFailure(route.Channel.ID)
+			errMsg := fmt.Sprintf("event: error\ndata: {\"message\":%q}\n\n", err.Error())
+			streamBuf.WriteString(errMsg)
+			w.Write([]byte(errMsg))
+			flusher.Flush()
+			h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
+				time.Since(start).Milliseconds(), http.StatusBadGateway, true, h.clientIP(r))
+			return
+		}
+		// Reset content builder for second-stream guardrail check.
+		contentBuilder.Reset()
+		for {
+			select {
+			case <-ctx.Done():
+				reason := "client disconnected"
+				if ctx.Err() == context.DeadlineExceeded {
+					reason = "stream timeout exceeded"
+				}
+				h.router.RecordFailure(route.Channel.ID)
+				fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", reason)
+				flusher.Flush()
+				h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
+					time.Since(start).Milliseconds(), http.StatusGatewayTimeout, true, h.clientIP(r))
+				return
+			case ev, ok := <-ch2:
+				if !ok {
+					goto final
+				}
+				if ev.Err != nil {
+					h.router.RecordFailure(route.Channel.ID)
+					observability.RecordUpstreamError(req.Model, http.StatusBadGateway)
+					fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", ev.Err.Error())
+					flusher.Flush()
+					h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
+						time.Since(start).Milliseconds(), http.StatusBadGateway, true, h.clientIP(r))
+					return
+				}
+				if ev.Chunk.Usage != nil {
+					usage = ev.Chunk.Usage
+				}
+				for _, c := range ev.Chunk.Choices {
+					contentBuilder.WriteString(c.Delta.ContentString())
+				}
+				buf := chunkBufPool.Get().(*bytes.Buffer)
+				buf.Reset()
+				buf.Write(dataPrefix)
+				if err := json.NewEncoder(buf).Encode(ev.Chunk); err != nil {
+					buf.Reset()
+					putChunkBuf(buf)
+					continue
+				}
+				if b := buf.Bytes(); len(b) > 0 && b[len(b)-1] == '\n' {
+					buf.WriteByte('\n')
+				} else {
+					buf.Write(dataSuffix)
+				}
+				chunkBytes := buf.Bytes()
+				streamBuf.Write(chunkBytes)
+				n, werr := w.Write(chunkBytes)
+				putChunkBuf(buf)
+				bytesSent += int64(n)
+				if werr != nil {
+					cancel()
+					return
+				}
+				if maxBody > 0 && bytesSent >= maxBody {
+					fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", "stream max body bytes exceeded")
+					flusher.Flush()
+					h.router.RecordFailure(route.Channel.ID)
+					h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
+						time.Since(start).Milliseconds(), http.StatusRequestEntityTooLarge, true, h.clientIP(r))
+					return
+				}
+				flushed++
+				if flushed%4 == 0 {
+					flusher.Flush()
+				}
+			}
+		}
+	}
+	// If no tool calls or no agentic loop, proceed to guardrail + [DONE].
+final:
 	if h.guardrails != nil {
 		tokenID := lookupTokenID(r.Context(), h.store)
 		if gr := h.guardrails.CheckOutput(r.Context(), contentBuilder.String(), tokenID); gr != nil {

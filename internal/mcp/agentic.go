@@ -219,3 +219,73 @@ func (a *AgenticLoop) HasTools(ctx context.Context) (bool, error) {
 	}
 	return len(tools) > 0, nil
 }
+
+// ResolveTools is like Execute but starts from an existing assistant
+// message with tool_calls in req.Messages (e.g. from a streaming
+// response). It dispatches tools and calls Chat (non-streaming) in a
+// loop until no more tool_calls remain, then returns the accumulated
+// Messages so the caller can issue a final StreamChat. The first
+// tool_calls dispatch is done from the last assistant message in
+// req.Messages. req.Messages is modified in place.
+func (a *AgenticLoop) ResolveTools(ctx context.Context, req *provider.ChatRequest, routeKey, baseURL string) ([]provider.Message, MCPUsage, error) {
+	var usage MCPUsage
+	allTools, err := a.repo.GetAllMCPTools(ctx)
+	if err != nil {
+		return nil, usage, fmt.Errorf("mcp: load tools: %w", err)
+	}
+	toolsByName := make(map[string]store.MCPTool, len(allTools))
+	for _, t := range allTools {
+		toolsByName[t.Name] = t
+	}
+	if len(toolsByName) == 0 {
+		return req.Messages, usage, nil
+	}
+	for iter := 0; iter < MaxToolIterations; iter++ {
+		var lastToolCalls []provider.ToolCall
+		if len(req.Messages) > 0 {
+			last := req.Messages[len(req.Messages)-1]
+			if last.Role == "assistant" && len(last.ToolCalls) > 0 {
+				lastToolCalls = last.ToolCalls
+			}
+		}
+		if len(lastToolCalls) == 0 {
+			return req.Messages, usage, nil
+		}
+		calls := a.dispatchToolCalls(ctx, lastToolCalls, toolsByName)
+		usage.Calls = append(usage.Calls, calls...)
+		toolMessages := make([]provider.Message, 0, len(calls))
+		for _, ex := range calls {
+			text := ""
+			if ex.Result != nil {
+				var parts []string
+				for _, c := range ex.Result.Content {
+					parts = append(parts, c.Text)
+				}
+				text = strings.Join(parts, "\n")
+			} else if ex.Err != nil {
+				text = fmt.Sprintf("error: %v", ex.Err)
+			}
+			toolMessages = append(toolMessages, provider.Message{
+				Role:       "tool",
+				ToolCallID: ex.ToolCallID,
+				Content:    text,
+			})
+		}
+		req.Messages = append(req.Messages, toolMessages...)
+		resp, statusCode, err := a.provider.Chat(ctx, req, routeKey, baseURL)
+		if err != nil {
+			return nil, usage, fmt.Errorf("mcp: chat error (status %d): %w", statusCode, err)
+		}
+		if len(resp.Choices) == 0 {
+			return req.Messages, usage, nil
+		}
+		msg := resp.Choices[0].Message
+		if len(msg.ToolCalls) == 0 {
+			return req.Messages, usage, nil
+		}
+		req.Messages = append(req.Messages, msg)
+	}
+	logging.Warn("mcp: agentic loop exceeded max iterations in ResolveTools",
+		logging.F("max_iterations", MaxToolIterations))
+	return nil, usage, fmt.Errorf("agentic loop exceeded %d iterations", MaxToolIterations)
+}
