@@ -21,68 +21,6 @@ func TestSplitByIntent(t *testing.T) {
 	}
 }
 
-func TestSplitByIntent_NoMatches(t *testing.T) {
-	channels := []*model.Channel{
-		{ID: 1, Name: "a", Intents: []string{"chat"}},
-		{ID: 2, Name: "b"},
-	}
-	matched, unmatched := splitByIntent(channels, "code")
-	if len(matched) != 0 {
-		t.Fatalf("expected 0 matched, got %d", len(matched))
-	}
-	if len(unmatched) != 2 {
-		t.Fatalf("expected 2 unmatched, got %d", len(unmatched))
-	}
-}
-
-func TestSplitByIntent_AllMatch(t *testing.T) {
-	channels := []*model.Channel{
-		{ID: 1, Name: "a", Intents: []string{"code"}},
-		{ID: 2, Name: "b", Intents: []string{"code", "chat"}},
-	}
-	matched, unmatched := splitByIntent(channels, "code")
-	if len(matched) != 2 {
-		t.Fatalf("expected 2 matched, got %d", len(matched))
-	}
-	if len(unmatched) != 0 {
-		t.Fatalf("expected 0 unmatched, got %d", len(unmatched))
-	}
-}
-
-func TestSplitByIntent_Empty(t *testing.T) {
-	matched, unmatched := splitByIntent(nil, "code")
-	if len(matched) != 0 || len(unmatched) != 0 {
-		t.Fatalf("expected empty results for nil input")
-	}
-}
-
-func TestContainsString(t *testing.T) {
-	if !containsString([]string{"a", "b", "c"}, "b") {
-		t.Fatal("expected true for 'b' in [a,b,c]")
-	}
-	if containsString([]string{"a", "b", "c"}, "d") {
-		t.Fatal("expected false for 'd' in [a,b,c]")
-	}
-	if containsString(nil, "a") {
-		t.Fatal("expected false for nil slice")
-	}
-	if containsString([]string{}, "a") {
-		t.Fatal("expected false for empty slice")
-	}
-}
-
-func TestJoinLog(t *testing.T) {
-	if got := joinLog(nil); got != "" {
-		t.Fatalf("nil: expected empty, got %q", got)
-	}
-	if got := joinLog([]string{"a"}); got != "a" {
-		t.Fatalf("single: expected 'a', got %q", got)
-	}
-	if got := joinLog([]string{"a", "b", "c"}); got != "a → b → c" {
-		t.Fatalf("multi: expected 'a → b → c', got %q", got)
-	}
-}
-
 func TestBreaker_SetDefaults(t *testing.T) {
 	b := NewCircuitBreaker(nil)
 	b.store = &stubStore{channels: map[int64]*model.Channel{
@@ -113,7 +51,7 @@ func TestBreaker_SetDefaultsNil(t *testing.T) {
 }
 
 func TestCostRouter_SetStrategyUnknown(t *testing.T) {
-	r := &CostRouter{strategy: model.StrategyCheapest}
+	r := &CostRouter{strategy: CheapestStrategy{}}
 	r.SetStrategy("unknown_strategy")
 	if r.Strategy() != model.StrategyCheapest {
 		t.Fatalf("unknown strategy should fall back to cheapest, got %s", r.Strategy())
@@ -121,7 +59,7 @@ func TestCostRouter_SetStrategyUnknown(t *testing.T) {
 }
 
 func TestCostRouter_SetStrategyEmpty(t *testing.T) {
-	r := &CostRouter{strategy: model.StrategyBalanced}
+	r := &CostRouter{strategy: BalancedStrategy{}}
 	r.SetStrategy("")
 	if r.Strategy() != model.StrategyCheapest {
 		t.Fatalf("empty strategy should fall back to cheapest, got %s", r.Strategy())

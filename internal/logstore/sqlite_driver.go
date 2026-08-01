@@ -116,6 +116,60 @@ func (d *SQLiteDriver) Insert(entry *model.Log) error {
 	return nil
 }
 
+// BatchInsert inserts multiple entries in a single SQL transaction.
+// All entries must share the same UTC date (the first entry's date is
+// used). Returns the number of rows inserted.
+func (d *SQLiteDriver) BatchInsert(entries []*model.Log) (int, error) {
+	if len(entries) == 0 {
+		return 0, nil
+	}
+
+	for _, e := range entries {
+		if e.CreatedAt.IsZero() {
+			e.CreatedAt = Now()
+		}
+	}
+
+	date := entries[0].CreatedAt.UTC().Format("2006-01-02")
+	df, dayFileKey, err := d.acquire(date, 0)
+	if err != nil {
+		return 0, err
+	}
+
+	tx, err := df.conn.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("logstore: begin tx %s: %w", dayFileKey, err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(
+		`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return 0, fmt.Errorf("logstore: prepare %s: %w", dayFileKey, err)
+	}
+	defer stmt.Close()
+
+	for _, entry := range entries {
+		if _, err := stmt.Exec(
+			entry.TokenID, entry.ChannelID, entry.KeyID, entry.Model,
+			entry.PromptTokens, entry.CompletionTokens, entry.CachedTokens,
+			entry.RealCostUSD, entry.BilledCostUSD,
+			entry.DurationMs, entry.StatusCode, entry.RouterPath, entry.RequestIP,
+			entry.CreatedAt.UTC().Unix(),
+		); err != nil {
+			return 0, fmt.Errorf("logstore: batch insert %s: %w", dayFileKey, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("logstore: commit %s: %w", dayFileKey, err)
+	}
+
+	atomic.AddInt64(&df.bytesWritten, int64(len(entries))*estimatedRowBytes)
+	return len(entries), nil
+}
+
 // acquire returns the dayFile to write into for the given date. It
 // honours the MaxFileBytes rollover: if the current seq file is
 // full, the call promotes to the next seq. seqHint is reserved for

@@ -31,6 +31,14 @@ type Driver interface {
 	// wall-clock time.
 	Insert(entry *model.Log) error
 
+	// BatchInsert inserts multiple entries atomically in a single
+	// SQL transaction. All entries should share the same UTC date;
+	// the first entry's date is used for the file key. Returns the
+	// number of rows inserted. Implementations may fall back to
+	// calling Insert in a loop when the driver does not support
+	// batching.
+	BatchInsert(entries []*model.Log) (int, error)
+
 	// QueryAcross returns rows matching filter across the given
 	// days. If days is empty the driver MUST scan every file it
 	// currently knows about (i.e. every undeleted day file).

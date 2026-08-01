@@ -11,7 +11,7 @@ func mk(name string, priority int, in, out float64) *model.Channel {
 }
 
 func TestCostCheapest(t *testing.T) {
-	r := &CostRouter{strategy: model.StrategyCheapest}
+	r := &CostRouter{strategy: CheapestStrategy{}}
 	in := []*model.Channel{
 		mk("a", 1, 10, 10), // 20
 		mk("b", 1, 1, 1),   // 2 (cheapest)
@@ -27,7 +27,7 @@ func TestCostCheapest(t *testing.T) {
 }
 
 func TestCostFastest(t *testing.T) {
-	r := &CostRouter{strategy: model.StrategyFastest}
+	r := &CostRouter{strategy: FastestStrategy{}}
 	in := []*model.Channel{
 		mk("low", 1, 100, 100),
 		mk("hi", 10, 100, 100),
@@ -40,7 +40,7 @@ func TestCostFastest(t *testing.T) {
 }
 
 func TestCostBalanced(t *testing.T) {
-	r := &CostRouter{strategy: model.StrategyBalanced}
+	r := &CostRouter{strategy: BalancedStrategy{}}
 	in := []*model.Channel{
 		mk("cheap-low-prio", 1, 1, 1),
 		mk("cheap-hi-prio", 10, 1, 1),
@@ -48,15 +48,13 @@ func TestCostBalanced(t *testing.T) {
 		mk("expensive-hi", 10, 50, 50),
 	}
 	out := r.Sort(in)
-	// Score = priceNorm*0.5 + (1-prioNorm)*0.5 — lower is better.
-	// cheapest-hi-prio should win (low price, high priority → low score).
 	if out[0].Name != "cheap-hi-prio" {
 		t.Fatalf("balanced: expected cheap-hi-prio first, got %s", out[0].Name)
 	}
 }
 
 func TestCostEmptyAndSingle(t *testing.T) {
-	r := &CostRouter{strategy: model.StrategyCheapest}
+	r := &CostRouter{strategy: CheapestStrategy{}}
 	if got := r.Sort(nil); got != nil {
 		t.Fatalf("empty: got %v", got)
 	}
@@ -71,7 +69,7 @@ func TestCostEmptyAndSingle(t *testing.T) {
 }
 
 func TestCostDoesNotMutateInput(t *testing.T) {
-	r := &CostRouter{strategy: model.StrategyCheapest}
+	r := &CostRouter{strategy: CheapestStrategy{}}
 	in := []*model.Channel{
 		mk("a", 1, 10, 10),
 		mk("b", 1, 1, 1),
@@ -83,7 +81,7 @@ func TestCostDoesNotMutateInput(t *testing.T) {
 }
 
 func TestCostStableForTies(t *testing.T) {
-	r := &CostRouter{strategy: model.StrategyCheapest}
+	r := &CostRouter{strategy: CheapestStrategy{}}
 	in := []*model.Channel{
 		mk("first", 1, 5, 5),
 		mk("second", 1, 5, 5),

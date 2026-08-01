@@ -1,15 +1,16 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -32,6 +33,23 @@ import (
 	proberpkg "github.com/sn0wfree/llmRx/internal/prober"
 )
 
+var chunkBufPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
+
+var (
+	dataPrefix  = []byte("data: ")
+	dataSuffix  = []byte("\n\n")
+	donePayload = []byte("data: [DONE]\n\n")
+	eventPrefix = []byte("event: error\ndata: ")
+	eventSuffix = []byte("\n\n")
+)
+
+type retryingCache struct {
+	cfg     provider.RetryConfig
+	wrapped map[string]provider.Provider
+}
+
 type Handler struct {
 	router    *router.RouterEngine
 	pool      *pool.ChannelPool
@@ -45,12 +63,15 @@ type Handler struct {
 	limits    *ratelimit.Limiter
 	guardrails *guardrail.GuardrailEngine
 	prober    *proberpkg.Cache
-	// retryingWrappers caches one RetryingProvider per protocol so
-	// the chat hot path doesn't allocate a fresh wrapper on every
-	// request. Refreshed lazily when retry/timeout config changes.
-	retryingMu      sync.Mutex
-	retryingCached  provider.RetryConfig
-	retryingWrapped map[string]provider.Provider // protocol -> wrapped
+	// retryingCache is an atomic snapshot of the RetryingProvider
+	// cache. The read path (every non-streaming request) is a single
+	// atomic.Load — lock-free. The write path (admin config change)
+	// atomically swaps the whole snapshot.
+	retryingCache atomic.Value // holds *retryingCache
+
+	// Extracted components for single responsibility.
+	costCalc *CostCalculator
+	emitter  *LogEmitter
 }
 
 func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, ls *logstore.Manager, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Handler {
@@ -58,7 +79,9 @@ func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st 
 		rt = runtime.New()
 		rt.SetMarkupRatio(cfg.Server.MarkupRatio)
 	}
-	return &Handler{
+	cc := NewCostCalculator(func() float64 { return rt.MarkupRatio() })
+	lim := ratelimit.New()
+	h := &Handler{
 		router:     eng,
 		pool:       cp,
 		provider:   provider.NewOpenAIProvider(),
@@ -68,9 +91,12 @@ func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st 
 		logStore:   ls,
 		logBroker:  lb,
 		rt:         rt,
-		limits:     ratelimit.New(),
+		limits:     lim,
 		guardrails: guardrail.New(st),
+		costCalc:   cc,
+		emitter:    NewLogEmitter(ls, lb, st, lim, cc),
 	}
+	return h
 }
 
 // Limits exposes the rate limiter for the server to wire into the
@@ -163,22 +189,32 @@ func (h *Handler) providerFor(channelProtocol string, streaming bool) provider.P
 		Timeout:    time.Duration(h.rt.RequestTimeoutSec()) * time.Second,
 	}
 
-	// Cache hit: return the wrapped provider.
-	h.retryingMu.Lock()
-	defer h.retryingMu.Unlock()
-	if h.retryingWrapped != nil && h.retryingCached == cfg {
-		if cached, ok := h.retryingWrapped[channelProtocol]; ok {
-			return cached
+	// Lock-free read: check the atomic cache snapshot.
+	if v := h.retryingCache.Load(); v != nil {
+		c := v.(*retryingCache)
+		if c.cfg == cfg {
+			if cached, ok := c.wrapped[channelProtocol]; ok {
+				return cached
+			}
 		}
 	}
 
 	// Cache miss: (re)build the wrapped provider for this protocol.
 	wrapped := provider.NewRetryingProvider(p, cfg)
-	if h.retryingWrapped == nil {
-		h.retryingWrapped = make(map[string]provider.Provider)
+	snap := &retryingCache{
+		cfg:     cfg,
+		wrapped: map[string]provider.Provider{channelProtocol: wrapped},
 	}
-	h.retryingWrapped[channelProtocol] = wrapped
-	h.retryingCached = cfg
+	// Carry forward any existing cache entries to avoid losing
+	// previously-wrapped protocols.
+	if v := h.retryingCache.Load(); v != nil {
+		c := v.(*retryingCache)
+		snap.wrapped[channelProtocol] = wrapped
+		for k, v := range c.wrapped {
+			snap.wrapped[k] = v
+		}
+	}
+	h.retryingCache.Store(snap)
 	return wrapped
 }
 
@@ -186,9 +222,7 @@ func (h *Handler) providerFor(channelProtocol string, streaming bool) provider.P
 // so the next providerFor() call rebuilds them. Call after admin UI
 // changes to retry/timeout config.
 func (h *Handler) InvalidateRetryWrappers() {
-	h.retryingMu.Lock()
-	h.retryingWrapped = nil
-	h.retryingMu.Unlock()
+	h.retryingCache.Store(&retryingCache{cfg: provider.RetryConfig{}, wrapped: make(map[string]provider.Provider)})
 }
 
 // Markup returns the current per-request billing multiplier.
@@ -683,80 +717,7 @@ func lookupTokenID(ctx context.Context, st store.Store) int64 {
 }
 
 func (h *Handler) emitLog(ctx context.Context, tokenID int64, modelName string, route *router.RouteResult, usage *provider.Usage, durationMs int64, statusCode int, failed bool, ip string) {
-	real := 0.0
-	cached := 0
-	if usage != nil {
-		real = calcCost(route.Channel, *usage)
-		if usage.PromptTokensDetails != nil {
-			cached = usage.PromptTokensDetails.CachedTokens
-		}
-	}
-	billed := h.billedCost(ctx, real)
-	status := "ok"
-	if failed {
-		status = "fail"
-	}
-	logging.Info("chat.completed",
-		logging.F("status", status),
-		logging.F("model", modelName),
-		logging.F("channel", route.Channel.Name),
-		logging.F("key", route.Key.KeyMasked),
-		logging.F("prompt", promptTokens(usage)),
-		logging.F("completion", completionTokens(usage)),
-		logging.F("cached", cached),
-		logging.F("real_usd", real),
-		logging.F("billed_usd", billed),
-		logging.F("duration_ms", durationMs),
-		logging.F("code", statusCode),
-		logging.F("path", route.RouterLog),
-	)
-	entry := &model.Log{
-		TokenID:         tokenID,
-		ChannelID:       route.Channel.ID,
-		KeyID:           route.Key.ID,
-		Model:           modelName,
-		PromptTokens:    promptTokens(usage),
-		CompletionTokens: completionTokens(usage),
-		CachedTokens:    cached,
-		RealCostUSD:     real,
-		BilledCostUSD:   billed,
-		DurationMs:      durationMs,
-		StatusCode:      statusCode,
-		RouterPath:      route.RouterLog,
-		RequestIP:       ip,
-	}
-	if err := h.logStore.Insert(entry); err != nil {
-		logging.Warn("persist log failed", logging.F("error", err.Error()))
-	}
-	if h.logBroker != nil {
-		h.logBroker.Publish(entry)
-	}
-	// Record Prometheus metrics.
-	observability.RecordRequest(modelName, durationMs, failed, billed,
-		promptTokens(usage), completionTokens(usage), false)
-	// Credit both the per-token and per-plan spend ledgers in a
-	// single SQL transaction. On ErrBudgetExceeded the token leg
-	// is reverted atomically inside the store, so we no longer
-	// need a manual compensation step here.
-	planID := planIDFromContext(ctx)
-	if tokenID > 0 && billed > 0 {
-		if err := h.store.RecordRequestSpend(tokenID, planID, billed); err != nil {
-			if errors.Is(err, store.ErrBudgetExceeded) {
-				logging.Warn("plan budget exceeded, token ledger untouched",
-					logging.F("plan_id", planID),
-					logging.F("billed_usd", billed),
-				)
-			} else {
-				logging.Warn("record request spend failed", logging.F("error", err.Error()))
-			}
-		}
-	}
-	// Account completion tokens against the rate limiter's TPM
-	// budget so a stream of long completions eventually trips the
-	// per-token ceiling.
-	if tokenID > 0 && usage != nil && h.limits != nil {
-		h.limits.Account(tokenID, usage.PromptTokens+usage.CompletionTokens)
-	}
+	h.emitter.Emit(ctx, tokenID, modelName, route, usage, durationMs, statusCode, failed, ip)
 }
 
 // billedCost returns the per-token / per-plan-adjusted billed cost.
@@ -774,32 +735,6 @@ func (h *Handler) billedCost(ctx context.Context, real float64) float64 {
 		return base
 	}
 	return base * info.PlanMarkupRatio
-}
-
-// planIDFromContext extracts TokenInfo.PlanID from a request context.
-func planIDFromContext(ctx context.Context) int64 {
-	if ctx == nil {
-		return 0
-	}
-	v, ok := ctx.Value(middleware.TokenInfoKey).(middleware.TokenInfo)
-	if !ok {
-		return 0
-	}
-	return v.PlanID
-}
-
-func promptTokens(u *provider.Usage) int {
-	if u == nil {
-		return 0
-	}
-	return u.PromptTokens
-}
-
-func completionTokens(u *provider.Usage) int {
-	if u == nil {
-		return 0
-	}
-	return u.CompletionTokens
 }
 
 func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
@@ -1199,22 +1134,10 @@ func itoa(n int) string {
 // discount is zero, no savings apply (and cached tokens still count
 // toward PromptTokens for billing purposes).
 func calcCost(ch *model.Channel, usage provider.Usage) float64 {
-	prompt := float64(usage.PromptTokens)
-	cached := 0.0
-	if usage.PromptTokensDetails != nil {
-		cached = float64(usage.PromptTokensDetails.CachedTokens)
-		if cached > prompt {
-			cached = prompt
-		}
-	}
-	normal := (prompt - cached) / 1000000.0 * ch.InputPrice
-	cachedCost := 0.0
-	if ch.CachedInputDiscount > 0 {
-		cachedCost = cached / 1000000.0 * ch.InputPrice * ch.CachedInputDiscount
-	}
-	output := float64(usage.CompletionTokens) / 1000000.0 * ch.OutputPrice
-	return normal + cachedCost + output
+	cc := CostCalculator{}
+	return cc.RealCost(ch, usage)
 }
+
 
 
 // streamChatCompletions is invoked when the client sets stream=true.
@@ -1328,12 +1251,24 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 			for _, c := range ev.Chunk.Choices {
 				contentBuilder.WriteString(c.Delta.ContentString())
 			}
-			payload, err := json.Marshal(ev.Chunk)
-			if err != nil {
+			buf := chunkBufPool.Get().(*bytes.Buffer)
+			buf.Reset()
+			if err := json.NewEncoder(buf).Encode(ev.Chunk); err != nil {
+				buf.Reset()
+				chunkBufPool.Put(buf)
 				continue
 			}
-			line := fmt.Sprintf("data: %s\n\n", payload)
-			n, werr := fmt.Fprint(w, line)
+			// Trim trailing newline from json.Encoder.
+			payload := buf.Bytes()
+			if len(payload) > 0 && payload[len(payload)-1] == '\n' {
+				payload = payload[:len(payload)-1]
+			}
+			buf.Reset()
+			buf.Write(dataPrefix)
+			buf.Write(payload)
+			buf.Write(dataSuffix)
+			n, werr := w.Write(buf.Bytes())
+			chunkBufPool.Put(buf)
 			bytesSent += int64(n)
 			if werr != nil {
 				cancel()
@@ -1366,7 +1301,7 @@ done:
 			return
 		}
 	}
-	fmt.Fprint(w, "data: [DONE]\n\n")
+	w.Write(donePayload)
 	flusher.Flush()
 	h.router.RecordSuccess(route.Channel.ID)
 	h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,

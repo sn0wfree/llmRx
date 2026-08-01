@@ -2,10 +2,8 @@ package router
 
 import (
 	"context"
-	"time"
 
 	"github.com/sn0wfree/llmRx/internal/intent"
-	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/router/thompson"
@@ -27,23 +25,34 @@ type RouterEngine struct {
 	pool           *pool.ChannelPool
 	store          store.Store
 	extraChannels  []func() []*model.Channel // BYOK hook (Phase 1.5 reserved)
-	trafficObs     TrafficObserver            // optional real-traffic observer (prober etc.)
+	trafficObs     []TrafficObserver          // optional real-traffic observers (prober etc.)
 }
 
 // TrafficObserver is the pluggable hook RouterEngine invokes on
 // every successful or failed real (non-probe) call. Implementations
-// must be safe for concurrent use. A nil observer (the default)
-// silently drops the notification — keeps the hot path branchless
-// when no prober is wired in.
+// must be safe for concurrent use.
 type TrafficObserver interface {
 	OnRealSuccess(channelID int64)
 	OnRealFailure(channelID int64)
 }
 
-// SetTrafficObserver installs the observer. Pass nil to detach.
-// Typically wired once during bootstrap from server.New().
+// SetTrafficObserver replaces all registered observers with a single
+// one. Pass nil to clear all observers.
 func (e *RouterEngine) SetTrafficObserver(o TrafficObserver) {
-	e.trafficObs = o
+	if o == nil {
+		e.trafficObs = nil
+	} else {
+		e.trafficObs = []TrafficObserver{o}
+	}
+}
+
+// RegisterTrafficObserver appends an observer. Multiple observers
+// each receive all notifications. Safe to call before engine start.
+func (e *RouterEngine) RegisterTrafficObserver(o TrafficObserver) {
+	if o == nil {
+		return
+	}
+	e.trafficObs = append(e.trafficObs, o)
 }
 
 type RouteResult struct {
@@ -167,150 +176,29 @@ func (e *RouterEngine) Route(ctx context.Context, modelName string) (*RouteResul
 	return e.RouteWith(ctx, modelName, RouteOptions{})
 }
 
-// RouteWith is the full routing pipeline: L1 static → L2 breaker →
-// L3 cost → L4 intent (if text supplied) → L5 Thompson.
+// RouteWith is the full routing pipeline: L1 static match → L2 breaker →
+// L3 cost → L4 intent (if text supplied) → L5 Thompson → key selection.
+// Delegates to the Chain-of-Responsibility pipeline defined in stage.go.
 func (e *RouterEngine) RouteWith(ctx context.Context, modelName string, opts RouteOptions) (*RouteResult, error) {
-	start := time.Now()
-	var logParts []string
-
-	// L1: static match. When ModelSet is provided (combo
-	// load_balance), expand the candidate set to all channels
-	// that serve any model in the pool.
-	var candidates []*model.Channel
-	if len(opts.ModelSet) > 0 {
-		candidates = e.static.MatchAny(opts.ModelSet)
-		logParts = append(logParts, "L1(static,combo)")
-	} else {
-		candidates = e.static.Match(modelName)
-		logParts = append(logParts, "L1(static)")
-	}
-	// Hook for Phase 1.5 BYOK: extra channel sources. Currently
-	// no callbacks are registered so this is a no-op.
-	for _, src := range e.extraChannels {
-		candidates = append(candidates, src()...)
-	}
-	if len(candidates) == 0 {
-		return nil, ErrNoChannel
-	}
-
-	candidates = e.breaker.Filter(candidates)
-	logParts = append(logParts, "L2(breaker)")
-	if len(candidates) == 0 {
-		return nil, ErrAllBroken
-	}
-
-	// L3 cost sort. When CostStrategy is set (combo override),
-	// use SortWith to avoid mutating global state.
-	if opts.CostStrategy != "" {
-		candidates = e.cost.SortWith(candidates, opts.CostStrategy)
-		logParts = append(logParts, "L3(cost="+string(opts.CostStrategy)+")")
-	} else {
-		candidates = e.cost.Sort(candidates)
-		logParts = append(logParts, "L3(cost)")
-	}
-
-	// L4: intent match. If we have a classifier and an input text,
-	// bubble channels whose Intents list contains the predicted
-	// intent to the front. Score is ignored for now — binary
-	// inclusion is enough for the typical 4-6 label set.
-	var intn intent.Intent
-	if opts.Text != "" && e.intent != nil {
-		intn = e.intent.Classify(opts.Text)
-		if intn.Kind != "unknown" && intn.Kind != "general" && len(candidates) > 1 {
-			matched, unmatched := splitByIntent(candidates, intn.Kind)
-			if len(matched) > 0 {
-				candidates = append(matched, unmatched...)
-				logParts = append(logParts, "L4(intent="+intn.Kind+")")
-			}
-		}
-	}
-
-	// L5: Thompson sampling picks the winner. With a single
-	// candidate this is a no-op; with several it uses the posterior
-	// over success probability.
-	if len(candidates) > 1 {
-		ranked := e.thompson.Sample(candidates)
-		logParts = append(logParts, "L5(thompson)")
-		candidates = nil
-		for _, r := range ranked {
-			candidates = append(candidates, r.Channel)
-		}
-	}
-
-	ch := candidates[0]
-	logParts = append(logParts, "select="+ch.Name)
-
-	key, err := e.pool.NextKey(ch.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	result := &RouteResult{
-		Channel:   ch,
-		Key:       key,
-		KeyValue:  key.Key,
-		RouterLog: joinLog(logParts),
-		Intent:    intn,
-	}
-
-	logging.Debug("route",
-		logging.F("model", modelName),
-		logging.F("channel", ch.Name),
-		logging.F("path", joinLog(logParts)),
-		logging.F("duration_ms", time.Since(start).Milliseconds()),
-	)
-	return result, nil
-}
-
-// splitByIntent partitions channels by whether their Intents list
-// contains the given kind. Order within each group is preserved.
-func splitByIntent(channels []*model.Channel, kind string) (matched, unmatched []*model.Channel) {
-	for _, c := range channels {
-		if containsString(c.Intents, kind) {
-			matched = append(matched, c)
-		} else {
-			unmatched = append(unmatched, c)
-		}
-	}
-	return
-}
-
-func containsString(xs []string, s string) bool {
-	for _, x := range xs {
-		if x == s {
-			return true
-		}
-	}
-	return false
+	return e.routeWithPipeline(ctx, modelName, opts)
 }
 
 func (e *RouterEngine) RecordSuccess(channelID int64) {
 	e.breaker.RecordSuccess(channelID)
 	e.thompson.RecordSuccess(channelID)
-	if e.trafficObs != nil {
-		e.trafficObs.OnRealSuccess(channelID)
+	for _, obs := range e.trafficObs {
+		obs.OnRealSuccess(channelID)
 	}
 }
 
 func (e *RouterEngine) RecordFailure(channelID int64) {
 	e.breaker.RecordFailure(channelID)
 	e.thompson.RecordFailure(channelID)
-	if e.trafficObs != nil {
-		e.trafficObs.OnRealFailure(channelID)
+	for _, obs := range e.trafficObs {
+		obs.OnRealFailure(channelID)
 	}
 }
 
 // Thompson returns the underlying sampler (for the admin API and
 // tests).
 func (e *RouterEngine) Thompson() *thompson.Sampler { return e.thompson }
-
-func joinLog(parts []string) string {
-	s := ""
-	for i, p := range parts {
-		if i > 0 {
-			s += " → "
-		}
-		s += p
-	}
-	return s
-}

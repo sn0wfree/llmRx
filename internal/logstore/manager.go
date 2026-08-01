@@ -50,6 +50,11 @@ func (m *Manager) Insert(entry *model.Log) error {
 	return m.driver.Insert(entry)
 }
 
+// BatchInsert inserts multiple log entries in a single transaction.
+func (m *Manager) BatchInsert(entries []*model.Log) (int, error) {
+	return m.driver.BatchInsert(entries)
+}
+
 // Query returns paginated rows across the given days. days=nil
 // means "every file the driver knows about".
 func (m *Manager) Query(filter QueryFilter, days []string) ([]model.Log, int64, error) {
