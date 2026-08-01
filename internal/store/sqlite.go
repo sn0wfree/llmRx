@@ -277,6 +277,29 @@ func (s *SQLite) migrate() error {
 			created_at INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_byok_owner_ip ON byok_channels(owner_ip, status)`,
+		`CREATE TABLE IF NOT EXISTS mcp_servers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT UNIQUE NOT NULL,
+			url TEXT NOT NULL,
+			auth_header TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 1,
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS mcp_tools (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			server_id INTEGER NOT NULL,
+			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			input_schema_json TEXT NOT NULL,
+			FOREIGN KEY (server_id) REFERENCES mcp_servers(id) ON DELETE CASCADE,
+			UNIQUE(server_id, name)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_mcp_tools_server ON mcp_tools(server_id)`,
+		`CREATE TABLE IF NOT EXISTS mcp_tool_pricing (
+			mcp_tool_id INTEGER PRIMARY KEY,
+			price_per_call_usd REAL NOT NULL DEFAULT 0,
+			FOREIGN KEY (mcp_tool_id) REFERENCES mcp_tools(id) ON DELETE CASCADE
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
@@ -2006,6 +2029,185 @@ func (s *SQLite) GetGuardrailEvents(tokenID int64, limit int) ([]model.Guardrail
 		e.Verdict = verdict == 1
 		e.CreatedAt = fromUnix(created)
 		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) GetMCPServers(ctx context.Context) ([]MCPServer, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, url, auth_header, enabled, created_at FROM mcp_servers ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MCPServer
+	for rows.Next() {
+		var srv MCPServer
+		var created int64
+		var enabled int
+		if err := rows.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.AuthHdr, &enabled, &created); err != nil {
+			return nil, err
+		}
+		srv.Enabled = enabled == 1
+		srv.CreatedAt = fromUnix(created)
+		out = append(out, srv)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) GetMCPServer(ctx context.Context, id int64) (*MCPServer, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT id, name, url, auth_header, enabled, created_at FROM mcp_servers WHERE id = ?`, id)
+	var srv MCPServer
+	var created int64
+	var enabled int
+	if err := row.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.AuthHdr, &enabled, &created); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	srv.Enabled = enabled == 1
+	srv.CreatedAt = fromUnix(created)
+	return &srv, nil
+}
+
+func (s *SQLite) CreateMCPServer(ctx context.Context, srv *MCPServer) error {
+	now := time.Now().Unix()
+	enabled := 0
+	if srv.Enabled {
+		enabled = 1
+	}
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO mcp_servers (name, url, auth_header, enabled, created_at) VALUES (?, ?, ?, ?, ?)`,
+		srv.Name, srv.URL, srv.AuthHdr, enabled, now,
+	)
+	if err != nil {
+		return err
+	}
+	srv.ID, _ = res.LastInsertId()
+	srv.CreatedAt = fromUnix(now)
+	return nil
+}
+
+func (s *SQLite) UpdateMCPServer(ctx context.Context, srv *MCPServer) error {
+	enabled := 0
+	if srv.Enabled {
+		enabled = 1
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE mcp_servers SET name=?, url=?, auth_header=?, enabled=? WHERE id=?`,
+		srv.Name, srv.URL, srv.AuthHdr, enabled, srv.ID,
+	)
+	return err
+}
+
+func (s *SQLite) DeleteMCPServer(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM mcp_servers WHERE id = ?`, id)
+	return err
+}
+
+func (s *SQLite) GetMCPTools(ctx context.Context, serverID int64) ([]MCPTool, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, server_id, name, description, input_schema_json FROM mcp_tools WHERE server_id = ? ORDER BY name`,
+		serverID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MCPTool
+	for rows.Next() {
+		var t MCPTool
+		if err := rows.Scan(&t.ID, &t.ServerID, &t.Name, &t.Description, &t.InputSchemaJSON); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) SetMCPTools(ctx context.Context, serverID int64, tools []MCPTool) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM mcp_tools WHERE server_id = ?`, serverID); err != nil {
+		return err
+	}
+	for _, t := range tools {
+		t.ServerID = serverID
+		_, err := tx.Exec(
+			`INSERT INTO mcp_tools (server_id, name, description, input_schema_json) VALUES (?, ?, ?, ?)`,
+			serverID, t.Name, t.Description, t.InputSchemaJSON,
+		)
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *SQLite) GetMCPToolPricing(ctx context.Context, toolID int64) (*MCPToolPricing, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT mcp_tool_id, price_per_call_usd FROM mcp_tool_pricing WHERE mcp_tool_id = ?`, toolID)
+	var p MCPToolPricing
+	if err := row.Scan(&p.MCPToolID, &p.PricePerCallUSD); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return &MCPToolPricing{MCPToolID: toolID}, nil
+		}
+		return nil, err
+	}
+	return &p, nil
+}
+
+func (s *SQLite) SetMCPToolPricing(ctx context.Context, p *MCPToolPricing) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO mcp_tool_pricing (mcp_tool_id, price_per_call_usd) VALUES (?, ?)
+		 ON CONFLICT(mcp_tool_id) DO UPDATE SET price_per_call_usd = excluded.price_per_call_usd`,
+		p.MCPToolID, p.PricePerCallUSD,
+	)
+	return err
+}
+
+func (s *SQLite) GetAllMCPTools(ctx context.Context) ([]MCPTool, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT t.id, t.server_id, t.name, t.description, t.input_schema_json
+		 FROM mcp_tools t
+		 JOIN mcp_servers s ON s.id = t.server_id
+		 WHERE s.enabled = 1
+		 ORDER BY t.name`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MCPTool
+	for rows.Next() {
+		var t MCPTool
+		if err := rows.Scan(&t.ID, &t.ServerID, &t.Name, &t.Description, &t.InputSchemaJSON); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) GetEnabledMCPServers(ctx context.Context) ([]MCPServer, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, url, auth_header, enabled, created_at FROM mcp_servers WHERE enabled = 1 ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MCPServer
+	for rows.Next() {
+		var srv MCPServer
+		var created int64
+		var enabled int
+		if err := rows.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.AuthHdr, &enabled, &created); err != nil {
+			return nil, err
+		}
+		srv.Enabled = true
+		srv.CreatedAt = fromUnix(created)
+		out = append(out, srv)
 	}
 	return out, rows.Err()
 }

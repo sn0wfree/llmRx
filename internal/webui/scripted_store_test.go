@@ -100,6 +100,18 @@ RawQueryRowFunc        func(query string, args ...any) *sql.Row
 	DeleteGuardrailRuleFunc      func(id int64) error
 	CreateGuardrailEventFunc     func(e *model.GuardrailEvent) error
 	GetGuardrailEventsFunc       func(tokenID int64, limit int) ([]model.GuardrailEvent, error)
+
+	GetMCPServersFunc        func(ctx context.Context) ([]store.MCPServer, error)
+	GetMCPServerFunc         func(ctx context.Context, id int64) (*store.MCPServer, error)
+	CreateMCPServerFunc      func(ctx context.Context, s *store.MCPServer) error
+	UpdateMCPServerFunc      func(ctx context.Context, s *store.MCPServer) error
+	DeleteMCPServerFunc      func(ctx context.Context, id int64) error
+	GetMCPToolsFunc          func(ctx context.Context, serverID int64) ([]store.MCPTool, error)
+	SetMCPToolsFunc          func(ctx context.Context, serverID int64, tools []store.MCPTool) error
+	GetMCPToolPricingFunc    func(ctx context.Context, toolID int64) (*store.MCPToolPricing, error)
+	SetMCPToolPricingFunc    func(ctx context.Context, p *store.MCPToolPricing) error
+	GetAllMCPToolsFunc       func(ctx context.Context) ([]store.MCPTool, error)
+	GetEnabledMCPServersFunc func(ctx context.Context) ([]store.MCPServer, error)
 }
 
 func NewScriptedStore(underlying store.Store) *ScriptedStore {
@@ -415,4 +427,48 @@ func (s *ScriptedStore) CreateGuardrailEvent(e *model.GuardrailEvent) error {
 func (s *ScriptedStore) GetGuardrailEvents(tokenID int64, limit int) ([]model.GuardrailEvent, error) {
 	if s.GetGuardrailEventsFunc != nil { return s.GetGuardrailEventsFunc(tokenID, limit) }
 	return s.underlying.GetGuardrailEvents(tokenID, limit)
+}
+func (s *ScriptedStore) GetMCPServers(ctx context.Context) ([]store.MCPServer, error) {
+	if s.GetMCPServersFunc != nil { return s.GetMCPServersFunc(ctx) }
+	return s.underlying.GetMCPServers(ctx)
+}
+func (s *ScriptedStore) GetMCPServer(ctx context.Context, id int64) (*store.MCPServer, error) {
+	if s.GetMCPServerFunc != nil { return s.GetMCPServerFunc(ctx, id) }
+	return s.underlying.GetMCPServer(ctx, id)
+}
+func (s *ScriptedStore) CreateMCPServer(ctx context.Context, srv *store.MCPServer) error {
+	if s.CreateMCPServerFunc != nil { return s.CreateMCPServerFunc(ctx, srv) }
+	return s.underlying.CreateMCPServer(ctx, srv)
+}
+func (s *ScriptedStore) UpdateMCPServer(ctx context.Context, srv *store.MCPServer) error {
+	if s.UpdateMCPServerFunc != nil { return s.UpdateMCPServerFunc(ctx, srv) }
+	return s.underlying.UpdateMCPServer(ctx, srv)
+}
+func (s *ScriptedStore) DeleteMCPServer(ctx context.Context, id int64) error {
+	if s.DeleteMCPServerFunc != nil { return s.DeleteMCPServerFunc(ctx, id) }
+	return s.underlying.DeleteMCPServer(ctx, id)
+}
+func (s *ScriptedStore) GetMCPTools(ctx context.Context, serverID int64) ([]store.MCPTool, error) {
+	if s.GetMCPToolsFunc != nil { return s.GetMCPToolsFunc(ctx, serverID) }
+	return s.underlying.GetMCPTools(ctx, serverID)
+}
+func (s *ScriptedStore) SetMCPTools(ctx context.Context, serverID int64, tools []store.MCPTool) error {
+	if s.SetMCPToolsFunc != nil { return s.SetMCPToolsFunc(ctx, serverID, tools) }
+	return s.underlying.SetMCPTools(ctx, serverID, tools)
+}
+func (s *ScriptedStore) GetMCPToolPricing(ctx context.Context, toolID int64) (*store.MCPToolPricing, error) {
+	if s.GetMCPToolPricingFunc != nil { return s.GetMCPToolPricingFunc(ctx, toolID) }
+	return s.underlying.GetMCPToolPricing(ctx, toolID)
+}
+func (s *ScriptedStore) SetMCPToolPricing(ctx context.Context, p *store.MCPToolPricing) error {
+	if s.SetMCPToolPricingFunc != nil { return s.SetMCPToolPricingFunc(ctx, p) }
+	return s.underlying.SetMCPToolPricing(ctx, p)
+}
+func (s *ScriptedStore) GetAllMCPTools(ctx context.Context) ([]store.MCPTool, error) {
+	if s.GetAllMCPToolsFunc != nil { return s.GetAllMCPToolsFunc(ctx) }
+	return s.underlying.GetAllMCPTools(ctx)
+}
+func (s *ScriptedStore) GetEnabledMCPServers(ctx context.Context) ([]store.MCPServer, error) {
+	if s.GetEnabledMCPServersFunc != nil { return s.GetEnabledMCPServersFunc(ctx) }
+	return s.underlying.GetEnabledMCPServers(ctx)
 }

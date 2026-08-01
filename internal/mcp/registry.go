@@ -1,0 +1,107 @@
+package mcp
+
+import (
+	"context"
+	"sync"
+	"time"
+
+	"github.com/sn0wfree/llmRx/internal/store"
+)
+
+type MCPServer struct {
+	ID        int64     `json:"id"`
+	Name      string    `json:"name"`
+	URL       string    `json:"url"`
+	AuthHdr   string    `json:"auth_header"`
+	Enabled   bool      `json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type MCPToolPricing struct {
+	MCPToolID       int64   `json:"mcp_tool_id"`
+	PricePerCallUSD float64 `json:"price_per_call_usd"`
+}
+
+type ClientManager struct {
+	mu      sync.RWMutex
+	clients map[int64]*Client
+	repo    store.MCPRepository
+}
+
+func NewClientManager(repo store.MCPRepository) *ClientManager {
+	return &ClientManager{
+		clients: make(map[int64]*Client),
+		repo:    repo,
+	}
+}
+
+func (m *ClientManager) GetClient(ctx context.Context, serverID int64) (*Client, error) {
+	m.mu.RLock()
+	c, ok := m.clients[serverID]
+	m.mu.RUnlock()
+	if ok {
+		return c, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if c, ok := m.clients[serverID]; ok {
+		return c, nil
+	}
+	srv, err := m.repo.GetMCPServer(ctx, serverID)
+	if err != nil {
+		return nil, err
+	}
+	if srv == nil {
+		return nil, nil
+	}
+	c = NewClient(srv.URL, srv.AuthHdr)
+	m.clients[serverID] = c
+	return c, nil
+}
+
+func (m *ClientManager) RefreshTools(ctx context.Context, serverID int64) ([]store.MCPTool, error) {
+	c, err := m.GetClient(ctx, serverID)
+	if err != nil {
+		return nil, err
+	}
+	if c == nil {
+		return nil, nil
+	}
+	tools, err := c.ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	mtools := make([]store.MCPTool, 0, len(tools))
+	for _, t := range tools {
+		schemaJSON := "{}"
+		if t.InputSchema != nil {
+			b, _ := Marshal(t.InputSchema)
+			schemaJSON = string(b)
+		}
+		mtools = append(mtools, store.MCPTool{
+			ServerID:        serverID,
+			Name:            t.Name,
+			Description:     t.Description,
+			InputSchemaJSON: schemaJSON,
+		})
+	}
+	if err := m.repo.SetMCPTools(ctx, serverID, mtools); err != nil {
+		return nil, err
+	}
+	return mtools, nil
+}
+
+func (m *ClientManager) Invalidate(serverID int64) {
+	m.mu.Lock()
+	delete(m.clients, serverID)
+	m.mu.Unlock()
+}
+
+func (m *ClientManager) Close() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, c := range m.clients {
+		c.Close()
+	}
+	m.clients = make(map[int64]*Client)
+}

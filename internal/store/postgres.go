@@ -167,6 +167,17 @@ func (p *Postgres) CreateGuardrailEvent(event *model.GuardrailEvent) error {
 func (p *Postgres) GetGuardrailEvents(tokenID int64, limit int) ([]model.GuardrailEvent, error) {
 	return nil, errNotImplemented
 }
+func (p *Postgres) GetMCPServers(ctx context.Context) ([]MCPServer, error)           { return nil, errNotImplemented }
+func (p *Postgres) GetMCPServer(ctx context.Context, id int64) (*MCPServer, error)   { return nil, errNotImplemented }
+func (p *Postgres) CreateMCPServer(ctx context.Context, s *MCPServer) error          { return errNotImplemented }
+func (p *Postgres) UpdateMCPServer(ctx context.Context, s *MCPServer) error          { return errNotImplemented }
+func (p *Postgres) DeleteMCPServer(ctx context.Context, id int64) error              { return errNotImplemented }
+func (p *Postgres) GetMCPTools(ctx context.Context, serverID int64) ([]MCPTool, error) { return nil, errNotImplemented }
+func (p *Postgres) SetMCPTools(ctx context.Context, serverID int64, tools []MCPTool) error { return errNotImplemented }
+func (p *Postgres) GetMCPToolPricing(ctx context.Context, toolID int64) (*MCPToolPricing, error) { return nil, errNotImplemented }
+func (p *Postgres) SetMCPToolPricing(ctx context.Context, pr *MCPToolPricing) error  { return errNotImplemented }
+func (p *Postgres) GetAllMCPTools(ctx context.Context) ([]MCPTool, error)             { return nil, errNotImplemented }
+func (p *Postgres) GetEnabledMCPServers(ctx context.Context) ([]MCPServer, error)    { return nil, errNotImplemented }
 
 func init() {
 	Register("postgres", func(dsn string) (Store, error) {

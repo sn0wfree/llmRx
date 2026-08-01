@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"time"
@@ -19,10 +21,12 @@ import (
 	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/logstore"
+	"github.com/sn0wfree/llmRx/internal/mcp"
 	authmw "github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/prober"
+	"github.com/sn0wfree/llmRx/internal/provider"
 	"github.com/sn0wfree/llmRx/internal/requestid"
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/runtime"
@@ -52,6 +56,8 @@ type Server struct {
 	engine     *chi.Mux
 	httpServer *http.Server
 	prober     *prober.Cache
+	mcpClientMgr *mcp.ClientManager
+	mcpServer    *mcp.Server
 	// byokHook, when set, is invoked on unknown bearer tokens
 	// so the BYOK manager can probe+register them. nil means
 	// strict 403 (legacy behaviour).
@@ -131,11 +137,20 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	// better health signal than a synthetic /v1/models probe).
 	s.router.SetTrafficObserver(prober.NewRouterObserver(proberCache))
 	logging.Info("prober: wired into router (real-traffic observer)")
+
+	// Initialize MCP components.
+	s.mcpClientMgr = mcp.NewClientManager(s.store)
+	mcpHandler := mcpToolHandler(s.pool, s.router)
+	s.mcpServer = mcp.NewServer(mcp.DefaultTools(), mcpHandler)
+	mcpLoop := mcp.NewAgenticLoop(s.mcpClientMgr, s.store, provider.NewOpenAIProvider())
+	handler.SetMCPLoop(mcpLoop)
+
 	adminHandler := admin.New(s.store, s.logStore, s.pool, s.router, s.tokens, lb, rt, s.cfg, s.keyFile)
 	s.admin = adminHandler
 	if responseCache != nil {
 		adminHandler.SetCache(responseCache)
 	}
+	adminHandler.SetMCPClientManager(s.mcpClientMgr)
 
 	// WithLimitsAndOptions (vs. WithLimits) is what actually
 	// fires the BYOK hook when an unknown bearer arrives. If
@@ -143,6 +158,18 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	// same effective behaviour as the old WithLimits call.
 	s.engine.With(authmw.WithLimitsAndOptions(s.tokens.Lookup, handler.Limits(), s.byokHook)).
 		Mount("/v1", handler.Routes())
+
+	// MCP server endpoint: expose llmRx's own tools.
+	s.engine.Post("/mcp/llmrx", func(w http.ResponseWriter, r *http.Request) {
+		body, err := readBody(r)
+		if err != nil {
+			http.Error(w, `{"jsonrpc":"2.0","error":{"code":-32700,"message":"invalid body"}}`, http.StatusBadRequest)
+			return
+		}
+		resp := s.mcpServer.HandleHTTP(r.Context(), body)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
 
 	s.engine.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -198,6 +225,72 @@ func (s *Server) initResponseCache() cache.Cache {
 	default:
 		logging.Warn("cache: unknown backend", logging.F("backend", s.cfg.Server.CacheBackend))
 		return nil
+	}
+}
+
+// readBody reads the full request body, capped at 1 MiB.
+func readBody(r *http.Request) ([]byte, error) {
+	r.Body = http.MaxBytesReader(nil, r.Body, 1<<20)
+	b, err := io.ReadAll(r.Body)
+	r.Body.Close()
+	return b, err
+}
+
+func mcpToolHandler(pool *pool.ChannelPool, eng *router.RouterEngine) mcp.ToolHandler {
+	return func(ctx context.Context, name string, args map[string]any) (map[string]any, error) {
+		switch name {
+		case "channel_list":
+			channels := pool.GetAllChannels()
+			type chView struct {
+				ID     int64    `json:"id"`
+				Name   string   `json:"name"`
+				Models []string `json:"models"`
+				Status int      `json:"status"`
+			}
+			views := make([]chView, 0, len(channels))
+			for _, ch := range channels {
+				views = append(views, chView{
+					ID:     ch.ID,
+					Name:   ch.Name,
+					Models: ch.Models,
+					Status: int(ch.Status),
+				})
+			}
+			return map[string]any{"channels": views}, nil
+		case "channel_invoke":
+			model, _ := args["model"].(string)
+			prompt, _ := args["prompt"].(string)
+			system, _ := args["system"].(string)
+			if model == "" || prompt == "" {
+				return nil, fmt.Errorf("model and prompt are required")
+			}
+			messages := []provider.Message{
+				{Role: "user", Content: prompt},
+			}
+			if system != "" {
+				messages = append([]provider.Message{{Role: "system", Content: system}}, messages...)
+			}
+			chatReq := &provider.ChatRequest{
+				Model:    model,
+				Messages: messages,
+			}
+			route, err := eng.RouteWith(ctx, model, router.RouteOptions{Text: prompt})
+			if err != nil {
+				return nil, fmt.Errorf("no available channel: %v", err)
+			}
+			prov := provider.NewOpenAIProvider()
+			resp, statusCode, err := prov.Chat(ctx, chatReq, route.KeyValue, route.Channel.BaseURL)
+			if err != nil {
+				return nil, fmt.Errorf("upstream error (status %d): %v", statusCode, err)
+			}
+			text := ""
+			if len(resp.Choices) > 0 {
+				text = resp.Choices[0].Message.ContentString()
+			}
+			return mcp.MarshalToolResult(text, false), nil
+		default:
+			return nil, fmt.Errorf("unknown tool: %s", name)
+		}
 	}
 }
 

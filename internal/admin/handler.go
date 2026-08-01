@@ -17,6 +17,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/cache"
 	"github.com/sn0wfree/llmRx/internal/config"
+	"github.com/sn0wfree/llmRx/internal/mcp"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
@@ -43,6 +44,7 @@ type Handler struct {
 	sessionTTL time.Duration
 	alertMgr   AlertReloader
 	responseCache cache.Cache
+	mcpClientMgr *mcp.ClientManager
 }
 
 // AlertReloader is the narrow contract the admin /reload handler
@@ -70,6 +72,8 @@ func (h *Handler) SetAlertManager(m AlertReloader) { h.alertMgr = m }
 
 // SetCache wires the response cache for stats and purge endpoints.
 func (h *Handler) SetCache(c cache.Cache) { h.responseCache = c }
+
+func (h *Handler) SetMCPClientManager(m *mcp.ClientManager) { h.mcpClientMgr = m }
 
 // SetSessionTTL overrides the default 24h session lifetime.
 func (h *Handler) SetSessionTTL(d time.Duration) { h.sessionTTL = d }
@@ -135,6 +139,14 @@ func (h *Handler) Routes() http.Handler {
 		r.Get("/effective", h.EffectiveConfig)
 		r.Get("/cache/stats", h.CacheStats)
 		r.Post("/cache/purge", h.CachePurge)
+		r.Get("/mcp-servers", h.ListMCPServers)
+		r.Post("/mcp-servers", h.CreateMCPServer)
+		r.Put("/mcp-servers/{id}", h.UpdateMCPServer)
+		r.Delete("/mcp-servers/{id}", h.DeleteMCPServer)
+		r.Post("/mcp-servers/{id}/refresh", h.RefreshMCPTools)
+		r.Get("/mcp-servers/{id}/tools", h.ListMCPTools)
+		r.Get("/mcp-servers/{id}/tools/{toolId}/pricing", h.GetMCPToolPricing)
+		r.Put("/mcp-servers/{id}/tools/{toolId}/pricing", h.SetMCPToolPricing)
 	})
 
 	// Root-only high-impact operations: user lifecycle, runtime
@@ -1524,4 +1536,164 @@ func (h *Handler) DeleteCombo(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = h.tokens.Reload()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// ---------- MCP Server CRUD ----------
+
+func (h *Handler) ListMCPServers(w http.ResponseWriter, r *http.Request) {
+	servers, err := h.store.GetMCPServers(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": nonNil(servers)})
+}
+
+func (h *Handler) CreateMCPServer(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name      string `json:"name"`
+		URL       string `json:"url"`
+		AuthHdr   string `json:"auth_header"`
+		Enabled   bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if body.Name == "" || body.URL == "" {
+		writeErr(w, http.StatusBadRequest, "name and url are required")
+		return
+	}
+	srv := &store.MCPServer{Name: body.Name, URL: body.URL, AuthHdr: body.AuthHdr, Enabled: body.Enabled}
+	if err := h.store.CreateMCPServer(r.Context(), srv); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": srv})
+}
+
+func (h *Handler) UpdateMCPServer(w http.ResponseWriter, r *http.Request) {
+	id, err := pathInt(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	existing, err := h.store.GetMCPServer(r.Context(), id)
+	if err != nil || existing == nil {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	var body struct {
+		Name    *string `json:"name"`
+		URL     *string `json:"url"`
+		AuthHdr *string `json:"auth_header"`
+		Enabled *bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if body.Name != nil {
+		existing.Name = *body.Name
+	}
+	if body.URL != nil {
+		existing.URL = *body.URL
+	}
+	if body.AuthHdr != nil {
+		existing.AuthHdr = *body.AuthHdr
+	}
+	if body.Enabled != nil {
+		existing.Enabled = *body.Enabled
+	}
+	if err := h.store.UpdateMCPServer(r.Context(), existing); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if h.mcpClientMgr != nil {
+		h.mcpClientMgr.Invalidate(id)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": existing})
+}
+
+func (h *Handler) DeleteMCPServer(w http.ResponseWriter, r *http.Request) {
+	id, err := pathInt(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	if err := h.store.DeleteMCPServer(r.Context(), id); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if h.mcpClientMgr != nil {
+		h.mcpClientMgr.Invalidate(id)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *Handler) RefreshMCPTools(w http.ResponseWriter, r *http.Request) {
+	id, err := pathInt(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	if h.mcpClientMgr == nil {
+		writeErr(w, http.StatusInternalServerError, "mcp client manager not initialized")
+		return
+	}
+	tools, err := h.mcpClientMgr.RefreshTools(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "refresh failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": nonNil(tools)})
+}
+
+func (h *Handler) ListMCPTools(w http.ResponseWriter, r *http.Request) {
+	serverID, err := pathInt(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	tools, err := h.store.GetMCPTools(r.Context(), serverID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": nonNil(tools)})
+}
+
+func (h *Handler) GetMCPToolPricing(w http.ResponseWriter, r *http.Request) {
+	toolID, err := pathInt(r, "toolId")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad tool id")
+		return
+	}
+	pricing, err := h.store.GetMCPToolPricing(r.Context(), toolID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": pricing})
+}
+
+func (h *Handler) SetMCPToolPricing(w http.ResponseWriter, r *http.Request) {
+	toolID, err := pathInt(r, "toolId")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad tool id")
+		return
+	}
+	var body struct {
+		PricePerCallUSD float64 `json:"price_per_call_usd"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	p := &store.MCPToolPricing{MCPToolID: toolID, PricePerCallUSD: body.PricePerCallUSD}
+	if err := h.store.SetMCPToolPricing(r.Context(), p); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": p})
 }

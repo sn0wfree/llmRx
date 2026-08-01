@@ -20,6 +20,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/guardrail"
 	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/logstore"
+	"github.com/sn0wfree/llmRx/internal/mcp"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/modelmeta"
@@ -104,6 +105,10 @@ type Handler struct {
 	// requests (temperature=0). Set via SetCache; nil means
 	// caching is disabled.
 	responseCache cache.Cache
+
+	// mcpLoop is the agentic tool dispatch loop. Set via SetMCPLoop;
+	// nil means MCP tool routing is disabled.
+	mcpLoop *mcp.AgenticLoop
 }
 
 func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, ls *logstore.Manager, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Handler {
@@ -144,6 +149,8 @@ func (h *Handler) Store() store.Store { return h.store }
 
 // SetCache wires the response cache. Nil means caching is disabled.
 func (h *Handler) SetCache(c cache.Cache) { h.responseCache = c }
+
+func (h *Handler) SetMCPLoop(a *mcp.AgenticLoop) { h.mcpLoop = a }
 
 // lookupTokenInfo extracts the TokenInfo placed in the request
 // context by middleware.Token. Returns ok=false when the request
@@ -575,6 +582,17 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.router.RecordSuccess(route.Channel.ID)
+
+	// Agentic loop: if response has MCP tool calls, dispatch and re-invoke.
+	if h.mcpLoop != nil && resp != nil && len(resp.Choices) > 0 && len(resp.Choices[0].Message.ToolCalls) > 0 {
+		newResp, loopErr := h.mcpLoop.Execute(r.Context(), &req, route.KeyValue, route.Channel.BaseURL)
+		if loopErr != nil {
+			writeError(w, http.StatusInternalServerError, "agentic loop: "+loopErr.Error(), "agentic_error")
+			h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
+			return
+		}
+		resp = newResp
+	}
 
 	// Output guardrails: check response content before returning.
 	if gr := h.checkOutputGuardrails(r, resp); gr != nil {
