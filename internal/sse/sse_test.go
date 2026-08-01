@@ -63,3 +63,75 @@ func TestHeartbeatStopsOnContextCancel(t *testing.T) {
 	// Give the goroutine a tick to exit; test completes regardless.
 	time.Sleep(20 * time.Millisecond)
 }
+
+func TestEventBytes(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, _ := New(rec)
+	if err := w.EventBytes("ping", []byte("hello world")); err != nil {
+		t.Fatalf("eventbytes: %v", err)
+	}
+	out := rec.Body.String()
+	if !strings.Contains(out, "event: ping\n") {
+		t.Fatalf("missing event: %q", out)
+	}
+	if !strings.Contains(out, "data: hello world\n\n") {
+		t.Fatalf("missing data: %q", out)
+	}
+}
+
+func TestEventBytesMultiline(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, _ := New(rec)
+	if err := w.EventBytes("", []byte("a\nb\nc")); err != nil {
+		t.Fatalf("eventbytes: %v", err)
+	}
+	out := rec.Body.String()
+	if !strings.Contains(out, "data: a\ndata: b\ndata: c\n\n") {
+		t.Fatalf("multiline: %q", out)
+	}
+}
+
+func TestEventBytesEmptyEvent(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, _ := New(rec)
+	if err := w.EventBytes("", []byte("data only")); err != nil {
+		t.Fatalf("eventbytes: %v", err)
+	}
+	out := rec.Body.String()
+	if strings.Contains(out, "event:") {
+		t.Fatalf("unexpected event line: %q", out)
+	}
+	if !strings.Contains(out, "data: data only\n\n") {
+		t.Fatalf("missing data: %q", out)
+	}
+}
+
+func TestEventJSON(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, _ := New(rec)
+	if err := w.EventJSON("log", map[string]any{"id": 42, "msg": "hi"}); err != nil {
+		t.Fatalf("eventjson: %v", err)
+	}
+	out := rec.Body.String()
+	if !strings.Contains(out, "event: log\n") {
+		t.Fatalf("missing event: %q", out)
+	}
+	if !strings.Contains(out, `"id":42`) || !strings.Contains(out, `"msg":"hi"`) {
+		t.Fatalf("missing json data: %q", out)
+	}
+}
+
+func TestEventJSONEmptyEvent(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, _ := New(rec)
+	if err := w.EventJSON("", []int{1, 2, 3}); err != nil {
+		t.Fatalf("eventjson: %v", err)
+	}
+	out := rec.Body.String()
+	if strings.Contains(out, "event:") {
+		t.Fatalf("unexpected event line: %q", out)
+	}
+	if !strings.Contains(out, "data: [1,2,3]\n\n") {
+		t.Fatalf("missing data: %q", out)
+	}
+}

@@ -154,6 +154,7 @@ func (a *AgenticLoop) dispatchToolCalls(ctx context.Context, calls []provider.To
 			executions = append(executions, MCPCall{
 				ToolCallID: tc.ID,
 				Name:       tc.Function.Name,
+				ServerName: rec.ServerName,
 				Err:        fmt.Errorf("mcp client unavailable: %v", err),
 			})
 			continue
@@ -172,6 +173,7 @@ func (a *AgenticLoop) dispatchToolCalls(ctx context.Context, calls []provider.To
 			executions = append(executions, MCPCall{
 				ToolCallID: tc.ID,
 				Name:       tc.Function.Name,
+				ServerName: rec.ServerName,
 				Err:        callErr,
 			})
 			continue
