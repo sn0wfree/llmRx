@@ -359,13 +359,19 @@ internal/mcp/registry_test.go
 
 ## 15. Rollout
 
-1. Land `internal/mcp/protocol.go` + `client.go` + `server.go`.
-2. Land `internal/mcp/registry.go` + admin endpoints + UI.
-3. Land agentic loop integration (single-shot, no streaming).
-4. Land streaming-event bridge for tool-call loops.
-5. Land per-tool spend tracking.
-6. README + CHANGELOG.
+1. Land `internal/mcp/protocol.go` + `client.go` + `server.go`. ✅
+2. Land `internal/mcp/registry.go` + admin endpoints + UI. ✅
+3. Land agentic loop integration (single-shot, no streaming). ✅
+4. Land streaming-event bridge for tool-call loops. ✅
+   (`event: agentic-loop` + 二次 `StreamChat` 透传最终答案)
+5. Land per-tool spend tracking. ✅
+   (`Log.Endpoint='mcp'` + `Units` + `EmitMCP` + RPM 记账)
+6. README + CHANGELOG. ✅
 7. Optional: stdio transport (P11.5).
+
+**Status (2026-08-02)**: P11 核心 + 收尾全部落地。MCP Web UI 在
+`/admin/mcp-servers`（含按工具定价），Dashboard 含 24h MCP 调用/花费
+卡片；`internal/mcp` 覆盖率 77.1%，`internal/sse` 81.8%。
 
 ## 16. Risks
 
@@ -375,4 +381,4 @@ internal/mcp/registry_test.go
 | Agentic loop runs forever | Hard cap 10 iterations; surface as error frame |
 | MCP server returns huge tool result | Truncate at 100 KB; flag in log |
 | OAuth flow needed for some servers | Park to P11.5; basic bearer is enough for v1 |
-| Streaming + tool calls interaction | Document restriction; v1 supports non-streaming tools only |
+| Streaming + tool calls interaction | ✅ 已实现：累积 delta.tool_calls → `event: agentic-loop` → 二次流式透传 |

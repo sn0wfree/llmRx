@@ -189,6 +189,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `.env.example` — expanded to 12 documented variables (was 3);
   grouped by section with explicit dev-only / production markers.
 
+#### P11 MCP 网关 + P13 guardrails 管理端（收尾）
+- **MCP 按工具花费追踪**：`model.Log` 新增 `Endpoint`（`'mcp'`）+
+  `Units` 字段；logstore 新增 `endpoint`/`units` 列 + 存量按日文件
+  ALTER 迁移；`QueryFilter` 支持按 `endpoint` 过滤。AgenticLoop 每次
+  成功工具调用按 `mcp_tool_pricing` 计价，`EmitMCP` 每调用写一条
+  `endpoint='mcp'` 日志行（Model=服务器名，RPM 记账、TPM 不计、
+  plan 预算 gate 复用 `ErrBudgetExceeded`）。
+- **MCP Web UI**：`Settings → MCP 服务器`（列表/添加/删除/刷新工具/
+  按工具定价编辑）+ Dashboard 新增 MCP 调用/花费卡片（24h）。
+- **流式 agentic 桥接**：`stream=true` + MCP 工具时累积
+  `delta.tool_calls`（按 Index 归并），`finish_reason=tool_calls`
+  时发 `event: agentic-loop` 帧，`AgenticLoop.ResolveTools` 解析工具
+  后二次 `StreamChat` 透传最终答案，客户端保持 token 级流式。
+- **Guardrails 管理端**：admin CRUD（`GET/POST /guardrails`、
+  `PUT/DELETE /guardrails/{id}`、`GET /guardrails/events`）+ Web UI
+  （`Settings → 安全规则`，正则/关键词/长度三类规则，写后
+  `engine.Reload()` 即时生效）。
+- **覆盖率**：`internal/mcp` 46% → 77.1%（目标 ≥70%），
+  `internal/sse` 44.3% → 81.8%。
+
 #### CI
 - `test.yml` coverage gate raised from 55% → 60% → still ~65% after
   hardening. New optional step builds the L4 cdylib when `cargo`

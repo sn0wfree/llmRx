@@ -371,8 +371,9 @@ go test -v ./internal/admin ./internal/api
 | Passthrough B | ✅ | cache_control 翻译 + cached_tokens 计费折扣 |
 | Hardening | ✅ | 多租户强制（RPM/TPM + 白名单 + per-token/plan spend）+ 热重载（UpdateToken + /reload） |
 | Config Webification | ✅ | 运行时配置线程安全 + 持久化 + P-B 热重载 + Plans CRUD + Channel protocol 透传 + Effective 只读视图 |
-| **P8** | ⏳ | 响应缓存（精确 + 语义；Memory / SQLite / Redis backends） |
-| **P9** | ⏳ | 多模态端点（`/v1/images/generations` + `/v1/rerank` + `/v1/audio/*`） |
-| **P10** | ⏳ | OpenTelemetry + Prometheus `/metrics` |
-| **P11** | ⏳ | MCP gateway（server + client 模式） |
+| **P8** | ✅ | 响应缓存（Memory + SQLite backends + 管理端 + Dashboard 卡片） |
+| **P9** | ✅ | 多模态端点（`/v1/images/generations` + `/v1/rerank` + `/v1/audio/*`） |
+| **P10** | ✅ | OpenTelemetry + Prometheus `/metrics` |
+| **P11** | ✅ | MCP gateway（server + client 模式 + 按工具花费 + Web UI + 流式 agentic 桥接） |
+| **P13** | ✅ | 自动重试 / 100+ provider / guardrails（引擎 + 管理端）/ Prometheus / Helm chart |
 | P12+ | ⏳ | 集群模式 / 多节点同步 |
