@@ -5,7 +5,9 @@
 package sse
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -57,6 +59,91 @@ func (s *Writer) Event(event, data string) error {
 	}
 	b.WriteByte('\n')
 	if _, err := s.w.Write([]byte(b.String())); err != nil {
+		return err
+	}
+	if s.fl != nil {
+		s.fl.Flush()
+	}
+	return nil
+}
+
+// EventBytes writes an SSE frame using a caller-supplied payload.
+// Use this when the payload is already JSON-encoded []byte from a
+// shared encoding so the SSE layer doesn't need to allocate a Go
+// string or split on '\n' boundaries (SSE only requires splitting
+// for true multi-line data; a typical JSON log entry contains no
+// raw newlines). Multi-line payloads are still split per spec.
+func (s *Writer) EventBytes(event string, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if event != "" {
+		if _, err := s.w.Write([]byte("event: ")); err != nil {
+			return err
+		}
+		if _, err := s.w.Write([]byte(event)); err != nil {
+			return err
+		}
+		if _, err := s.w.Write([]byte("\n")); err != nil {
+			return err
+		}
+	}
+	// Per SSE spec, '\n' inside the data field must be expressed as
+	// multiple "data: " lines. JSON never contains a literal '\n',
+	// but we handle it anyway to stay spec-correct.
+	for start := 0; start < len(data); {
+		idx := bytes.IndexByte(data[start:], '\n')
+		var line []byte
+		if idx < 0 {
+			line = data[start:]
+			start = len(data)
+		} else {
+			line = data[start : start+idx]
+			start += idx + 1
+		}
+		if _, err := s.w.Write([]byte("data: ")); err != nil {
+			return err
+		}
+		if _, err := s.w.Write(line); err != nil {
+			return err
+		}
+		if _, err := s.w.Write([]byte("\n")); err != nil {
+			return err
+		}
+	}
+	if _, err := s.w.Write([]byte("\n")); err != nil {
+		return err
+	}
+	if s.fl != nil {
+		s.fl.Flush()
+	}
+	return nil
+}
+
+// EventJSON encodes value directly into the SSE writer and frames
+// it as an event. Saves one string allocation + one intermediate
+// []byte (compared to json.Marshal + Event) on the hot log-stream
+// path.
+func (s *Writer) EventJSON(event string, value any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if event != "" {
+		if _, err := s.w.Write([]byte("event: ")); err != nil {
+			return err
+		}
+		if _, err := s.w.Write([]byte(event)); err != nil {
+			return err
+		}
+		if _, err := s.w.Write([]byte("\n")); err != nil {
+			return err
+		}
+	}
+	if _, err := s.w.Write([]byte("data: ")); err != nil {
+		return err
+	}
+	if err := json.NewEncoder(s.w).Encode(value); err != nil {
+		return err
+	}
+	if _, err := s.w.Write([]byte("\n")); err != nil {
 		return err
 	}
 	if s.fl != nil {

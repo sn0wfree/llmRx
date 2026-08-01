@@ -115,9 +115,12 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req *ChatRequest, apiKey, 
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, resp.StatusCode, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(raw))
+		return nil, resp.StatusCode, fmt.Errorf("upstream %d: %s", resp.StatusCode, readErrorSnippet(resp.Body))
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, err
 	}
 	var ar anthropicResponse
 	if err := json.Unmarshal(raw, &ar); err != nil {
@@ -244,7 +247,6 @@ func (p *AnthropicProvider) StreamChat(ctx context.Context, req *ChatRequest, ap
 		var eventType string
 		buf := make([]byte, 0, 4096)
 		tmp := make([]byte, 4096)
-		acc := strings.Builder{}
 		for {
 			n, err := resp.Body.Read(tmp)
 			if n > 0 {
@@ -273,7 +275,6 @@ func (p *AnthropicProvider) StreamChat(ctx context.Context, req *ChatRequest, ap
 							} `json:"delta"`
 						}
 						if json.Unmarshal([]byte(payload), &d) == nil {
-							acc.WriteString(d.Delta.Text)
 							chunk := StreamChunk{
 								Object:  "chat.completion.chunk",
 								Choices: []StreamChoice{{Index: 0, Delta: Message{Content: d.Delta.Text}}},

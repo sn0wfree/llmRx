@@ -1014,11 +1014,7 @@ func (h *Handler) StreamLogs(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			payload, err := json.Marshal(entry)
-			if err != nil {
-				continue
-			}
-			if err := w2.Event("log", string(payload)); err != nil {
+			if err := w2.EventJSON("log", entry); err != nil {
 				return
 			}
 		}

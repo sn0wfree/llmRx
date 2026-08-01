@@ -426,7 +426,20 @@ func (d *SQLiteDriver) QueryAcross(filter QueryFilter, days []string) ([]model.L
 	}
 	defer rows.Close()
 
-	out := make([]model.Log, 0, limit)
+	// Size the result slice from the actual remaining rows when
+	// possible — a sparse page (e.g. limit=500 on a query that
+	// returns 1 row) used to over-allocate ~70 KiB of unused
+	// model.Log backing storage. total >= offset is guaranteed
+	// by the caller; remaining can be 0 (offset beyond end).
+	remaining := total - int64(offset)
+	if remaining < 0 {
+		remaining = 0
+	}
+	cap := int64(limit)
+	if remaining < cap {
+		cap = remaining
+	}
+	out := make([]model.Log, 0, cap)
 	for rows.Next() {
 		var l model.Log
 		var created int64

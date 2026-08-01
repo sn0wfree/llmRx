@@ -38,6 +38,14 @@ type ServerConfig struct {
 	// (uses chi global 120s timeout).
 	RequestTimeoutSec int `yaml:"request_timeout_sec"`
 
+	// RequestBodyMaxBytes caps the size of an incoming JSON /
+	// multipart request body. Larger bodies get a 413 from
+	// http.MaxBytesReader before the json.Decoder can grow
+	// unbounded. Default 64 MiB; multimodal OpenAI requests
+	// (with embedded base64 images) should fit well under this.
+	// Set to 0 to disable the cap.
+	RequestBodyMaxBytes int64 `yaml:"request_body_max_bytes"`
+
 	// MaxRetries is the maximum number of retry attempts for
 	// failed upstream calls (5xx, timeout, 429). Default 0
 	// (retries disabled). LiteLLM/Portkey default to 5.

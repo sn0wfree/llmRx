@@ -33,8 +33,22 @@ import (
 	proberpkg "github.com/sn0wfree/llmRx/internal/prober"
 )
 
+// chunkBufMaxBytes caps the buffer we return to the pool. A typical
+// SSE chunk is well under 4 KiB; a stray 10 MB streaming response
+// should not stay pinned in the pool until the next GC.
+const chunkBufMaxBytes = 64 * 1024
+
 var chunkBufPool = sync.Pool{
 	New: func() any { return new(bytes.Buffer) },
+}
+
+// putChunkBuf returns buf to the pool only if its capacity stays
+// under the cap. Otherwise the buffer is dropped, allowing the GC
+// to reclaim the oversized memory.
+func putChunkBuf(buf *bytes.Buffer) {
+	if buf.Cap() <= chunkBufMaxBytes {
+		chunkBufPool.Put(buf)
+	}
 }
 
 var (
@@ -331,9 +345,54 @@ func writeJSON(w http.ResponseWriter, data interface{}) {
 	_ = json.NewEncoder(w).Encode(data)
 }
 
+// defaultRequestBodyMaxBytes is the fallback cap applied by
+// bodyLimit() when the operator did not configure
+// request_body_max_bytes. 64 MiB comfortably fits multimodal
+// OpenAI requests with embedded base64 images.
+const defaultRequestBodyMaxBytes int64 = 64 * 1024 * 1024
+
+// bodyLimit returns the effective MaxBytesReader cap for the
+// current Handler. 0 disables the cap (the decoder can then grow
+// unbounded — almost always a bug).
+func (h *Handler) bodyLimit() int64 {
+	if h.cfg != nil && h.cfg.Server.RequestBodyMaxBytes > 0 {
+		return h.cfg.Server.RequestBodyMaxBytes
+	}
+	return defaultRequestBodyMaxBytes
+}
+
+// decodeJSONBody wraps r.Body in MaxBytesReader (so an over-sized
+// upload is rejected with 413 before the decoder allocates) and
+// decodes into out. On *http.MaxBytesError the caller sees a
+// distinct sentinel via errors.As so it can produce the right
+// response shape.
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, limit int64, out any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	return json.NewDecoder(r.Body).Decode(out)
+}
+
+// isBodyTooLarge reports whether err came from MaxBytesReader
+// refusing to read past the limit.
+//
+// Go 1.19+ exposes the limit as *http.MaxBytesError; Go 1.18 (the
+// minimum version declared by go.mod) returns a plain error whose
+// message matches the canonical stdlib string. We match on the
+// message because that string is part of the documented stdlib
+// contract for both versions.
+func isBodyTooLarge(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "http: request body too large")
+}
+
 func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var req provider.ChatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, h.bodyLimit(), &req); err != nil {
+		if isBodyTooLarge(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds limit", "body_too_large")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error(), "invalid_body")
 		return
 	}
@@ -851,7 +910,11 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 // ChatCompletions but proxies an EmbeddingsRequest instead.
 func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 	var req provider.EmbeddingsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, h.bodyLimit(), &req); err != nil {
+		if isBodyTooLarge(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds limit", "body_too_large")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error(), "invalid_body")
 		return
 	}
@@ -912,7 +975,11 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 // and forwards to the upstream's image-generation endpoint.
 func (h *Handler) ImageGenerations(w http.ResponseWriter, r *http.Request) {
 	var req provider.ImagesRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, h.bodyLimit(), &req); err != nil {
+		if isBodyTooLarge(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds limit", "body_too_large")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error(), "invalid_body")
 		return
 	}
@@ -964,7 +1031,11 @@ func (h *Handler) ImageGenerations(w http.ResponseWriter, r *http.Request) {
 // (Content-Type from upstream, typically audio/mpeg).
 func (h *Handler) AudioSpeech(w http.ResponseWriter, r *http.Request) {
 	var req provider.AudioSpeechRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, h.bodyLimit(), &req); err != nil {
+		if isBodyTooLarge(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds limit", "body_too_large")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error(), "invalid_body")
 		return
 	}
@@ -1022,7 +1093,18 @@ func (h *Handler) AudioSpeech(w http.ResponseWriter, r *http.Request) {
 // AudioTranscriptions handles POST /v1/audio/transcriptions. Expects
 // multipart/form-data with a 'file' field and 'model' field.
 func (h *Handler) AudioTranscriptions(w http.ResponseWriter, r *http.Request) {
+	// Cap the multipart upload so a malicious caller can't stream
+	// gigabytes into the temp spool. ParseMultipartForm keeps its
+	// own 32 MiB in-memory ceiling; MaxBytesReader bounds total
+	// bytes (in-memory + temp file).
+	if limit := h.bodyLimit(); limit > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
+	}
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		if isBodyTooLarge(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds limit", "body_too_large")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid multipart form: "+err.Error(), "invalid_body")
 		return
 	}
@@ -1090,7 +1172,11 @@ func (h *Handler) AudioTranscriptions(w http.ResponseWriter, r *http.Request) {
 // Rerank handles POST /v1/rerank. Cohere-compatible.
 func (h *Handler) Rerank(w http.ResponseWriter, r *http.Request) {
 	var req provider.RerankRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, h.bodyLimit(), &req); err != nil {
+		if isBodyTooLarge(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds limit", "body_too_large")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error(), "invalid_body")
 		return
 	}
@@ -1295,22 +1381,21 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 			}
 			buf := chunkBufPool.Get().(*bytes.Buffer)
 			buf.Reset()
+			buf.Write(dataPrefix)
 			if err := json.NewEncoder(buf).Encode(ev.Chunk); err != nil {
 				buf.Reset()
-				chunkBufPool.Put(buf)
+				putChunkBuf(buf)
 				continue
 			}
-			// Trim trailing newline from json.Encoder.
-			payload := buf.Bytes()
-			if len(payload) > 0 && payload[len(payload)-1] == '\n' {
-				payload = payload[:len(payload)-1]
+			// json.Encoder.Encode appends a trailing '\n'; the SSE
+			// frame needs "\n\n" so add one more.
+			if b := buf.Bytes(); len(b) > 0 && b[len(b)-1] == '\n' {
+				buf.WriteByte('\n')
+			} else {
+				buf.Write(dataSuffix)
 			}
-			buf.Reset()
-			buf.Write(dataPrefix)
-			buf.Write(payload)
-			buf.Write(dataSuffix)
 			n, werr := w.Write(buf.Bytes())
-			chunkBufPool.Put(buf)
+			putChunkBuf(buf)
 			bytesSent += int64(n)
 			if werr != nil {
 				cancel()

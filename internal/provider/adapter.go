@@ -490,13 +490,16 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req *ChatRequest, apiKey stri
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		// Only read a bounded snippet for the error message; a
+		// hostile upstream returning a multi-MB HTML error page
+		// shouldn't blow up the gateway.
+		return nil, resp.StatusCode, fmt.Errorf("upstream %d: %s", resp.StatusCode, readErrorSnippet(resp.Body))
+	}
+
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, resp.StatusCode, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var chatResp ChatResponse
@@ -542,22 +545,29 @@ func (p *OpenAIProvider) StreamChat(ctx context.Context, req *ChatRequest, apiKe
 		defer close(out)
 		defer resp.Body.Close()
 		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-		var data strings.Builder
+		// OpenAI streaming chunks are typically a few hundred bytes
+		// (a few choices + maybe a usage block). 4 KiB initial +
+		// 64 KiB ceiling fits any normal chunk while keeping the
+		// per-stream allocation small.
+		scanner.Buffer(make([]byte, 4*1024), 64*1024)
+		// Pool the per-event accumulator so we don't churn a
+		// strings.Builder for every SSE event. Reset() reuses the
+		// backing storage.
+		var dataBuf bytes.Buffer
 		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
+			raw := scanner.Bytes()
+			if len(raw) == 0 {
 				// Dispatch the accumulated data block.
-				if data.Len() == 0 {
+				if dataBuf.Len() == 0 {
 					continue
 				}
-				payload := strings.TrimSpace(data.String())
-				data.Reset()
-				if payload == "[DONE]" {
+				payload := bytes.TrimSpace(dataBuf.Bytes())
+				dataBuf.Reset()
+				if bytes.Equal(payload, []byte("[DONE]")) {
 					return
 				}
 				var chunk StreamChunk
-				if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+				if err := json.Unmarshal(payload, &chunk); err != nil {
 					// Skip malformed lines but keep going.
 					continue
 				}
@@ -569,8 +579,8 @@ func (p *OpenAIProvider) StreamChat(ctx context.Context, req *ChatRequest, apiKe
 				}
 				continue
 			}
-			if strings.HasPrefix(line, "data:") {
-				data.WriteString(strings.TrimPrefix(line, "data:"))
+			if bytes.HasPrefix(raw, []byte("data:")) {
+				dataBuf.Write(raw[5:])
 			}
 			// Other SSE lines (event:, id:, retry:, comments) are
 			// ignored — we only care about the data payload.
@@ -646,13 +656,13 @@ func (p *OpenAIProvider) Embeddings(ctx context.Context, req *EmbeddingsRequest,
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, resp.StatusCode, fmt.Errorf("upstream %d: %s", resp.StatusCode, readErrorSnippet(resp.Body))
+	}
+
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, resp.StatusCode, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var embResp EmbeddingsResponse
@@ -680,12 +690,12 @@ func (p *OpenAIProvider) Images(ctx context.Context, req *ImagesRequest, apiKey,
 		return nil, 0, fmt.Errorf("do request: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, resp.StatusCode, fmt.Errorf("upstream %d: %s", resp.StatusCode, readErrorSnippet(resp.Body))
+	}
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("read response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, resp.StatusCode, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(respBody))
 	}
 	var imgResp ImagesResponse
 	if err := json.Unmarshal(respBody, &imgResp); err != nil {
@@ -761,12 +771,12 @@ func (p *OpenAIProvider) Transcription(ctx context.Context, req *AudioTranscript
 		return nil, 0, fmt.Errorf("do request: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, resp.StatusCode, fmt.Errorf("upstream %d: %s", resp.StatusCode, readErrorSnippet(resp.Body))
+	}
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("read response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, resp.StatusCode, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(respBody))
 	}
 	var tr AudioTranscriptionResponse
 	if err := json.Unmarshal(respBody, &tr); err != nil {
@@ -792,12 +802,12 @@ func (p *OpenAIProvider) Rerank(ctx context.Context, req *RerankRequest, apiKey,
 		return nil, 0, fmt.Errorf("do request: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, resp.StatusCode, fmt.Errorf("upstream %d: %s", resp.StatusCode, readErrorSnippet(resp.Body))
+	}
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("read response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, resp.StatusCode, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(respBody))
 	}
 	var rr RerankResponse
 	if err := json.Unmarshal(respBody, &rr); err != nil {

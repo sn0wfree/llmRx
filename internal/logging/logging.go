@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"sync"
 	"time"
 )
@@ -147,6 +146,16 @@ type Field struct {
 // F is a convenience constructor for Field.
 func F(key string, value any) Field { return Field{Key: key, Value: value} }
 
+// bufPoolMax caps the buffer we return to the pool. A typical log
+// line is well under 4 KiB; a stray 10 MiB dump should not stay
+// pinned in the pool until the next GC.
+const bufPoolMax = 16 * 1024
+
+// mapPoolMax caps the number of pre-sized slots in a returned map.
+// A normal log entry has 5-15 fields; a stray 1000-field record
+// should not poison the pool.
+const mapPoolMax = 64
+
 // Buffer pool to reduce allocations on the hot path.
 var bufPool = sync.Pool{
 	New: func() any {
@@ -159,6 +168,25 @@ var mapPool = sync.Pool{
 	New: func() any {
 		return make(map[string]any, 16)
 	},
+}
+
+// putBuf returns buf to the pool only if its capacity stays
+// under the cap. Oversized buffers are dropped, allowing the GC
+// to reclaim the memory.
+func putBuf(buf *bytes.Buffer) {
+	if buf.Cap() <= bufPoolMax {
+		bufPool.Put(buf)
+	}
+}
+
+// putRecord returns m to the pool only when its bucket count stays
+// reasonable. Pre-sized maps at the high end of normal usage can be
+// returned; pathological oversized records are dropped so they
+// don't permanently bloat the pool.
+func putRecord(m map[string]any) {
+	if len(m) <= mapPoolMax {
+		mapPool.Put(m)
+	}
 }
 
 // log emits a record at the given level.
@@ -188,18 +216,33 @@ func (l *Logger) log(level Level, msg string, fields []Field) {
 	if l.format == FormatText {
 		line = formatText(record)
 	} else {
+		// JSON path: encode into a pooled buffer, write the
+		// bytes directly under the logger lock (no extra string
+		// copy from .String()), then return the buffer.
 		buf := bufPool.Get().(*bytes.Buffer)
 		buf.Reset()
 		enc := json.NewEncoder(buf)
-		enc.Encode(record)
-		line = buf.String()
-		// Trim trailing newline added by json.Encoder.
-		line = strings.TrimRight(line, "\n")
-		bufPool.Put(buf)
+		if err := enc.Encode(record); err != nil {
+			putBuf(buf)
+			putRecord(record)
+			return
+		}
+		// json.Encoder always appends a trailing '\n'; trim it so
+		// Fprintln emits exactly one final newline.
+		b := buf.Bytes()
+		if n := len(b); n > 0 && b[n-1] == '\n' {
+			b = b[:n-1]
+		}
+		l.mu.Lock()
+		_, _ = l.out.Write(b)
+		_, _ = l.out.Write([]byte("\n"))
+		l.mu.Unlock()
+		putBuf(buf)
+		putRecord(record)
+		return
 	}
 
-	// Return map to pool.
-	mapPool.Put(record)
+	putRecord(record)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()

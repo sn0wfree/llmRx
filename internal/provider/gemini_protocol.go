@@ -108,9 +108,12 @@ func (p *GeminiProvider) Chat(ctx context.Context, req *ChatRequest, apiKey, bas
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, resp.StatusCode, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(raw))
+		return nil, resp.StatusCode, fmt.Errorf("upstream %d: %s", resp.StatusCode, readErrorSnippet(resp.Body))
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, err
 	}
 	var gr geminiResponse
 	if err := json.Unmarshal(raw, &gr); err != nil {
