@@ -81,6 +81,7 @@ type ScriptedStore struct {
 	// Raw
 	RawQueryRowFunc func(query string, args ...any) *sql.Row
 	RawQueryFunc    func(query string, args ...any) (*sql.Rows, error)
+	RawDBFunc       func() *sql.DB
 
 	// Runtime
 	GetRuntimeSettingsFunc  func() ([]byte, error)
@@ -419,6 +420,12 @@ func (s *ScriptedStore) RawQuery(query string, args ...any) (*sql.Rows, error) {
 		return s.RawQueryFunc(query, args...)
 	}
 	return s.underlying.RawQuery(query, args...)
+}
+func (s *ScriptedStore) RawDB() *sql.DB {
+	if s.RawDBFunc != nil {
+		return s.RawDBFunc()
+	}
+	return s.underlying.RawDB()
 }
 
 // --- Runtime ---

@@ -15,6 +15,7 @@ import (
 
 	"github.com/sn0wfree/llmRx/internal/auth"
 	"github.com/sn0wfree/llmRx/internal/broker"
+	"github.com/sn0wfree/llmRx/internal/cache"
 	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
@@ -41,6 +42,7 @@ type Handler struct {
 	keyFile    string
 	sessionTTL time.Duration
 	alertMgr   AlertReloader
+	responseCache cache.Cache
 }
 
 // AlertReloader is the narrow contract the admin /reload handler
@@ -65,6 +67,9 @@ func (h *Handler) SetStore(st store.Store) { h.store = st }
 // Accepts the AlertReloader interface to keep the import graph
 // acyclic.
 func (h *Handler) SetAlertManager(m AlertReloader) { h.alertMgr = m }
+
+// SetCache wires the response cache for stats and purge endpoints.
+func (h *Handler) SetCache(c cache.Cache) { h.responseCache = c }
 
 // SetSessionTTL overrides the default 24h session lifetime.
 func (h *Handler) SetSessionTTL(d time.Duration) { h.sessionTTL = d }
@@ -128,6 +133,8 @@ func (h *Handler) Routes() http.Handler {
 		r.Delete("/plans/{id}", h.DeletePlan)
 		r.Get("/config", h.GetConfig)
 		r.Get("/effective", h.EffectiveConfig)
+		r.Get("/cache/stats", h.CacheStats)
+		r.Post("/cache/purge", h.CachePurge)
 	})
 
 	// Root-only high-impact operations: user lifecycle, runtime
@@ -282,6 +289,38 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 		"real_cost_usd":     stats.RealCostUSD,
 		"billed_cost_usd":   stats.BilledCostUSD,
 	})
+}
+
+// CacheStats returns the response cache statistics.
+func (h *Handler) CacheStats(w http.ResponseWriter, r *http.Request) {
+	if h.responseCache == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"size": 0, "hits": 0, "misses": 0, "hit_rate": 0})
+		return
+	}
+	stats, err := h.responseCache.Stats(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"size":     stats.Size,
+		"hits":     stats.Hits,
+		"misses":   stats.Misses,
+		"hit_rate": stats.HitRate,
+	})
+}
+
+// CachePurge clears all cached responses.
+func (h *Handler) CachePurge(w http.ResponseWriter, r *http.Request) {
+	if h.responseCache == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+		return
+	}
+	if err := h.responseCache.Purge(r.Context()); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
 // ---------- channels ----------

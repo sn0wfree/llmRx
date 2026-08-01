@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/sn0wfree/llmRx/internal/broker"
+	"github.com/sn0wfree/llmRx/internal/cache"
 	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/guardrail"
 	"github.com/sn0wfree/llmRx/internal/logging"
@@ -98,6 +99,11 @@ type Handler struct {
 	// Extracted components for single responsibility.
 	costCalc *CostCalculator
 	emitter  *LogEmitter
+
+	// responseCache caches LLM responses for deterministic
+	// requests (temperature=0). Set via SetCache; nil means
+	// caching is disabled.
+	responseCache cache.Cache
 }
 
 func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, ls *logstore.Manager, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Handler {
@@ -135,6 +141,9 @@ func (h *Handler) SetStore(st store.Store) { h.store = st }
 
 // Store returns the wired store; tests use it to assert log writes.
 func (h *Handler) Store() store.Store { return h.store }
+
+// SetCache wires the response cache. Nil means caching is disabled.
+func (h *Handler) SetCache(c cache.Cache) { h.responseCache = c }
 
 // lookupTokenInfo extracts the TokenInfo placed in the request
 // context by middleware.Token. Returns ok=false when the request
@@ -345,6 +354,31 @@ func writeJSON(w http.ResponseWriter, data interface{}) {
 	_ = json.NewEncoder(w).Encode(data)
 }
 
+// readBody reads the full request body, capped at limit bytes.
+// The body is replaced with a fresh reader so downstream code
+// can still read from r.Body if needed.
+func readBody(r *http.Request, limit int64) ([]byte, error) {
+	r.Body = http.MaxBytesReader(nil, r.Body, limit)
+	b, err := io.ReadAll(r.Body)
+	r.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	r.Body = io.NopCloser(bytes.NewReader(b))
+	return b, nil
+}
+
+// mustMarshalJSON marshals v to JSON, panicking on error. Used
+// in the cache path where the response is guaranteed to marshal
+// successfully since it came from the upstream.
+func mustMarshalJSON(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic("api: mustMarshalJSON: " + err.Error())
+	}
+	return b
+}
+
 // defaultRequestBodyMaxBytes is the fallback cap applied by
 // bodyLimit() when the operator did not configure
 // request_body_max_bytes. 64 MiB comfortably fits multimodal
@@ -387,12 +421,20 @@ func isBodyTooLarge(err error) bool {
 }
 
 func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
-	var req provider.ChatRequest
-	if err := decodeJSONBody(w, r, h.bodyLimit(), &req); err != nil {
+	// Read raw body for cache control parsing before decoding.
+	bodyLimit := h.bodyLimit()
+	rawBody, err := readBody(r, bodyLimit)
+	if err != nil {
 		if isBodyTooLarge(err) {
 			writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds limit", "body_too_large")
 			return
 		}
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error(), "invalid_body")
+		return
+	}
+
+	var req provider.ChatRequest
+	if err := json.Unmarshal(rawBody, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error(), "invalid_body")
 		return
 	}
@@ -403,7 +445,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Per-token model whitelist + IP whitelist enforcement.
+	var tokenID int64
 	if info, ok := lookupTokenInfo(r.Context()); ok {
+		tokenID = info.ID
 		if !info.HasModelAccess(req.Model) {
 			logging.Warn("api.model_denied",
 				logging.F("model", req.Model),
@@ -454,6 +498,54 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cache lookup: check cache before routing (non-streaming).
+	if h.responseCache != nil && !req.Stream {
+		cc := cache.ParseCacheControl(rawBody)
+		if cc == nil || !cc.NoStore {
+			ckey, ckeyErr := cache.Key(&req)
+			if ckeyErr == nil {
+				if cc != nil && cc.NoCache {
+					// no-cache: skip read, but still write below.
+				} else {
+					if cached, hit, _ := h.responseCache.Get(r.Context(), ckey); hit {
+						w.Header().Set("X-LlmRx-Cache", "HIT")
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(cached.StatusCode)
+						_, _ = w.Write(cached.Body)
+						return
+					}
+				}
+			}
+		}
+	}
+
+	// Streaming cache lookup: check cache before streaming.
+	if h.responseCache != nil && req.Stream {
+		cc := cache.ParseCacheControl(rawBody)
+		if cc == nil || !cc.NoStore {
+			ckey, ckeyErr := cache.Key(&req)
+			if ckeyErr == nil {
+				if cc != nil && cc.NoCache {
+					// no-cache: skip read, but still write below.
+				} else {
+					if cached, hit, _ := h.responseCache.Get(r.Context(), ckey); hit {
+						w.Header().Set("X-LlmRx-Cache", "HIT")
+						w.Header().Set("Content-Type", "text/event-stream")
+						w.Header().Set("Cache-Control", "no-cache")
+						w.Header().Set("Connection", "keep-alive")
+						w.Header().Set("X-Accel-Buffering", "no")
+						w.WriteHeader(http.StatusOK)
+						_, _ = w.Write(cached.Body)
+						if f, ok := w.(http.Flusher); ok {
+							f.Flush()
+						}
+						return
+					}
+				}
+			}
+		}
+	}
+
 	if req.Stream {
 		h.streamChatCompletions(w, r, &req)
 		return
@@ -470,7 +562,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	resp, statusCode, err := prov.Chat(r.Context(), &req, route.KeyValue, route.Channel.BaseURL)
 	duration := time.Since(start).Milliseconds()
 
-	tokenID := lookupTokenID(r.Context(), h.store)
+	if tokenID == 0 {
+		tokenID = lookupTokenID(r.Context(), h.store)
+	}
 
 	if err != nil {
 		h.router.RecordFailure(route.Channel.ID)
@@ -486,6 +580,26 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if gr := h.checkOutputGuardrails(r, resp); gr != nil {
 		writeError(w, http.StatusUnprocessableEntity, gr.Message, "guardrail_violated")
 		return
+	}
+
+	// Cache the successful response.
+	if h.responseCache != nil {
+		cc := cache.ParseCacheControl(rawBody)
+		if cc == nil || !cc.NoStore {
+			ckey, ckeyErr := cache.Key(&req)
+			if ckeyErr == nil {
+				ttl := time.Duration(h.cfg.Server.CacheTTLSeconds) * time.Second
+				entry := &cache.Entry{
+					Key:        ckey,
+					StatusCode: http.StatusOK,
+					Body:       mustMarshalJSON(resp),
+					Usage:      &resp.Usage,
+					CostUSD:    h.costCalc.RealCost(route.Channel, resp.Usage),
+					ChannelID:  route.Channel.ID,
+				}
+				_ = h.responseCache.Set(r.Context(), entry, ttl)
+			}
+		}
 	}
 
 	h.emitLog(r.Context(), tokenID, req.Model, route, &resp.Usage, duration, statusCode, false, h.clientIP(r))
@@ -1341,10 +1455,13 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	var usage *provider.Usage
-	flushed := 0
-	bytesSent := int64(0)
-	var contentBuilder strings.Builder
+	var (
+		usage           *provider.Usage
+		flushed         = 0
+		bytesSent       = int64(0)
+		contentBuilder  strings.Builder
+		streamBuf       bytes.Buffer
+	)
 	for {
 		select {
 		case <-ctx.Done():
@@ -1394,7 +1511,9 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 			} else {
 				buf.Write(dataSuffix)
 			}
-			n, werr := w.Write(buf.Bytes())
+			chunkBytes := buf.Bytes()
+			streamBuf.Write(chunkBytes)
+			n, werr := w.Write(chunkBytes)
 			putChunkBuf(buf)
 			bytesSent += int64(n)
 			if werr != nil {
@@ -1428,11 +1547,46 @@ done:
 			return
 		}
 	}
+	streamBuf.Write(donePayload)
 	w.Write(donePayload)
 	flusher.Flush()
 	h.router.RecordSuccess(route.Channel.ID)
+	h.tryCacheStream(r.Context(), req, route, usage, streamBuf.Bytes())
 	h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
 		time.Since(start).Milliseconds(), http.StatusOK, false, h.clientIP(r))
+}
+
+// tryCacheStream attempts to cache the accumulated SSE stream body.
+// Errors are logged but not returned — the stream has already been
+// delivered to the client.
+func (h *Handler) tryCacheStream(ctx context.Context, req *provider.ChatRequest, route *router.RouteResult, usage *provider.Usage, body []byte) {
+	if h.responseCache == nil {
+		return
+	}
+	maxBody := h.cfg.Server.CacheMaxBodyBytes
+	if maxBody > 0 && len(body) > maxBody {
+		return
+	}
+	ckey, err := cache.Key(req)
+	if err != nil {
+		return
+	}
+	ttl := time.Duration(h.cfg.Server.CacheTTLSeconds) * time.Second
+	var costUSD float64
+	if usage != nil {
+		costUSD = h.costCalc.RealCost(route.Channel, *usage)
+	}
+	entry := &cache.Entry{
+		Key:        ckey,
+		StatusCode: http.StatusOK,
+		Body:       body,
+		Usage:      usage,
+		CostUSD:    costUSD,
+		ChannelID:  route.Channel.ID,
+}
+	if err := h.responseCache.Set(ctx, entry, ttl); err != nil {
+		logging.Warn("cache stream set failed", logging.F("error", err.Error()))
+	}
 }
 
 // streamTimeout returns the per-stream wall-clock cap. Reads the

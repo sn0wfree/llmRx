@@ -92,6 +92,24 @@ type ServerConfig struct {
 	// supported for dev workflows; production deployments
 	// should pin specific origins.
 	CORSAllowedOrigins []string `yaml:"cors_allowed_origins"`
+
+	// CacheBackend selects the response cache backend. Supported
+	// values: "memory", "sqlite", or "" (disabled). Default is
+	// "memory" — fast, no external dependency, lost on restart.
+	CacheBackend string `yaml:"cache_backend"`
+
+	// CacheTTLSeconds is the default per-entry TTL for cached
+	// responses. 0 means no expiry (TTL=0 disables caching
+	// entirely when CacheBackend is also empty).
+	CacheTTLSeconds int `yaml:"cache_ttl_seconds"`
+
+	// CacheMaxItems limits the number of entries in the memory
+	// backend. SQLite backend ignores this field.
+	CacheMaxItems int `yaml:"cache_max_items"`
+
+	// CacheMaxBodyBytes refuses to cache responses whose body
+	// exceeds this size. 0 means no limit.
+	CacheMaxBodyBytes int `yaml:"cache_max_body_bytes"`
 }
 
 type StrategyConfig struct {

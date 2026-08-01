@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sn0wfree/llmRx/internal/auth"
+	"github.com/sn0wfree/llmRx/internal/cache"
 	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/prober"
@@ -22,6 +23,7 @@ type Handler struct {
 	adminH     *webAPIBridge
 	configPath string
 	prober     *prober.Cache
+	responseCache cache.Cache
 }
 
 // New creates a web UI handler. adminAPI provides the legacy
@@ -46,6 +48,8 @@ func (h *Handler) SetLogStore(ls *logstore.Manager) { h.logStore = ls }
 // SetProber injects the channel health probe cache. Must be called
 // before the first health page request or the page shows no data.
 func (h *Handler) SetProber(p *prober.Cache) { h.prober = p }
+
+func (h *Handler) SetCache(c cache.Cache) { h.responseCache = c }
 
 // Routes returns the http handler that serves /admin/*.
 func (h *Handler) Routes() http.Handler {
@@ -310,6 +314,16 @@ func (h *Handler) DashboardPage(w http.ResponseWriter, r *http.Request) {
 	// the guide (and aren't nagged).
 	showQuickStart := len(channels) == 0 || len(tokens) == 0
 
+	var cacheHitRate float64
+	var cacheSize int64
+	if h.responseCache != nil {
+		cs, err := h.responseCache.Stats(r.Context())
+		if err == nil {
+			cacheHitRate = cs.HitRate
+			cacheSize = cs.Size
+		}
+	}
+
 	data := map[string]any{
 		"Body":           "dashboard_body",
 		"Title":          "仪表盘",
@@ -322,6 +336,8 @@ func (h *Handler) DashboardPage(w http.ResponseWriter, r *http.Request) {
 		"ShowQuickStart": showQuickStart,
 		"HasChannels":    len(channels) > 0,
 		"HasTokens":      len(tokens) > 0,
+		"CacheHitRate":   cacheHitRate,
+		"CacheSize":      cacheSize,
 	}
 	if err := h.renderer.Render(w, "dashboard_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

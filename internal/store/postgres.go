@@ -96,6 +96,7 @@ func (p *Postgres) RawQueryRow(query string, args ...any) *sql.Row  { return nil
 func (p *Postgres) RawQuery(query string, args ...any) (*sql.Rows, error) {
 	return nil, errNotImplemented
 }
+func (p *Postgres) RawDB() *sql.DB { return p.db }
 func (p *Postgres) GetRuntimeSettings() ([]byte, error)             { return nil, errNotImplemented }
 func (p *Postgres) SetRuntimeSettings(payload []byte) error         { return errNotImplemented }
 func (p *Postgres) ReencryptAllKeys(oldMgr, newMgr *secrets.Manager) (int, error) {

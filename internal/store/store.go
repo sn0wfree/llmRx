@@ -24,6 +24,7 @@ type Store interface {
 
 	RawQueryRow(query string, args ...any) *sql.Row
 	RawQuery(query string, args ...any) (*sql.Rows, error)
+	RawDB() *sql.DB
 }
 
 type DrainedChannel struct {

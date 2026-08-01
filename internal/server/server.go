@@ -15,6 +15,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/alert"
 	"github.com/sn0wfree/llmRx/internal/api"
 	"github.com/sn0wfree/llmRx/internal/broker"
+	"github.com/sn0wfree/llmRx/internal/cache"
 	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/logstore"
@@ -111,6 +112,16 @@ func (s *Server) corsOptions() cors.Options {
 
 func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defaults) {
 	handler := api.New(s.cfg, s.router, s.pool, s.store, s.logStore, lb, rt)
+
+	// Initialize response cache.
+	responseCache := s.initResponseCache()
+	if responseCache != nil {
+		handler.SetCache(responseCache)
+		logging.Info("response cache initialized",
+			logging.F("backend", s.cfg.Server.CacheBackend),
+			logging.F("ttl_sec", s.cfg.Server.CacheTTLSeconds),
+		)
+	}
 	proberCache := prober.New(prober.Config{}, s.store, s.pool)
 	handler.SetProber(proberCache)
 	s.prober = proberCache
@@ -122,6 +133,9 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	logging.Info("prober: wired into router (real-traffic observer)")
 	adminHandler := admin.New(s.store, s.logStore, s.pool, s.router, s.tokens, lb, rt, s.cfg, s.keyFile)
 	s.admin = adminHandler
+	if responseCache != nil {
+		adminHandler.SetCache(responseCache)
+	}
 
 	// WithLimitsAndOptions (vs. WithLimits) is what actually
 	// fires the BYOK hook when an unknown bearer arrives. If
@@ -149,8 +163,42 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 		fatalf("webui init failed", logging.F("error", err.Error()))
 	}
 	webUI.SetProber(proberCache)
+	if responseCache != nil {
+		webUI.SetCache(responseCache)
+	}
 	s.engine.Mount("/admin", webUI.Routes())
 	s.engine.Mount("/admin/api/v1", adminHandler.Routes())
+}
+
+// initResponseCache creates the cache backend based on the server
+// config. Returns nil when no backend is configured or when the
+// backend type is unknown (logged as a warning).
+func (s *Server) initResponseCache() cache.Cache {
+	switch s.cfg.Server.CacheBackend {
+	case "memory":
+		maxItems := s.cfg.Server.CacheMaxItems
+		if maxItems <= 0 {
+			maxItems = 10000
+		}
+		return cache.NewMemoryCache(maxItems)
+	case "sqlite":
+		rawDB := s.store.RawDB()
+		if rawDB == nil {
+			logging.Warn("cache: sqlite backend requested but store has no RawDB")
+			return nil
+		}
+		c, err := cache.NewSQLiteCache(rawDB)
+		if err != nil {
+			logging.Warn("cache: sqlite backend init failed", logging.F("error", err.Error()))
+			return nil
+		}
+		return c
+	case "":
+		return nil
+	default:
+		logging.Warn("cache: unknown backend", logging.F("backend", s.cfg.Server.CacheBackend))
+		return nil
+	}
 }
 
 // Start blocks running the HTTP listener until ctx is cancelled.

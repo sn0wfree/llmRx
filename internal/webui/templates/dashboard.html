@@ -82,4 +82,10 @@
     <h2 class="text-base font-medium text-gray-900 mb-3">系统状态</h2>
     <p class="text-sm text-gray-500">详细统计请前往 <a href="/admin/analytics" class="text-blue-600 hover:underline">分析</a> 页面，或在 <a href="/admin/effective" class="text-blue-600 hover:underline">运行时配置</a> 查看生效配置。</p>
   </div>
+  <div class="bg-white rounded-lg shadow p-5">
+    <div class="text-sm font-medium text-gray-500">缓存命中率 (24h)</div>
+    <div class="mt-2 text-3xl font-bold text-gray-900">{{printf "%.1f" .CacheHitRate}}%</div>
+    <div class="mt-1 text-xs text-gray-500">缓存条目: {{.CacheSize}}</div>
+    <a href="/admin/effective" class="mt-2 text-xs text-blue-600 hover:underline">缓存配置 →</a>
+  </div>
 </div>{{end}}

@@ -60,8 +60,9 @@ type ScriptedStore struct {
 	GetAlertEventsFunc    func(limit int) ([]model.AlertEvent, error)
 	CreateAlertEventFunc  func(e *model.AlertEvent) error
 	AckAlertEventFunc     func(id int64) error
-	RawQueryRowFunc       func(query string, args ...any) *sql.Row
+RawQueryRowFunc        func(query string, args ...any) *sql.Row
 	RawQueryFunc          func(query string, args ...any) (*sql.Rows, error)
+	RawDBFunc              func() *sql.DB
 	GetRuntimeSettingsFunc func() ([]byte, error)
 	SetRuntimeSettingsFunc func(payload []byte) error
 	ReencryptAllKeysFunc  func(oldMgr, newMgr *secrets.Manager) (int, error)
@@ -280,6 +281,10 @@ func (s *ScriptedStore) RawQueryRow(query string, args ...any) *sql.Row {
 func (s *ScriptedStore) RawQuery(query string, args ...any) (*sql.Rows, error) {
 	if s.RawQueryFunc != nil { return s.RawQueryFunc(query, args...) }
 	return s.underlying.RawQuery(query, args...)
+}
+func (s *ScriptedStore) RawDB() *sql.DB {
+	if s.RawDBFunc != nil { return s.RawDBFunc() }
+	return s.underlying.RawDB()
 }
 func (s *ScriptedStore) GetRuntimeSettings() ([]byte, error) {
 	if s.GetRuntimeSettingsFunc != nil { return s.GetRuntimeSettingsFunc() }

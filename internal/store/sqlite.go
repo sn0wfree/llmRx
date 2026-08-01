@@ -1462,6 +1462,8 @@ func (s *SQLite) RawQuery(query string, args ...any) (*sql.Rows, error) {
 	return s.db.Query(query, args...)
 }
 
+func (s *SQLite) RawDB() *sql.DB { return s.db }
+
 // ---------------- runtime settings ----------------
 
 // GetRuntimeSettings returns the persisted JSON snapshot written by
