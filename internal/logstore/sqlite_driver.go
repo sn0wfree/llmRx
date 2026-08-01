@@ -101,12 +101,13 @@ func (d *SQLiteDriver) Insert(entry *model.Log) error {
 	}
 
 	if _, err := df.conn.Exec(
-		`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.TokenID, entry.ChannelID, entry.KeyID, entry.Model,
 		entry.PromptTokens, entry.CompletionTokens, entry.CachedTokens,
 		entry.RealCostUSD, entry.BilledCostUSD,
 		entry.DurationMs, entry.StatusCode, entry.RouterPath, entry.RequestIP,
+		entry.Endpoint, entry.Units,
 		entry.CreatedAt.UTC().Unix(),
 	); err != nil {
 		return fmt.Errorf("logstore: insert %s: %w", dayFileKey, err)
@@ -143,8 +144,8 @@ func (d *SQLiteDriver) BatchInsert(entries []*model.Log) (int, error) {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(
-		`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return 0, fmt.Errorf("logstore: prepare %s: %w", dayFileKey, err)
 	}
@@ -156,6 +157,7 @@ func (d *SQLiteDriver) BatchInsert(entries []*model.Log) (int, error) {
 			entry.PromptTokens, entry.CompletionTokens, entry.CachedTokens,
 			entry.RealCostUSD, entry.BilledCostUSD,
 			entry.DurationMs, entry.StatusCode, entry.RouterPath, entry.RequestIP,
+			entry.Endpoint, entry.Units,
 			entry.CreatedAt.UTC().Unix(),
 		); err != nil {
 			return 0, fmt.Errorf("logstore: batch insert %s: %w", dayFileKey, err)
@@ -300,6 +302,8 @@ func ensureLogSchema(db *sql.DB) error {
 			status_code INTEGER NOT NULL DEFAULT 0,
 			router_path TEXT NOT NULL DEFAULT '',
 			request_ip TEXT NOT NULL DEFAULT '',
+			endpoint TEXT NOT NULL DEFAULT '',
+			units INTEGER NOT NULL DEFAULT 0,
 			created_at INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_logs_created ON logs(created_at)`,
@@ -309,7 +313,40 @@ func ensureLogSchema(db *sql.DB) error {
 			return err
 		}
 	}
+	// Best-effort column migration for files created before the
+	// endpoint/units columns landed. SQLite ALTER TABLE ADD COLUMN
+	// fails if the column already exists, so probe first.
+	if err := addLogColumn(db, "endpoint", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := addLogColumn(db, "units", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	return nil
+}
+
+// addLogColumn adds a column to the logs table if it does not
+// already exist. Used to migrate existing day files forward.
+func addLogColumn(db *sql.DB, column, decl string) error {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info('logs')`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE logs ADD COLUMN ` + column + ` ` + decl)
+	return err
 }
 
 // ---------- QueryAcross (ATTACH) ----------
@@ -377,7 +414,7 @@ func (d *SQLiteDriver) QueryAcross(filter QueryFilter, days []string) ([]model.L
 
 	// Build UNION ALL query.
 	var sb strings.Builder
-	sb.WriteString("SELECT id, token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, created_at FROM (")
+	sb.WriteString("SELECT id, token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at FROM (")
 	for i := range days {
 		if i > 0 {
 			sb.WriteString(" UNION ALL ")
@@ -386,7 +423,7 @@ func (d *SQLiteDriver) QueryAcross(filter QueryFilter, days []string) ([]model.L
 		if i < len(attachAliases) && attachAliases[i] != "" {
 			source = attachAliases[i] + ".logs"
 		}
-		sb.WriteString("SELECT id, token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, created_at FROM ")
+		sb.WriteString("SELECT id, token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at FROM ")
 		sb.WriteString(source)
 	}
 	sb.WriteString(")")
@@ -446,7 +483,7 @@ func (d *SQLiteDriver) QueryAcross(filter QueryFilter, days []string) ([]model.L
 		if err := rows.Scan(&l.ID, &l.TokenID, &l.ChannelID, &l.KeyID, &l.Model,
 			&l.PromptTokens, &l.CompletionTokens, &l.CachedTokens,
 			&l.RealCostUSD, &l.BilledCostUSD, &l.DurationMs, &l.StatusCode,
-			&l.RouterPath, &l.RequestIP, &created); err != nil {
+			&l.RouterPath, &l.RequestIP, &l.Endpoint, &l.Units, &created); err != nil {
 			return nil, 0, err
 		}
 		l.CreatedAt = time.Unix(created, 0).UTC()
@@ -487,6 +524,10 @@ func buildWhere(f QueryFilter) (string, []any) {
 	if f.Model != "" {
 		conds = append(conds, "model = ?")
 		args = append(args, f.Model)
+	}
+	if f.Endpoint != "" {
+		conds = append(conds, "endpoint = ?")
+		args = append(args, f.Endpoint)
 	}
 	if f.StatusCode > 0 {
 		conds = append(conds, "status_code = ?")

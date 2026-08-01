@@ -143,6 +143,34 @@ func (l *Limiter) Account(key int64, extraTokens int) {
 	}
 }
 
+// AccountRequest records one additional request against a key's RPM
+// sliding window without touching the TPM counter. Used for MCP tool
+// calls, which count toward RPM but do not consume LLM tokens. The
+// call is a no-op when the key has no active window.
+func (l *Limiter) AccountRequest(key int64) {
+	s := l.pickShard(key)
+	nowFn := l.now.Load().(func() time.Time)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.state[key]
+	if !ok {
+		return
+	}
+	cutoff := nowFn().Add(-60 * time.Second)
+	i := 0
+	for ; i < len(b.requests); i++ {
+		if b.requests[i].After(cutoff) {
+			break
+		}
+	}
+	if i > 0 {
+		b.requests = b.requests[i:]
+		b.tokens = b.tokens[i:]
+	}
+	b.requests = append(b.requests, nowFn())
+	b.tokens = append(b.tokens, 0)
+}
+
 // Reset clears all state. Useful for tests and admin "force reload".
 func (l *Limiter) Reset() {
 	for i := range l.shards {

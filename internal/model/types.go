@@ -178,6 +178,12 @@ type Log struct {
 	StatusCode      int       `json:"status_code"`
 	RouterPath      string    `json:"router_path" gorm:"size:128"`
 	RequestIP       string    `json:"request_ip" gorm:"size:64"`
+	// Endpoint records the log source. Empty means a normal LLM
+	// request; "mcp" marks a row produced by an MCP tool call.
+	Endpoint string    `json:"endpoint" gorm:"size:16"`
+	// Units is the number of billed units this row represents
+	// (1 per MCP tool call).
+	Units    int       `json:"units"`
 	CreatedAt       time.Time `json:"created_at"`
 }
 

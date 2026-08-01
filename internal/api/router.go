@@ -585,13 +585,16 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Agentic loop: if response has MCP tool calls, dispatch and re-invoke.
 	if h.mcpLoop != nil && resp != nil && len(resp.Choices) > 0 && len(resp.Choices[0].Message.ToolCalls) > 0 {
-		newResp, loopErr := h.mcpLoop.Execute(r.Context(), &req, route.KeyValue, route.Channel.BaseURL)
+		newResp, mcpUsage, loopErr := h.mcpLoop.Execute(r.Context(), &req, route.KeyValue, route.Channel.BaseURL)
 		if loopErr != nil {
 			writeError(w, http.StatusInternalServerError, "agentic loop: "+loopErr.Error(), "agentic_error")
 			h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
 			return
 		}
 		resp = newResp
+		if len(mcpUsage.Calls) > 0 {
+			h.emitter.EmitMCP(r.Context(), tokenID, route, mcpUsage, h.clientIP(r))
+		}
 	}
 
 	// Output guardrails: check response content before returning.

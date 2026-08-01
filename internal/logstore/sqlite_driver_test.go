@@ -407,6 +407,8 @@ func createDayFileWithModel(t *testing.T, dir, name, modelLabel string) {
 		status_code INTEGER NOT NULL DEFAULT 0,
 		router_path TEXT NOT NULL DEFAULT '',
 		request_ip TEXT NOT NULL DEFAULT '',
+		endpoint TEXT NOT NULL DEFAULT '',
+		units INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL
 	)`); err != nil {
 		t.Fatalf("create table: %v", err)

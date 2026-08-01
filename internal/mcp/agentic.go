@@ -13,6 +13,53 @@ import (
 
 const MaxToolIterations = 10
 
+// MCPCall records one executed MCP tool call with its billed cost
+// and the tool result/error needed to build the follow-up tool
+// message.
+type MCPCall struct {
+	ToolCallID string
+	Name       string
+	ServerName string
+	Result     *ToolResult
+	Err        error
+	CostUSD    float64
+}
+
+// ToolName returns the tool's name.
+func (c MCPCall) ToolName() string { return c.Name }
+
+// MCPUsage aggregates every tool call executed during one agentic
+// loop run. Callers use it to emit per-call spend logs.
+type MCPUsage struct {
+	Calls []MCPCall
+}
+
+// TotalCalls returns the number of executed tool calls.
+func (u MCPUsage) TotalCalls() int { return len(u.Calls) }
+
+// TotalCostUSD returns the summed billed cost across all calls.
+func (u MCPUsage) TotalCostUSD() float64 {
+	var total float64
+	for _, c := range u.Calls {
+		total += c.CostUSD
+	}
+	return total
+}
+
+// ServerNames returns the unique MCP server names involved, in
+// first-seen order.
+func (u MCPUsage) ServerNames() []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, c := range u.Calls {
+		if c.ServerName != "" && !seen[c.ServerName] {
+			seen[c.ServerName] = true
+			out = append(out, c.ServerName)
+		}
+	}
+	return out
+}
+
 type ToolExecution struct {
 	ToolCallID string
 	Name       string
@@ -30,34 +77,39 @@ func NewAgenticLoop(mgr *ClientManager, repo store.MCPRepository, prov provider.
 	return &AgenticLoop{mgr: mgr, repo: repo, provider: prov}
 }
 
-func (a *AgenticLoop) Execute(ctx context.Context, req *provider.ChatRequest, routeKey, baseURL string) (*provider.ChatResponse, error) {
+// Execute runs the agentic tool-dispatch loop. It returns the final
+// provider response plus a MCPUsage summary of every tool call made,
+// so the caller can emit per-call spend logs.
+func (a *AgenticLoop) Execute(ctx context.Context, req *provider.ChatRequest, routeKey, baseURL string) (*provider.ChatResponse, MCPUsage, error) {
+	var usage MCPUsage
 	allTools, err := a.repo.GetAllMCPTools(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("mcp: load tools: %w", err)
+		return nil, usage, fmt.Errorf("mcp: load tools: %w", err)
 	}
-	mcpToolNames := make(map[string]int64, len(allTools))
+	toolsByName := make(map[string]store.MCPTool, len(allTools))
 	for _, t := range allTools {
-		mcpToolNames[t.Name] = t.ServerID
+		toolsByName[t.Name] = t
 	}
-	if len(mcpToolNames) == 0 {
+	if len(toolsByName) == 0 {
 		resp, _, err := a.provider.Chat(ctx, req, routeKey, baseURL)
-		return resp, err
+		return resp, usage, err
 	}
 	for iter := 0; iter < MaxToolIterations; iter++ {
 		resp, statusCode, err := a.provider.Chat(ctx, req, routeKey, baseURL)
 		if err != nil {
-			return nil, fmt.Errorf("mcp: chat error (status %d): %w", statusCode, err)
+			return nil, usage, fmt.Errorf("mcp: chat error (status %d): %w", statusCode, err)
 		}
 		if len(resp.Choices) == 0 {
-			return resp, nil
+			return resp, usage, nil
 		}
 		msg := resp.Choices[0].Message
 		if len(msg.ToolCalls) == 0 {
-			return resp, nil
+			return resp, usage, nil
 		}
-		executions := a.dispatchToolCalls(ctx, msg.ToolCalls, mcpToolNames)
-		toolMessages := make([]provider.Message, 0, len(executions))
-		for _, ex := range executions {
+		calls := a.dispatchToolCalls(ctx, msg.ToolCalls, toolsByName)
+		usage.Calls = append(usage.Calls, calls...)
+		toolMessages := make([]provider.Message, 0, len(calls))
+		for _, ex := range calls {
 			text := ""
 			if ex.Result != nil {
 				var parts []string
@@ -78,24 +130,28 @@ func (a *AgenticLoop) Execute(ctx context.Context, req *provider.ChatRequest, ro
 	}
 	logging.Warn("mcp: agentic loop exceeded max iterations",
 		logging.F("max_iterations", MaxToolIterations))
-	return nil, fmt.Errorf("agentic loop exceeded %d iterations", MaxToolIterations)
+	return nil, usage, fmt.Errorf("agentic loop exceeded %d iterations", MaxToolIterations)
 }
 
-func (a *AgenticLoop) dispatchToolCalls(ctx context.Context, calls []provider.ToolCall, mcpToolNames map[string]int64) []ToolExecution {
-	executions := make([]ToolExecution, 0, len(calls))
+// dispatchToolCalls executes each requested tool call and returns the
+// per-call executions (including cost) in request order.
+func (a *AgenticLoop) dispatchToolCalls(ctx context.Context, calls []provider.ToolCall, toolsByName map[string]store.MCPTool) []MCPCall {
+	executions := make([]MCPCall, 0, len(calls))
 	for _, tc := range calls {
-		serverID, ok := mcpToolNames[tc.Function.Name]
+		rec := MCPCall{Name: tc.Function.Name}
+		tool, ok := toolsByName[tc.Function.Name]
 		if !ok {
-			executions = append(executions, ToolExecution{
+			executions = append(executions, MCPCall{
 				ToolCallID: tc.ID,
 				Name:       tc.Function.Name,
 				Err:        fmt.Errorf("unknown tool: %s", tc.Function.Name),
 			})
 			continue
 		}
-		client, err := a.mgr.GetClient(ctx, serverID)
+		rec.ServerName = a.serverName(ctx, tool.ServerID)
+		client, err := a.mgr.GetClient(ctx, tool.ServerID)
 		if err != nil || client == nil {
-			executions = append(executions, ToolExecution{
+			executions = append(executions, MCPCall{
 				ToolCallID: tc.ID,
 				Name:       tc.Function.Name,
 				Err:        fmt.Errorf("mcp client unavailable: %v", err),
@@ -104,7 +160,7 @@ func (a *AgenticLoop) dispatchToolCalls(ctx context.Context, calls []provider.To
 		}
 		var args map[string]any
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-			executions = append(executions, ToolExecution{
+			executions = append(executions, MCPCall{
 				ToolCallID: tc.ID,
 				Name:       tc.Function.Name,
 				Err:        fmt.Errorf("invalid args: %v", err),
@@ -113,20 +169,47 @@ func (a *AgenticLoop) dispatchToolCalls(ctx context.Context, calls []provider.To
 		}
 		result, callErr := client.CallTool(ctx, tc.Function.Name, args)
 		if callErr != nil {
-			executions = append(executions, ToolExecution{
+			executions = append(executions, MCPCall{
 				ToolCallID: tc.ID,
 				Name:       tc.Function.Name,
 				Err:        callErr,
 			})
 			continue
 		}
-		executions = append(executions, ToolExecution{
-			ToolCallID: tc.ID,
-			Name:       tc.Function.Name,
-			Result:     result,
-		})
+		rec.ToolCallID = tc.ID
+		rec.Result = result
+		rec.CostUSD = a.priceFor(ctx, tool.ID)
+		executions = append(executions, rec)
 	}
 	return executions
+}
+
+// serverName resolves an MCP server's display name for logging.
+// Unresolvable servers fall back to an empty name (the router will
+// use the tool name).
+func (a *AgenticLoop) serverName(ctx context.Context, serverID int64) string {
+	if a.repo == nil || serverID <= 0 {
+		return ""
+	}
+	srv, err := a.repo.GetMCPServer(ctx, serverID)
+	if err != nil || srv == nil {
+		return ""
+	}
+	return srv.Name
+}
+
+// priceFor looks up the per-call price of a tool. Missing pricing
+// rows or store errors default to 0 (free), matching the rate card
+// semantics (default price_per_call_usd = 0).
+func (a *AgenticLoop) priceFor(ctx context.Context, toolID int64) float64 {
+	if a.repo == nil || toolID <= 0 {
+		return 0
+	}
+	p, err := a.repo.GetMCPToolPricing(ctx, toolID)
+	if err != nil || p == nil {
+		return 0
+	}
+	return p.PricePerCallUSD
 }
 
 func (a *AgenticLoop) HasTools(ctx context.Context) (bool, error) {

@@ -27,11 +27,28 @@ func (m *mockProvider) Chat(ctx context.Context, req *provider.ChatRequest, key,
 
 type mockAgenticRepo struct {
 	store.MCPRepository
-	tools []store.MCPTool
+	tools     []store.MCPTool
+	server    *store.MCPServer
+	pricing   map[int64]*store.MCPToolPricing
+	serverCalls int
+	pricingCalls int
 }
 
 func (m *mockAgenticRepo) GetAllMCPTools(ctx context.Context) ([]store.MCPTool, error) {
 	return m.tools, nil
+}
+
+func (m *mockAgenticRepo) GetMCPServer(ctx context.Context, id int64) (*store.MCPServer, error) {
+	m.serverCalls++
+	return m.server, nil
+}
+
+func (m *mockAgenticRepo) GetMCPToolPricing(ctx context.Context, toolID int64) (*store.MCPToolPricing, error) {
+	m.pricingCalls++
+	if m.pricing == nil {
+		return nil, nil
+	}
+	return m.pricing[toolID], nil
 }
 
 func TestAgenticLoopNoTools(t *testing.T) {
@@ -43,12 +60,15 @@ func TestAgenticLoopNoTools(t *testing.T) {
 		},
 	}
 	loop := NewAgenticLoop(mgr, repo, prov)
-	resp, err := loop.Execute(context.Background(), &provider.ChatRequest{Model: "test"}, "", "")
+	resp, usage, err := loop.Execute(context.Background(), &provider.ChatRequest{Model: "test"}, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(resp.Choices) == 0 || resp.Choices[0].Message.ContentString() != "hi" {
 		t.Fatal("unexpected response")
+	}
+	if usage.TotalCalls() != 0 {
+		t.Fatal("expected no tool calls")
 	}
 }
 
@@ -83,7 +103,7 @@ func TestAgenticLoopProviderError(t *testing.T) {
 	mgr := NewClientManager(repo)
 	prov := &mockProvider{}
 	loop := NewAgenticLoop(mgr, repo, prov)
-	_, err := loop.Execute(context.Background(), &provider.ChatRequest{Model: "test"}, "", "")
+	_, _, err := loop.Execute(context.Background(), &provider.ChatRequest{Model: "test"}, "", "")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -98,7 +118,7 @@ func TestAgenticLoopNoToolCalls(t *testing.T) {
 		},
 	}
 	loop := NewAgenticLoop(mgr, repo, prov)
-	resp, err := loop.Execute(context.Background(), &provider.ChatRequest{Model: "test"}, "", "")
+	resp, _, err := loop.Execute(context.Background(), &provider.ChatRequest{Model: "test"}, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +136,7 @@ func TestAgenticLoopEmptyChoices(t *testing.T) {
 		},
 	}
 	loop := NewAgenticLoop(mgr, repo, prov)
-	resp, err := loop.Execute(context.Background(), &provider.ChatRequest{Model: "test"}, "", "")
+	resp, _, err := loop.Execute(context.Background(), &provider.ChatRequest{Model: "test"}, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

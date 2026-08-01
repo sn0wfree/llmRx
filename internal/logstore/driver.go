@@ -80,6 +80,7 @@ type QueryFilter struct {
 	ChannelID   int64
 	KeyID       int64
 	Model       string
+	Endpoint    string // "" = no filter; "mcp" = MCP tool-call rows only
 	StatusCode  int   // 0 = no filter
 	CreatedFrom int64 // unix seconds, 0 = no lower bound
 	CreatedTo   int64 // unix seconds, 0 = no upper bound
