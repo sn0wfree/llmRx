@@ -49,6 +49,14 @@ readinessProbe:
 # Graceful shutdown
 terminationGracePeriodSeconds: 35
 
+# Cluster mode (P12): stateless replicas sharing one Postgres
+# database for store, rate limits, response cache and request logs.
+# When enabled, the shared PVC is replaced by emptyDir (all durable
+# state lives in Postgres), replicaCount may be > 1 and HPA works.
+cluster:
+  enabled: false
+  postgresDsn: "" # postgres://user:pass@host:5432/llmrx?sslmode=disable
+
 # Persistence for SQLite DB, config, keys, logs, thompson state
 persistence:
   enabled: true
@@ -95,7 +103,8 @@ providerKeys: {}
   # OPENAI_API_KEY: ""
   # ANTHROPIC_API_KEY: ""
 
-# HPA (disabled by default — SQLite only supports single writer)
+# HPA. Single-node SQLite is a single writer, so autoscaling only
+# makes sense with cluster.enabled=true (shared Postgres).
 autoscaling:
   enabled: false
   minReplicas: 1

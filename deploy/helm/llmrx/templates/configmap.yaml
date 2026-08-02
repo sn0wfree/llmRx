@@ -28,6 +28,13 @@ data:
       request_timeout_sec: {{ .Values.config.server.request_timeout_sec }}
       max_retries: {{ .Values.config.server.max_retries }}
       retry_base_delay_ms: {{ .Values.config.server.retry_base_delay_ms }}
+      {{- if .Values.cluster.enabled }}
+      logstore_backend: postgres
+      cache_backend: sqlite
+      {{- end }}
+    database:
+      driver: {{ if .Values.cluster.enabled }}postgres{{ else }}sqlite{{ end }}
+      dsn: {{ if .Values.cluster.enabled }}{{ .Values.cluster.postgresDsn | quote }}{{ else }}/data/llmrx.db{{ end }}
     strategy:
       cost_strategy: {{ .Values.config.strategy.cost_strategy | quote }}
     secrets:

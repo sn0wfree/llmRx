@@ -640,55 +640,112 @@ Caddy 自动申请 Let's Encrypt 证书。
 
 ## 10. 高可用 / 多节点
 
-### 10.1 当前限制
+### 10.1 集群模式（P12，推荐）
 
-- **SQLite 是单点**：写并发 ~100 QPS 上限；多实例共享一份 db 文件需要外部文件系统（NFS / EFS / Ceph）
-- **session_token 在 db**：多实例共享 db → session 自动共享
-- **in-memory 缓存不共享**：token 限速配额、L5 Thompson posterior 是 per-instance
+P12 引入了真正的多副本集群：所有状态外置到 **Postgres**
+（store / 限额 / 缓存 / 日志 / 配置），任意副本无状态、直连
+PG，K8s Service 负载均衡：
 
-### 10.2 多网关 + 共享 DB（迁移路径）
+```
+               K8s Service (LB)
+   /v1 ──► ┌──────────┐  ┌──────────┐  ┌──────────┐
+  /admin ─►│ llmRx A  │  │ llmRx B  │  │ llmRx C  │  ← 无状态副本
+           └────┬─────┘  └────┬─────┘  └────┬─────┘
+                │             │             │
+                ▼             ▼             ▼
+              ┌──────────────────────────────────┐
+              │  Postgres（唯一外部依赖）            │
+              │  store │ 限额分钟桶 │ 缓存 │ 日志 │  │
+              │  NOTIFY 配置传播                    │
+              └──────────────────────────────────┘
+```
 
-如果 QPS > 100 或需要零停机升级，建议升级到 Postgres / MySQL：
+启用方式（config.yml）：
+
+```yaml
+database:
+  driver: postgres
+  dsn: postgres://llmrx:***@pg-host:5432/llmrx?sslmode=require
+server:
+  cache_backend: sqlite        # 存在 store 的 DB（PG 表），副本共享
+  logstore_backend: postgres   # 共享 logs 表
+  log_retention_days: 30
+```
+
+- RPM/TPM 限额：`ratelimit_buckets` 分钟桶表，所有副本原子共享
+  （A 节点耗尽配额，B 节点立即被限）
+- 配置传播：admin 写 → PG NOTIFY → 各副本秒级 `ReloadConfig`，
+  30s 轮询兜底（NOTIFY 丢失也能收敛）
+- 响应缓存：多副本共享一张 `response_cache` 表，命中率不随
+  副本数下降
+
+### 10.2 进程内状态审计（无状态化结论）
+
+| 状态 | 位置 | 集群下行为 |
+|---|---|---|
+| token/plan/channel 缓存 | 进程内 (tokencache/router) | 30s 内收敛（NOTIFY + 轮询）✅ |
+| guardrail 规则缓存 | 进程内 | 同上 ✅ |
+| breaker / Thompson posterior | 进程内 | **节点本地观测，不共享**——路由尽力而为，可接受 |
+| 限额窗口 | PG 分钟桶（失败时本地桶降级） | 全局一致；PG 故障窗口内放大为本地，恢复后自动归位 |
+| MCP client / stdio 子进程 | 节点本地 | token 状态节点本地，可接受 |
+| Thompson 状态文件 | /data（本地） | 节点本地学习，重启重建 |
+
+### 10.3 故障与降级
+
+- **PG 不可达**：限额 fail-open 降级本地桶（服务可用、限额短暂
+  失真，自动恢复探测）；缓存/日志后端不可用仅影响对应功能；
+  store 不可用则整体不可服务（单点依赖的必然，靠 PG 高可用
+  兜底）
+- **副本故障**：K8s 探活摘除，无状态副本可随意重启/扩缩
+- **NOTIFY 丢失**：30s 轮询兜底
+
+### 10.4 K8s（Helm）部署
 
 ```bash
-# 1. 导出 SQLite
+# 单节点（默认，行为与 Docker 一致）
+helm install llmrx deploy/helm/llmrx
+
+# 集群模式（需要已有 Postgres）
+helm install llmrx deploy/helm/llmrx \
+  --set cluster.enabled=true \
+  --set cluster.postgresDsn="postgres://llmrx:***@pg-host:5432/llmrx?sslmode=require" \
+  --set replicaCount=3 \
+  --set autoscaling.enabled=true
+```
+
+- `cluster.enabled=true` 时数据卷自动切换为 emptyDir（持久化在
+  PG），`replicaCount` / HPA 解锁
+- 多副本下 `terminationGracePeriodSeconds` 保持 35s（drain 在飞
+  请求）；`server.Start` 内部 25s 优雅关闭
+- PG 建议单独高可用（流复制 / 托管服务）
+
+### 10.5 迁移路径（SQLite → Postgres）
+
+```bash
+# 1. 导出 SQLite（docker compose 环境）
 docker run --rm -v llmrx-data:/data -v $(pwd):/out \
   alpine:3.20 \
   sqlite3 /data/llmrx.db .dump > /out/llmrx-dump.sql
 
-# 2. 灌到 Postgres
+# 2. 灌到 Postgres（注意 ID 列保留，避免序列错位）
 psql -h pg-host -U llmrx -d llmrx < llmrx-dump.sql
 
-# 3. 改 config.yml
-database:
-  driver: postgres
-  dsn: postgres://llmrx:***@pg-host/llmrx?sslmode=require
-
-# 4. 起多个实例（共享 DB）
-docker compose up -d --scale llmrx=3
-
-# 5. 前置负载均衡
-nginx upstream llmrx { server 10.0.0.1:8787; server 10.0.0.2:8787; server 10.0.0.3:8787; }
+# 3. 改 config.yml（见 10.1）后滚动重启
 ```
 
-### 10.3 负载均衡策略
+> 注：P12 未提供一键迁移工具（docs/P12-CLUSTER.md 缺口 4），
+> 上表为手工路径；迁移前在 staging 跑满 1 天再切生产。
+
+### 10.6 负载均衡策略
 
 - **最少连接**（leastconn）—— llm 请求长短不一，最少连接最稳
 - **加权轮询** —— 同构实例时 OK
 - **IP hash / sticky** —— **不建议**，长连接会粘在挂掉的实例上
 
-### 10.4 session_token 共享
+### 10.7 session_token 共享
 
-如果多实例共享 Postgres DB，session 自动共享。如果还是 SQLite，建议放 NFS 上：
-
-```
-sqlite:////mnt/nfs/llmrx/llmrx.db?cache=shared&_journal_mode=WAL
-```
-
-NFS + SQLite 注意：
-- 启用 `cache=shared` 允许多 reader
-- WAL 文件也在 NFS 上
-- 单写者仍然限制（SQLite 设计）
+Postgres 模式下 session 天然共享（users 表在 PG）。SQLite 单机
+不需要考虑。
 
 ---
 

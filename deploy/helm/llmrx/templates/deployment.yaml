@@ -81,7 +81,7 @@ spec:
               readOnly: true
       volumes:
         - name: data
-          {{- if .Values.persistence.enabled }}
+          {{- if and .Values.persistence.enabled (not .Values.cluster.enabled) }}
           persistentVolumeClaim:
             claimName: {{ include "llmrx.fullname" . }}-data
           {{- else }}

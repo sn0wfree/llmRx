@@ -211,13 +211,19 @@ M5: internal/server/server.go, deploy/helm/llmrx/values.yaml,
 
 ## 10. Rollout
 
-1. M1 外置存储（PG 全量 CRUD + 切换开关）。
-2. M2 分布式限额（Redis 滑窗 + 降级）。
-3. M3 共享缓存。
-4. M4 日志聚合。
-5. M5 无状态审计 + Helm + 文档。
+1. M1 外置存储（PG 全量 CRUD + 切换开关）。✅
+2. M2 分布式限额（PG 分钟桶 + fail-open 降级 + NOTIFY/轮询传播）。✅
+3. M3 共享缓存（DBCache 跟随 store 驱动，副本共享命中率）。✅
+4. M4 日志聚合（PostgresDriver 共享 logs 表，文件→日期映射）。✅
+5. M5 无状态审计 + Helm（cluster.enabled 切换 + emptyDir +
+   HPA 解锁）+ OPERATIONS 文档。✅
 
 每个 M 独立可交付、可回滚（后端可切回 memory/sqlite）。
+
+**Status (2026-08-02)**: M1-M5 全部落地。验收标准逐项达成：
+N 节点限额全局一致（两节点 e2e 测试）、共享缓存命中、日志中央
+查询、配置单点修改全节点生效（NOTIFY+30s 轮询）、单机默认行为
+不变、全量 go test + vet 干净。
 
 ## 11. Risks
 
