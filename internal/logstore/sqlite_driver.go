@@ -19,8 +19,9 @@ import (
 )
 
 // MaxFileBytes is the per-file size threshold that triggers a
-// rollover into a new seq file (YYYY-MM-DD-N.db).
-const MaxFileBytes = 100 * 1024 * 1024
+// rollover into a new seq file (YYYY-MM-DD-N.db). A variable (not
+// const) so tests can lower it and exercise rollover cheaply.
+var MaxFileBytes = int64(100 * 1024 * 1024)
 
 // estimatedRowBytes is the per-row overhead estimate used to
 // update the in-memory bytes-written counter. Real log rows land
@@ -47,6 +48,12 @@ type SQLiteDriver struct {
 
 	mu    sync.RWMutex
 	conns map[string]*dayFile // dayFile (basename without .db) → state
+	// current tracks, per UTC date, the active dayFile key (base
+	// date or date-N after rollover). acquire consults it first so
+	// steady-state writes reuse the open pool instead of re-opening
+	// the same file on every batch (which leaked one pool per call
+	// when the active file lived under a -N key).
+	current map[string]string
 }
 
 // dayFile tracks a single on-disk log file and its open connection.
@@ -58,8 +65,9 @@ type dayFile struct {
 // NewSQLiteDriver returns an unopened driver. Call Open before use.
 func NewSQLiteDriver() *SQLiteDriver {
 	return &SQLiteDriver{
-		conns:    make(map[string]*dayFile),
-		maxOpen:  4, // today + 3 historical
+		conns:   make(map[string]*dayFile),
+		current: make(map[string]string),
+		maxOpen: 4, // today + 3 historical
 		syncMode: "normal",
 	}
 }
@@ -208,6 +216,11 @@ func (d *SQLiteDriver) acquire(date string, seqHint int) (*dayFile, string, erro
 	key := date
 	if seqHint > 0 {
 		key = dayFileKey(date, seqHint)
+	} else if cur, ok := d.current[date]; ok {
+		// Steady state: reuse the active file's pool. Without this
+		// the slow path re-opened the same -N file on every call,
+		// leaking a pool (and its fds) per batch.
+		key = cur
 	}
 
 	// Fast path: file is in cache and below threshold.
@@ -234,13 +247,22 @@ func (d *SQLiteDriver) acquire(date string, seqHint int) (*dayFile, string, erro
 		checkpointConn(df.conn)
 		_ = df.conn.Close()
 		delete(d.conns, key)
+		if d.current[date] == key {
+			delete(d.current, date)
+		}
 	}
 
-	// LRU eviction if cache is over budget: close one arbitrary entry.
+	// LRU eviction if cache is over budget: close one entry.
 	if len(d.conns) >= d.maxOpen {
 		for k, df := range d.conns {
+			// Compact the WAL before closing so a sealed file
+			// doesn't keep a 4MB+ WAL on disk.
+			checkpointConn(df.conn)
 			_ = df.conn.Close()
 			delete(d.conns, k)
+			if d.current[date] == k {
+				delete(d.current, date)
+			}
 			break
 		}
 	}
@@ -304,6 +326,7 @@ func (d *SQLiteDriver) acquire(date string, seqHint int) (*dayFile, string, erro
 		atomic.StoreInt64(&df.bytesWritten, fi.Size())
 	}
 	d.conns[key] = df
+	d.current[date] = key
 	return df, key, nil
 }
 
@@ -317,23 +340,18 @@ func checkpointConn(conn *sql.DB) {
 	_, _ = conn.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
 }
 
-// CheckpointActive compacts the WAL of the most recently written
-// day file (TRUNCATE resets the file to zero bytes, so a 240MB WAL
-// returns to ~0 after this). Called periodically by the Manager;
-// safe to run concurrently with inserts (SQLite serialises).
+// CheckpointActive compacts the WAL of every cached day file
+// (TRUNCATE resets each WAL to zero bytes, so a 240MB WAL returns
+// to ~0). Called periodically by the Manager; safe to run
+// concurrently with inserts (SQLite serialises). Checking every
+// cached file (≤ maxOpen) keeps sealed-but-cached files compact
+// too, not just the active writer.
 func (d *SQLiteDriver) CheckpointActive() error {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	var latest *dayFile
 	for _, df := range d.conns {
-		if latest == nil || atomic.LoadInt64(&df.bytesWritten) > atomic.LoadInt64(&latest.bytesWritten) {
-			latest = df
-		}
+		checkpointConn(df.conn)
 	}
-	if latest == nil {
-		return nil
-	}
-	checkpointConn(latest.conn)
 	return nil
 }
 

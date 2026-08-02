@@ -1117,3 +1117,48 @@ func TestRunCheckpoints_Periodic(t *testing.T) {
 		t.Errorf("wal size after maintenance ticks = %d, want 0", fi.Size())
 	}
 }
+
+// TestAcquire_ReusesActivePoolAfterRollover: once the active file
+// lives under a -N key, consecutive acquires must return the SAME
+// dayFile pointer. The pre-fix code re-keyed on the base date every
+// call, re-opening the -N file once per batch and leaking a pool
+// (and its fds) each time — measured as ~166 leaked fds/s at 42K rps.
+func TestAcquire_ReusesActivePoolAfterRollover(t *testing.T) {
+	old := MaxFileBytes
+	MaxFileBytes = 32 * 1024 // 32KB — force quick rollover
+	defer func() { MaxFileBytes = old }()
+
+	d, dir := newTestDriver(t)
+	date := time.Now().UTC().Format("2006-01-02")
+	now := time.Now().UTC()
+
+	// Write enough rows to roll the base file over.
+	for i := 0; i < 400; i++ {
+		if _, err := d.BatchInsert([]*model.Log{makeLog(1, 1, "m", 200, now)}); err != nil {
+			t.Fatalf("batch %d: %v", i, err)
+		}
+	}
+
+	// The active file must now be a -N file.
+	cur, ok := d.current[date]
+	if !ok || cur == date {
+		t.Fatalf("current=%q want a -N key after rollover", cur)
+	}
+	df1, key1, err := d.acquire(date, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	df2, key2, err := d.acquire(date, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key1 != key2 || df1 != df2 {
+		t.Errorf("acquire returned different pools (%q / %q), want reuse", key1, key2)
+	}
+
+	// Sealed base file's WAL must have been compacted on rotation.
+	walPath := filepath.Join(dir, date+".db-wal")
+	if fi, err := os.Stat(walPath); err == nil && fi.Size() > 4096 {
+		t.Errorf("sealed base WAL = %d bytes, want ~0 after rotation checkpoint", fi.Size())
+	}
+}
