@@ -74,13 +74,13 @@ type CircuitBreakerConfig struct {
 }
 
 type Channel struct {
-	ID          int64    `json:"id" gorm:"primaryKey"`
-	Name        string   `json:"name" gorm:"uniqueIndex;size:128"`
-	Provider    string   `json:"provider" gorm:"size:64"`
-	Protocol    string   `json:"protocol" gorm:"size:32"`
-	BaseURL     string   `json:"base_url" gorm:"size:512"`
-	Models      []string `json:"models" gorm:"serializer:json"`
-	Intents     []string `json:"intents" gorm:"serializer:json"`
+	ID          int64    `json:"id"`
+	Name        string   `json:"name"`
+	Provider    string   `json:"provider"`
+	Protocol    string   `json:"protocol"`
+	BaseURL     string   `json:"base_url"`
+	Models      []string `json:"models"`
+	Intents     []string `json:"intents"`
 	Priority    int      `json:"priority"`
 	InputPrice  float64  `json:"input_price_per_1m"`
 	OutputPrice float64  `json:"output_price_per_1m"`
@@ -94,32 +94,32 @@ type Channel struct {
 	//
 	// Default if unset: 0.1.
 	CachedInputDiscount float64              `json:"cached_input_discount"`
-	CircuitBreaker      CircuitBreakerConfig `json:"circuit_breaker" gorm:"serializer:json"`
+	CircuitBreaker      CircuitBreakerConfig `json:"circuit_breaker"`
 	Status              ChannelStatus        `json:"status"`
 	CreatedAt           time.Time            `json:"created_at"`
 	UpdatedAt           time.Time            `json:"updated_at"`
 }
 
 type Key struct {
-	ID        int64 `json:"id" gorm:"primaryKey"`
-	ChannelID int64 `json:"channel_id" gorm:"index"`
+	ID        int64 `json:"id"`
+	ChannelID int64 `json:"channel_id"`
 	// Key is the plaintext form. After P0 the store treats this
 	// field as **transient** — write paths accept plaintext, store
 	// it encrypted in KeyCiphertext, and zero out Key. Read paths
 	// decrypt KeyCiphertext back into Key. Legacy rows created
 	// before P0 still have plaintext in Key and an empty
 	// KeyCiphertext; the store migrates them lazily on first read.
-	Key           string    `json:"key,omitempty" gorm:"size:512"`
-	KeyCiphertext string    `json:"-" gorm:"size:1024"`
-	KeyMasked     string    `json:"key_masked" gorm:"size:64"`
+	Key           string    `json:"key,omitempty"`
+	KeyCiphertext string    `json:"-"`
+	KeyMasked     string    `json:"key_masked"`
 	Status        KeyStatus `json:"status"`
 	LastUsedAt    time.Time `json:"last_used_at"`
 	CreatedAt     time.Time `json:"created_at"`
 }
 
 type Plan struct {
-	ID          int64     `json:"id" gorm:"primaryKey"`
-	Name        string    `json:"name" gorm:"size:128"`
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
 	BudgetUSD   float64   `json:"budget_usd"`
 	UsedUSD     float64   `json:"used_usd"`
 	MarkupRatio float64   `json:"markup_ratio"`
@@ -129,42 +129,42 @@ type Plan struct {
 }
 
 type Token struct {
-	ID              int64       `json:"id" gorm:"primaryKey"`
-	PlanID          int64       `json:"plan_id" gorm:"index"`
-	Key             string      `json:"key,omitempty" gorm:"uniqueIndex;size:64"`
-	Name            string      `json:"name" gorm:"size:128"`
+	ID              int64       `json:"id"`
+	PlanID          int64       `json:"plan_id"`
+	Key             string      `json:"key,omitempty"`
+	Name            string      `json:"name"`
 	Status          TokenStatus `json:"status"`
 	RPM             int         `json:"rpm"`
 	TPM             int         `json:"tpm"`
 	UsedUSD         float64     `json:"used_usd"`
-	ModelsWhitelist []string    `json:"models_whitelist" gorm:"serializer:json"`
-	IPWhitelist     []string    `json:"ip_whitelist" gorm:"serializer:json"`
+	ModelsWhitelist []string    `json:"models_whitelist"`
+	IPWhitelist     []string    `json:"ip_whitelist"`
 	ExpiresAt       time.Time   `json:"expires_at"`
 	LastUsedAt      time.Time   `json:"last_used_at"`
 	CreatedAt       time.Time   `json:"created_at"`
 }
 
 type User struct {
-	ID           int64    `json:"id" gorm:"primaryKey"`
-	Username     string   `json:"username" gorm:"uniqueIndex;size:64"`
-	PasswordHash string   `json:"-" gorm:"size:256"`
+	ID           int64    `json:"id"`
+	Username     string   `json:"username"`
+	PasswordHash string   `json:"-"`
 	Role         UserRole `json:"role"`
 	// Permissions overrides the role's default permission set. JSON
 	// array of strings: "+perm" to grant, "-perm" to revoke. Empty
 	// means "use role defaults only".
-	Permissions  string     `json:"permissions,omitempty" gorm:"type:text"`
+	Permissions  string     `json:"permissions,omitempty"`
 	Status       int        `json:"status"`
-	SessionToken string     `json:"-" gorm:"size:128"`
+	SessionToken string     `json:"-"`
 	SessionExp   *time.Time `json:"session_expires_at,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 }
 
 type Log struct {
-	ID               int64  `json:"id" gorm:"primaryKey"`
-	TokenID          int64  `json:"token_id" gorm:"index"`
+	ID               int64  `json:"id"`
+	TokenID          int64  `json:"token_id"`
 	ChannelID        int64  `json:"channel_id"`
 	KeyID            int64  `json:"key_id"`
-	Model            string `json:"model" gorm:"size:128"`
+	Model            string `json:"model"`
 	PromptTokens     int    `json:"prompt_tokens"`
 	CompletionTokens int    `json:"completion_tokens"`
 	// CachedTokens is the number of prompt tokens served from the
@@ -176,11 +176,11 @@ type Log struct {
 	BilledCostUSD float64 `json:"billed_cost_usd"`
 	DurationMs    int64   `json:"duration_ms"`
 	StatusCode    int     `json:"status_code"`
-	RouterPath    string  `json:"router_path" gorm:"size:128"`
-	RequestIP     string  `json:"request_ip" gorm:"size:64"`
+	RouterPath    string  `json:"router_path"`
+	RequestIP     string  `json:"request_ip"`
 	// Endpoint records the log source. Empty means a normal LLM
 	// request; "mcp" marks a row produced by an MCP tool call.
-	Endpoint string `json:"endpoint" gorm:"size:16"`
+	Endpoint string `json:"endpoint"`
 	// Units is the number of billed units this row represents
 	// (1 per MCP tool call).
 	Units     int       `json:"units"`
@@ -192,11 +192,11 @@ type Log struct {
 // Built-in providers come from providers.yaml; user-defined ones are
 // created via the Admin UI and stored in the providers table.
 type ProviderDef struct {
-	ID          int64     `json:"id" gorm:"primaryKey"`
-	Name        string    `json:"name" gorm:"uniqueIndex;size:64"`
-	DisplayName string    `json:"display_name" gorm:"size:128"`
-	Protocol    string    `json:"protocol" gorm:"size:32"`
-	BaseURL     string    `json:"base_url" gorm:"size:512"`
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
+	DisplayName string    `json:"display_name"`
+	Protocol    string    `json:"protocol"`
+	BaseURL     string    `json:"base_url"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -211,14 +211,14 @@ type ProviderDef struct {
 // combo names are token-scoped (two tokens may both have "smart-1")
 // and must not collide with any channel.Models real model name.
 type TokenComboModel struct {
-	ID        int64        `json:"id" gorm:"primaryKey"`
-	TokenID   int64        `json:"token_id" gorm:"index"`
-	Name      string       `json:"name" gorm:"size:64"`
-	Models    []string     `json:"models" gorm:"serializer:json"`
+	ID        int64        `json:"id"`
+	TokenID   int64        `json:"token_id"`
+	Name      string       `json:"name"`
+	Models    []string     `json:"models"`
 	Mode      ComboMode    `json:"mode"`
 	Strategy  CostStrategy `json:"strategy"` // "" = inherit global
 	Enabled   bool         `json:"enabled"`
-	IsDefault bool         `json:"is_default" gorm:"default:false"`
+	IsDefault bool         `json:"is_default"`
 	CreatedAt time.Time    `json:"created_at"`
 	UpdatedAt time.Time    `json:"updated_at"`
 }

@@ -434,9 +434,21 @@ func testAlerts(t *testing.T, st store.Store) {
 		t.Fatalf("UpdateAlert not reflected")
 	}
 
-	// RecordAlertFired updates last_fired_at.
-	if err := st.RecordAlertFired(a.ID, now.Add(time.Minute).Unix()); err != nil {
+	// RecordAlertFired advances last_fired_at and wins the claim.
+	changed, err := st.RecordAlertFired(a.ID, now.Add(time.Minute).Unix())
+	if err != nil {
 		t.Fatalf("RecordAlertFired: %v", err)
+	}
+	if !changed {
+		t.Fatal("first claim must win")
+	}
+	// A second claim with an older timestamp loses (no double fire).
+	changed, err = st.RecordAlertFired(a.ID, now.Add(time.Second).Unix())
+	if err != nil {
+		t.Fatalf("RecordAlertFired(old): %v", err)
+	}
+	if changed {
+		t.Fatal("older claim must not win")
 	}
 
 	// DisableAlert flips enabled and records reason.

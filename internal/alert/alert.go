@@ -163,10 +163,27 @@ func (m *Manager) evaluate(ctx context.Context) {
 }
 
 // fire persists the event, notifies channels, and bumps LastFiredAt.
-// It is wrapped in a guard that re-checks the cooldown atomically by
-// updating last_fired_at to "now" via the store, then re-reading
-// before any second call within the same tick could double-fire.
+// The store's RecordAlertFired is a conditional UPDATE that only
+// wins when atUnix is newer than the stored value, so in a
+// multi-replica deployment exactly one replica proceeds — the
+// losers return early and never send the webhook twice.
 func (m *Manager) fire(ctx context.Context, r *model.Alert, payload map[string]any, now time.Time) error {
+	won, err := m.st.RecordAlertFired(r.ID, now.Unix())
+	if err != nil {
+		return fmt.Errorf("record fired: %w", err)
+	}
+	if !won {
+		// Another replica already claimed this fire.
+		return nil
+	}
+	// Update local copy so the cooldown gate works in-process.
+	m.mu.Lock()
+	for i := range m.rules {
+		if m.rules[i].ID == r.ID {
+			m.rules[i].LastFiredAt = now.Unix()
+		}
+	}
+	m.mu.Unlock()
 	// Inject the webhook URL into the payload so the webhook
 	// channel can find it without needing a back-reference to
 	// the alert row.
@@ -198,17 +215,5 @@ func (m *Manager) fire(ctx context.Context, r *model.Alert, payload map[string]a
 	if err := m.st.CreateAlertEvent(ev); err != nil {
 		return fmt.Errorf("persist event: %w", err)
 	}
-	if err := m.st.RecordAlertFired(r.ID, now.Unix()); err != nil {
-		return fmt.Errorf("record fired: %w", err)
-	}
-	// Update local copy so the cooldown gate works in-process.
-	m.mu.Lock()
-	for i := range m.rules {
-		if m.rules[i].ID == r.ID {
-			m.rules[i].LastFiredAt = now.Unix()
-		}
-	}
-	m.mu.Unlock()
-	_ = ctx
 	return nil
 }

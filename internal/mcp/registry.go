@@ -52,11 +52,9 @@ func (m *ClientManager) GetClient(ctx context.Context, serverID int64) (*Client,
 	if ok {
 		return c, nil
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if c, ok := m.clients[serverID]; ok {
-		return c, nil
-	}
+	// Prepare outside the lock: the DB lookup and client
+	// construction (spawning a stdio child) are slow, and holding
+	// the mutex across them serialized every MCP client creation.
 	srv, err := m.repo.GetMCPServer(ctx, serverID)
 	if err != nil {
 		return nil, err
@@ -64,23 +62,32 @@ func (m *ClientManager) GetClient(ctx context.Context, serverID int64) (*Client,
 	if srv == nil {
 		return nil, nil
 	}
+	var fresh *Client
 	if srv.Transport == "stdio" {
 		if srv.Command == "" {
 			return nil, fmt.Errorf("mcp: stdio server %s has empty command", srv.Name)
 		}
-		c = NewStdioClient(srv.Command)
+		fresh = NewStdioClient(srv.Command)
 	} else if m.oauth != nil && m.oauth.NeedsOAuth(srv) {
 		tr := &httpTransport{
 			baseURL:    srv.URL,
 			httpClient: &http.Client{Timeout: 30 * time.Second},
 		}
 		tr.tokenProvider = m.oauth.TokenProvider(srv.ID)
-		c = NewClientWithTransport(tr)
+		fresh = NewClientWithTransport(tr)
 	} else {
-		c = NewClient(srv.URL, srv.AuthHdr)
+		fresh = NewClient(srv.URL, srv.AuthHdr)
 	}
-	m.clients[serverID] = c
-	return c, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if c, ok := m.clients[serverID]; ok {
+		// Someone else won the race. Discard fresh — stdio
+		// transports spawn their child lazily on first use, so
+		// nothing leaks here.
+		return c, nil
+	}
+	m.clients[serverID] = fresh
+	return fresh, nil
 }
 
 func (m *ClientManager) RefreshTools(ctx context.Context, serverID int64) ([]store.MCPTool, error) {

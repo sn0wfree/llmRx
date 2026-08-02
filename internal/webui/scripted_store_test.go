@@ -55,7 +55,7 @@ type ScriptedStore struct {
 	CreateAlertFunc            func(a *model.Alert) error
 	UpdateAlertFunc            func(a *model.Alert) error
 	DeleteAlertFunc            func(id int64) error
-	RecordAlertFiredFunc       func(id int64, atUnix int64) error
+	RecordAlertFiredFunc       func(id int64, atUnix int64) (bool, error)
 	DisableAlertFunc           func(id int64, reason string) error
 	GetAlertEventsFunc         func(limit int) ([]model.AlertEvent, error)
 	CreateAlertEventFunc       func(e *model.AlertEvent) error
@@ -340,7 +340,7 @@ func (s *ScriptedStore) DeleteAlert(id int64) error {
 	}
 	return s.underlying.DeleteAlert(id)
 }
-func (s *ScriptedStore) RecordAlertFired(id int64, atUnix int64) error {
+func (s *ScriptedStore) RecordAlertFired(id int64, atUnix int64) (bool, error) {
 	if s.RecordAlertFiredFunc != nil {
 		return s.RecordAlertFiredFunc(id, atUnix)
 	}

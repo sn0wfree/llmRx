@@ -394,6 +394,24 @@ func main() {
 		cancel()
 	}()
 
+	// Periodic snapshot so a crash (no SIGTERM) doesn't lose hours
+	// of L5 learning. The file is small and written atomically via
+	// a temp file, so a 5-minute cadence is cheap.
+	go func() {
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := eng.SaveThompsonState(thompsonPath); err != nil {
+					logging.Warn("thompson periodic save failed", logging.F("error", err.Error()))
+				}
+			}
+		}
+	}()
+
 	logging.Info("starting llmRx gateway",
 		logging.F("port", cfg.Server.Port),
 		logging.F("channels", len(cp.GetAllChannels())),
@@ -566,7 +584,7 @@ func seedChannels(st store.Store, cfg *config.Config) error {
 			return err
 		}
 		for _, k := range cc.Keys {
-			masked := maskKey(k)
+			masked := secrets.Mask(k)
 			ke := &model.Key{
 				ChannelID: ch.ID,
 				Key:       k,
@@ -580,11 +598,4 @@ func seedChannels(st store.Store, cfg *config.Config) error {
 		logging.Info("seed imported channel", logging.F("channel", cc.Name), logging.F("keys", len(cc.Keys)))
 	}
 	return nil
-}
-
-func maskKey(k string) string {
-	if len(k) > 8 {
-		return k[:4] + "***" + k[len(k)-4:]
-	}
-	return k
 }

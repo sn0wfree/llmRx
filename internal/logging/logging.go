@@ -91,14 +91,18 @@ func Init(level Level, format Format) {
 func SetOutput(w io.Writer) {
 	defaultMu.Lock()
 	defer defaultMu.Unlock()
+	defaultLogger.mu.Lock()
 	defaultLogger.out = w
+	defaultLogger.mu.Unlock()
 }
 
 // SetLevel adjusts the minimum level.
 func SetLevel(l Level) {
 	defaultMu.Lock()
 	defer defaultMu.Unlock()
+	defaultLogger.mu.Lock()
 	defaultLogger.level = l
+	defaultLogger.mu.Unlock()
 }
 
 // Default returns the process-global logger.
@@ -108,9 +112,20 @@ func Default() *Logger {
 	return defaultLogger
 }
 
+// snapshot copies the mutable logging state under l.mu so callers
+// (log, With) never read level/format/out racing a concurrent
+// SetLevel/SetOutput — previously log() read level and format
+// lock-free, which -race flags.
+func (l *Logger) snapshot() (Level, Format, io.Writer) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.level, l.format, l.out
+}
+
 // With returns a sub-logger with the given fields merged in. The
 // parent logger is unchanged.
 func (l *Logger) With(fields map[string]any) *Logger {
+	lv, f, out := l.snapshot()
 	merged := make(map[string]any, len(l.fields)+len(fields))
 	for k, v := range l.fields {
 		merged[k] = v
@@ -119,16 +134,27 @@ func (l *Logger) With(fields map[string]any) *Logger {
 		merged[k] = v
 	}
 	return &Logger{
-		out:    l.out,
-		level:  l.level,
-		format: l.format,
+		out:    out,
+		level:  lv,
+		format: f,
 		fields: merged,
 	}
 }
 
 // WithField returns a sub-logger with one extra field.
 func (l *Logger) WithField(key string, value any) *Logger {
-	return l.With(map[string]any{key: value})
+	lv, f, out := l.snapshot()
+	merged := make(map[string]any, len(l.fields)+1)
+	for k, v := range l.fields {
+		merged[k] = v
+	}
+	merged[key] = value
+	return &Logger{
+		out:    out,
+		level:  lv,
+		format: f,
+		fields: merged,
+	}
 }
 
 // Info / Warn / Error / Debug are level shortcuts.
@@ -191,7 +217,8 @@ func putRecord(m map[string]any) {
 
 // log emits a record at the given level.
 func (l *Logger) log(level Level, msg string, fields []Field) {
-	if level < l.level {
+	lv, format, out := l.snapshot()
+	if level < lv {
 		return
 	}
 
@@ -213,7 +240,7 @@ func (l *Logger) log(level Level, msg string, fields []Field) {
 	}
 
 	var line string
-	if l.format == FormatText {
+	if format == FormatText {
 		line = formatText(record)
 	} else {
 		// JSON path: encode into a pooled buffer, write the
@@ -234,8 +261,8 @@ func (l *Logger) log(level Level, msg string, fields []Field) {
 			b = b[:n-1]
 		}
 		l.mu.Lock()
-		_, _ = l.out.Write(b)
-		_, _ = l.out.Write([]byte("\n"))
+		_, _ = out.Write(b)
+		_, _ = out.Write([]byte("\n"))
 		l.mu.Unlock()
 		putBuf(buf)
 		putRecord(record)
@@ -246,7 +273,7 @@ func (l *Logger) log(level Level, msg string, fields []Field) {
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	_, _ = fmt.Fprintln(l.out, line)
+	_, _ = fmt.Fprintln(out, line)
 }
 
 func formatText(r map[string]any) string {

@@ -78,7 +78,7 @@ func TestManager_IPWhitelist(t *testing.T) {
 func TestManager_ExistingKey_Touched(t *testing.T) {
 	store := &fakeStore{
 		channels: []*model.BYOKChannel{
-			{ID: 1, OwnerIP: "127.0.0.1", Status: 1, KeyMasked: "sk-***abcd"},
+			{ID: 1, OwnerIP: "127.0.0.1", Status: 1, KeyMasked: "sk-1***abcd"},
 		},
 	}
 	mgr := New(Config{Enabled: true}, store, nil)
@@ -117,8 +117,8 @@ func TestManager_NewKey_EncryptedAndStored(t *testing.T) {
 	if ch.Provider != "openai" {
 		t.Errorf("provider: got %q, want openai", ch.Provider)
 	}
-	if ch.KeyMasked != "sk-***abcd" {
-		t.Errorf("masked: got %q, want sk-***abcd", ch.KeyMasked)
+	if ch.KeyMasked != "sk-1***abcd" {
+		t.Errorf("masked: got %q, want sk-1***abcd", ch.KeyMasked)
 	}
 
 	// Verify decryption roundtrip.
@@ -146,16 +146,18 @@ func TestManager_UpstreamRejects(t *testing.T) {
 	}
 }
 
-func TestMaskKey(t *testing.T) {
+func TestMaskKey_SecretsDelegation(t *testing.T) {
+	// byok's legacy 3-char maskKey was replaced by secrets.Mask
+	// (unified format); verify the delegation behavior.
 	tests := []struct{ in, want string }{
-		{"sk-1234567890abcd", "sk-***abcd"},
-		{"sk-12345678", "sk-***5678"},
-		{"abcd", "a***d"},
-		{"xy", "***"},
+		{"sk-1234567890abcd", "sk-1***abcd"},
+		{"sk-12345678", "sk-1***5678"},
+		{"abcd", "abcd"},
+		{"xy", "xy"},
 	}
 	for _, tc := range tests {
-		if got := maskKey(tc.in); got != tc.want {
-			t.Errorf("maskKey(%q) = %q, want %q", tc.in, got, tc.want)
+		if got := secrets.Mask(tc.in); got != tc.want {
+			t.Errorf("secrets.Mask(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }

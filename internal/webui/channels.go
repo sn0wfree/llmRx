@@ -175,18 +175,7 @@ func (h *Handler) ChannelCreate(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin/channels", http.StatusSeeOther)
 }
 
-// ChannelUpdate handles form PUT to update a channel.
-func (h *Handler) ChannelUpdate(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
-		return
-	}
-	h.updateChannelByID(w, r, id)
-}
-
-// updateChannelByID is the inner implementation of ChannelUpdate,
-// shared with the POST+_method form handler.
+// updateChannelByID implements form PUT + hx-delete for a channel.
 func (h *Handler) updateChannelByID(w http.ResponseWriter, r *http.Request, id int64) {
 	cur, err := h.store.GetChannel(id)
 	if err != nil {

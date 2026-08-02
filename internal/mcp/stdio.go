@@ -69,12 +69,17 @@ func (t *stdioTransport) rpc(ctx context.Context, method string, params map[stri
 	}
 
 	// Wait for the response line. Watch ctx so a client disconnect
-	// doesn't block forever on a silent server.
+	// doesn't block forever on a silent server. Snapshot the scanner
+	// while still under the lock (rpc holds t.mu here): kill() from
+	// the ctx branch below nils t.scanner, and the read goroutine
+	// must not race that write. The snapshot keeps reading the old
+	// scanner, which returns EOF once the process is dead.
+	sc := t.scanner
 	done := make(chan struct{})
 	var raw []byte
 	var readErr error
 	go func() {
-		raw, readErr = t.readFrame()
+		raw, readErr = t.readFrameWith(sc)
 		close(done)
 	}()
 	select {
@@ -133,9 +138,21 @@ func (t *stdioTransport) ensureStarted() error {
 // both newline-delimited JSON and Content-Length framing. Blank lines
 // are skipped (LSP-style framing uses them as separators).
 func (t *stdioTransport) readFrame() ([]byte, error) {
+	t.mu.Lock()
+	sc := t.scanner
+	t.mu.Unlock()
+	return t.readFrameWith(sc)
+}
+
+// readFrameWith reads one JSON frame from the given scanner (no
+// locking; callers snapshot t.scanner first).
+func (t *stdioTransport) readFrameWith(sc *bufio.Scanner) ([]byte, error) {
+	if sc == nil {
+		return nil, fmt.Errorf("mcp: stdio not started")
+	}
 	for {
-		if !t.scanner.Scan() {
-			err := t.scanner.Err()
+		if !sc.Scan() {
+			err := sc.Err()
 			if err != nil {
 				return nil, fmt.Errorf("mcp: stdio read: %w", err)
 			}

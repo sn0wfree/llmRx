@@ -44,7 +44,7 @@ func formPostWithCookie(t *testing.T, h http.Handler, path, cookie string, field
 // assertContains fails the test if substr is not in s.
 func assertContains(t *testing.T, s, substr string) {
 	t.Helper()
-	if !contains(s, substr) {
+	if !strings.Contains(s, substr) {
 		t.Errorf("expected body to contain %q\nbody: %s", substr, s)
 	}
 }
@@ -54,7 +54,7 @@ func assertContains(t *testing.T, s, substr string) {
 // into a partial).
 func assertNotContains(t *testing.T, s, substr string) {
 	t.Helper()
-	if contains(s, substr) {
+	if strings.Contains(s, substr) {
 		t.Errorf("expected body to NOT contain %q\nbody: %s", substr, s)
 	}
 }

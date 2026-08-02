@@ -1,10 +1,7 @@
 package webui
 
 import (
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/sn0wfree/llmRx/internal/model"
@@ -136,135 +133,6 @@ func TestParseInt64Default(t *testing.T) {
 	if got := parseInt64Default("abc", 99); got != 99 {
 		t.Fatalf("invalid: got %d", got)
 	}
-}
-
-func TestContainsArr(t *testing.T) {
-	if !containsArr([]string{"a", "b", "c"}, "b") {
-		t.Fatal("expected true")
-	}
-	if containsArr([]string{"a", "b", "c"}, "d") {
-		t.Fatal("expected false")
-	}
-	if containsArr(nil, "a") {
-		t.Fatal("nil: expected false")
-	}
-}
-
-func TestEscapeHTML(t *testing.T) {
-	if got := escapeHTML("hello"); got != "hello" {
-		t.Errorf("plain text: got %q", got)
-	}
-	if got := escapeHTML(""); got != "" {
-		t.Errorf("empty: got %q", got)
-	}
-}
-
-func TestNewSessionToken(t *testing.T) {
-	tok1 := newSessionToken()
-	tok2 := newSessionToken()
-	if tok1 == "" || tok2 == "" {
-		t.Fatal("tokens should not be empty")
-	}
-	if tok1 == tok2 {
-		t.Fatal("tokens should be unique")
-	}
-	if len(tok1) != 64 {
-		t.Fatalf("token length: got %d, want 64", len(tok1))
-	}
-}
-
-func TestNewAPIToken(t *testing.T) {
-	tok1 := newAPIToken()
-	tok2 := newAPIToken()
-	if tok1 == "" || tok2 == "" {
-		t.Fatal("tokens should not be empty")
-	}
-	if tok1 == tok2 {
-		t.Fatal("tokens should be unique")
-	}
-	if !strings.HasPrefix(tok1, "sk-") {
-		t.Fatalf("api token missing sk- prefix: %q", tok1)
-	}
-	// "sk-" (3) + 64 hex chars = 67
-	if len(tok1) != 67 {
-		t.Fatalf("api token length: got %d, want 67", len(tok1))
-	}
-}
-
-func TestNowAdd(t *testing.T) {
-	got := nowAdd(0)
-	if got.IsZero() {
-		t.Fatal("nowAdd(0) should not be zero")
-	}
-}
-
-func TestSessionMiddleware_NoCookie(t *testing.T) {
-	st := newTestApp(t)
-	mw := SessionMiddleware(st)
-	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("handler should not be called")
-	}))
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/admin/dashboard", nil)
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("expected redirect 303, got %d", rec.Code)
-	}
-}
-
-func TestSessionMiddleware_BadCookie(t *testing.T) {
-	st := newTestApp(t)
-	mw := SessionMiddleware(st)
-	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("handler should not be called")
-	}))
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/admin/dashboard", nil)
-	req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: "invalid"})
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("expected redirect 303, got %d", rec.Code)
-	}
-}
-
-func TestRequireRole_InsufficientRole(t *testing.T) {
-	mw := RequireRole(model.RoleRoot)
-	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("handler should not be called")
-	}))
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/admin/users", nil)
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("expected redirect for nil user, got %d", rec.Code)
-	}
-}
-
-func TestMethodOverride(t *testing.T) {
-	called := false
-	h := MethodOverride(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		if r.Method != "DELETE" {
-			t.Fatalf("expected DELETE, got %s", r.Method)
-		}
-	}))
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/admin/x?_method=DELETE", nil)
-	h.ServeHTTP(rec, req)
-	if !called {
-		t.Fatal("handler was not called")
-	}
-}
-
-func TestMethodOverride_NoOverride(t *testing.T) {
-	h := MethodOverride(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" {
-			t.Fatalf("expected POST, got %s", r.Method)
-		}
-	}))
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/admin/x", nil)
-	h.ServeHTTP(rec, req)
 }
 
 func TestWebAPIBridge_TriggerReloadNoop(t *testing.T) {

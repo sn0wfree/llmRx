@@ -73,8 +73,12 @@ func TestAlerts_RecordFired(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().Unix()
-	if err := s.RecordAlertFired(a.ID, now); err != nil {
-		t.Fatalf("RecordAlertFired: %v", err)
+	if changed, err := s.RecordAlertFired(a.ID, now); err != nil || !changed {
+		t.Fatalf("RecordAlertFired: changed=%v err=%v", changed, err)
+	}
+	// Older timestamps lose the claim (multi-replica no double-fire).
+	if changed, err := s.RecordAlertFired(a.ID, now-10); err != nil || changed {
+		t.Fatalf("stale RecordAlertFired must lose: changed=%v err=%v", changed, err)
 	}
 	got, _ := s.GetAlert(a.ID)
 	if got.LastFiredAt != now {

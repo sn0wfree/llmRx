@@ -55,6 +55,11 @@ type Manager struct {
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
 	startWorker sync.Once
+	// workerAlive tracks whether a batch goroutine is currently
+	// draining ch/flushCh. A panic restarts the worker (new
+	// channels); Insert/Flush snapshot the pointers under mu so
+	// they never touch a half-rebuilt worker.
+	workerAlive bool
 }
 
 // New constructs a Manager rooted at dir using the provided
@@ -85,11 +90,14 @@ func (m *Manager) SetAsyncConfig(cfg AsyncConfig) {
 // is a no-op when async is disabled or the worker has not been
 // started. Useful for tests and graceful shutdown.
 func (m *Manager) Flush() {
-	if m.ch == nil {
+	m.mu.RLock()
+	ch, flushCh, alive := m.ch, m.flushCh, m.workerAlive
+	m.mu.RUnlock()
+	if ch == nil || flushCh == nil || !alive {
 		return
 	}
 	done := make(chan struct{})
-	m.flushCh <- done
+	flushCh <- done
 	<-done
 }
 
@@ -106,8 +114,16 @@ func (m *Manager) Insert(entry *model.Log) error {
 	m.startWorker.Do(func() {
 		m.startBatchWorker()
 	})
+	m.mu.RLock()
+	ch, alive := m.ch, m.workerAlive
+	m.mu.RUnlock()
+	if !alive {
+		// Worker is (re)starting after a panic — insert
+		// synchronously rather than enqueueing to a dead channel.
+		return m.driver.Insert(entry)
+	}
 	select {
-	case m.ch <- entry:
+	case ch <- entry:
 		return nil
 	default:
 		// Channel full — fall back to synchronous insert to avoid
@@ -158,8 +174,11 @@ func (m *Manager) DeleteFiles(days []string) error {
 func (m *Manager) Close() error {
 	var err error
 	m.closeOnce.Do(func() {
-		if m.ch != nil {
-			m.cancel()
+		m.mu.RLock()
+		ch, cancel := m.ch, m.cancel
+		m.mu.RUnlock()
+		if ch != nil && cancel != nil {
+			cancel()
 			m.wg.Wait()
 		}
 		err = m.driver.Close()
@@ -167,15 +186,20 @@ func (m *Manager) Close() error {
 	return err
 }
 
-// startBatchWorker launches the async batch goroutine.
-// Called once via sync.Once. Safe to call even when async is disabled
-// (creates a channel that will never receive entries, but Close will
-// drain it correctly).
+// startBatchWorker launches the async batch goroutine (once via
+// sync.Once, again after a panic restart). Safe to call even when
+// async is disabled (creates a channel that will never receive
+// entries, but Close will drain it correctly). Rebuilds the
+// channels under mu so concurrent Insert/Flush see a consistent
+// snapshot.
 func (m *Manager) startBatchWorker() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.ch = make(chan *model.Log, m.asyncCfg.ChannelSize)
 	m.flushCh = make(chan chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
+	m.workerAlive = true
 	m.wg.Add(1)
 	go m.runBatchLoop(ctx)
 }
@@ -190,6 +214,12 @@ func (m *Manager) runBatchLoop(ctx context.Context) {
 			logging.Error("logstore worker panic",
 				logging.F("recover", r),
 			)
+			// Mark dead first so concurrent Insert/Flush don't
+			// send into channels nobody drains, then restart
+			// (startBatchWorker rebuilds the channels under mu).
+			m.mu.Lock()
+			m.workerAlive = false
+			m.mu.Unlock()
 			time.Sleep(100 * time.Millisecond)
 			m.startBatchWorker()
 		}

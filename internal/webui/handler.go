@@ -209,11 +209,11 @@ func (h *Handler) ChannelAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	method, ok := formMethod(w, r, false)
+	if !ok {
 		return
 	}
-	switch strings.ToUpper(r.FormValue("_method")) {
+	switch method {
 	case "PUT":
 		h.updateChannelByID(w, r, id)
 	case "DELETE":
@@ -221,6 +221,22 @@ func (h *Handler) ChannelAction(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// formMethod parses the form and returns the upper-cased _method
+// value. defaultPut makes a missing _method mean PUT (the combo
+// form's historical default); all other form actions require an
+// explicit verb.
+func formMethod(w http.ResponseWriter, r *http.Request, defaultPut bool) (string, bool) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "form parse error", http.StatusBadRequest)
+		return "", false
+	}
+	m := strings.ToUpper(r.FormValue("_method"))
+	if m == "" && defaultPut {
+		m = "PUT"
+	}
+	return m, true
 }
 
 // LoginPage renders the login form.

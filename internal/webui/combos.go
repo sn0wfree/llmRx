@@ -233,13 +233,9 @@ func (h *Handler) ComboAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad combo id", http.StatusBadRequest)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "form parse error", http.StatusBadRequest)
+	method, ok := formMethod(w, r, true) // combo forms default to PUT
+	if !ok {
 		return
-	}
-	method := strings.ToUpper(r.FormValue("_method"))
-	if method == "" {
-		method = "PUT" // default for form submit
 	}
 	switch method {
 	case "PUT":

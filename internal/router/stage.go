@@ -106,8 +106,13 @@ func joinLog(parts []string) string {
 
 // splitByIntent partitions channels in place so that channels whose
 // Intents list contains kind occupy channels[:n] and the rest fill
-// channels[n:]. Returns the boundary n. Stable: relative order is
-// preserved within each group.
+// channels[n:]. Returns the boundary n.
+//
+// NOT stable: the swap-based partition preserves the matched
+// group's relative order, but the non-matched group can be
+// reordered. Fine for L5 (channel priority is recomputed by the
+// sampler, not by slice position); documented because the original
+// comment claimed a stable partition.
 func splitByIntent(channels []*model.Channel, kind string) int {
 	// Two-pointer in-place stable partition. We walk the slice
 	// looking for matches; when we find one, we slide it forward

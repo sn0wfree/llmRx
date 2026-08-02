@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
@@ -31,7 +33,7 @@ func OpenPostgres(dsn string) (*Postgres, error) {
 	if dsn == "" {
 		return nil, errors.New("empty dsn")
 	}
-	db, err := sql.Open("pgx", dsn)
+	db, err := sql.Open("pgx", withStatementTimeout(dsn))
 	if err != nil {
 		return nil, fmt.Errorf("open: %w", err)
 	}
@@ -49,6 +51,27 @@ func OpenPostgres(dsn string) (*Postgres, error) {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return p, nil
+}
+
+// withStatementTimeout appends `statement_timeout=30000` to the DSN
+// connection options if not already present. This bounds every
+// statement (reads included — they run through lazy sql.Rows, so a
+// Go-side context deadline would fire before Scan) so a stuck or
+// deadlocked Postgres can't hang a request goroutine forever.
+func withStatementTimeout(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return dsn
+	}
+	q := u.Query()
+	opts := q.Get("options")
+	if opts == "" {
+		q.Set("options", "-c statement_timeout=30000")
+	} else if !strings.Contains(opts, "statement_timeout") {
+		q.Set("options", opts+" -c statement_timeout=30000")
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // RawQueryRow exposes the underlying connection for backend-specific

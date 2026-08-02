@@ -224,7 +224,7 @@ func TestPickProvider_PrefixButNoMatchingProbe_NoFallback(t *testing.T) {
 func TestHook_IPConflict_DifferentKeyForSameIP(t *testing.T) {
 	store := &fakeStore{
 		channels: []*model.BYOKChannel{
-			{ID: 1, OwnerIP: "127.0.0.1", KeyMasked: maskKey("sk-existing"), Status: 1, Provider: "openai"},
+			{ID: 1, OwnerIP: "127.0.0.1", KeyMasked: secrets.Mask("sk-existing"), Status: 1, Provider: "openai"},
 		},
 	}
 	mgr := New(Config{
@@ -483,33 +483,20 @@ func TestWriteErr(t *testing.T) {
 // maskKey edge cases
 // ──────────────────────────────────────────────────────────
 
-func TestMaskKey_Empty(t *testing.T) {
-	if got := maskKey(""); got != "***" {
-		t.Fatalf("empty: got %q", got)
+// TestMaskKey_Unified: byok now delegates to secrets.Mask (shared
+// 4-char-prefix/4-char-suffix format) instead of its own 3-char
+// variant — the short keys used to collide on the first 3 chars.
+func TestMaskKey_Unified(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"ab", "ab"},
+		{"abcd", "abcd"},
+		{"sk-abcdefghijklmnop", "sk-a***mnop"},
 	}
-}
-
-func TestMaskKey_TwoChars(t *testing.T) {
-	if got := maskKey("ab"); got != "***" {
-		t.Fatalf("2 chars: got %q", got)
-	}
-}
-
-func TestMaskKey_FourChars(t *testing.T) {
-	// 4 chars > 2 → use first/last pattern.
-	got := maskKey("abcd")
-	want := "a***d"
-	if got != want {
-		t.Fatalf("4 chars: got %q, want %q", got, want)
-	}
-}
-
-func TestMaskKey_LongKey(t *testing.T) {
-	// > 12 chars → k[:3] + "***" + k[len-4:].
-	got := maskKey("sk-abcdefghijklmnop")
-	want := "sk-***mnop"
-	if got != want {
-		t.Fatalf("long: got %q, want %q", got, want)
+	for _, tc := range cases {
+		if got := secrets.Mask(tc.in); got != tc.want {
+			t.Fatalf("secrets.Mask(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 

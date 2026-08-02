@@ -2,7 +2,6 @@ package webui
 
 import (
 	"bytes"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -76,26 +75,6 @@ func TestRenderer_DashboardPage(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in output", want)
 		}
-	}
-}
-
-func TestRenderer_FlashOOB(t *testing.T) {
-	r, err := NewRenderer()
-	if err != nil {
-		t.Fatalf("NewRenderer: %v", err)
-	}
-
-	rec := httptest.NewRecorder()
-	r.Flash(rec, "success", "Saved successfully")
-	body := rec.Body.String()
-	if !strings.Contains(body, "hx-swap-oob") {
-		t.Errorf("flash response missing OOB marker: %s", body)
-	}
-	if !strings.Contains(body, "Saved successfully") {
-		t.Errorf("flash response missing message: %s", body)
-	}
-	if !strings.Contains(body, "green") {
-		t.Errorf("flash response missing success color: %s", body)
 	}
 }
 

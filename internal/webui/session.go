@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"html"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/broker"
@@ -98,23 +97,6 @@ func RequireRole(min model.UserRole) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-// MethodOverride middleware allows HTML forms (which only support
-// GET/POST) to issue PUT/DELETE requests via a hidden _method field.
-// Used for form-based edits where HTMX is not appropriate.
-func MethodOverride(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" {
-			if m := r.FormValue("_method"); m != "" {
-				upper := strings.ToUpper(m)
-				if upper == "PUT" || upper == "PATCH" || upper == "DELETE" {
-					r.Method = upper
-				}
-			}
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 // escapeHTML returns s with the five HTML-significant characters

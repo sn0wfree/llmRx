@@ -88,7 +88,7 @@ func (m *Manager) Hook() middleware.UnknownTokenHook {
 
 		// Have we already registered this IP's key?
 		if existing, err := m.store.GetBYOKChannelByIP(ctx, ip); err == nil && existing != nil {
-			if existing.KeyMasked == maskKey(rawKey) {
+			if existing.KeyMasked == secrets.Mask(rawKey) {
 				_ = m.store.TouchBYOKChannel(ctx, existing.ID)
 				ctx2 := context.WithValue(ctx, byokContextKey{}, &existing)
 				setupBYOKContext(w, r, ctx2, rawKey, existing.Provider)
@@ -128,7 +128,7 @@ func (m *Manager) Hook() middleware.UnknownTokenHook {
 		ch := &model.BYOKChannel{
 			Provider:      providerName,
 			KeyCiphertext: cipher,
-			KeyMasked:     maskKey(rawKey),
+			KeyMasked:     secrets.Mask(rawKey),
 			OwnerIP:       ip,
 			Status:        1,
 			ExpiresAt:     expiresAt,
@@ -204,19 +204,6 @@ func ipAllowed(ip string, whitelist []string) bool {
 		}
 	}
 	return false
-}
-
-func maskKey(k string) string {
-	if len(k) > 12 {
-		return k[:3] + "***" + k[len(k)-4:]
-	}
-	if len(k) > 8 {
-		return k[:3] + "***" + k[len(k)-4:]
-	}
-	if len(k) > 2 {
-		return k[:1] + "***" + k[len(k)-1:]
-	}
-	return "***"
 }
 
 func pickProvider(key string, probes map[string]ProbeFunc) (string, ProbeFunc, string) {

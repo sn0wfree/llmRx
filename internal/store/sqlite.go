@@ -125,12 +125,19 @@ func (s *dbStore) applyPragmas() error {
 
 func (s *dbStore) Close() error { return s.db.Close() }
 
-// exec/query/queryRow route every store statement through
-// s.d.RewriteQuery so the SQL text can stay in '?' syntax while
-// non-SQLite backends translate to their native bind markers
-// (e.g. Postgres $N). SQLite's dialect is the identity.
+// defaultTimeout bounds every exec call that has no explicit
+// context. Query/queryRow are NOT wrapped here: sql.Rows/Rows.Scan
+// are lazy and would run after a deferred cancel, silently turning
+// every read into "context canceled". Long-running statement
+// protection for reads comes from connection-level timeouts:
+// Postgres sets statement_timeout at open (see postgres.go) and
+// SQLite is process-local with busy_timeout.
+const defaultTimeout = 30 * time.Second
+
 func (s *dbStore) exec(q string, args ...any) (sql.Result, error) {
-	return s.db.Exec(s.d.RewriteQuery(q), args...)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
+	defer cancel()
+	return s.db.ExecContext(ctx, s.d.RewriteQuery(q), args...)
 }
 
 func (s *dbStore) query(q string, args ...any) (*sql.Rows, error) {
@@ -1449,9 +1456,29 @@ func (s *dbStore) DeleteAlert(id int64) error {
 	return err
 }
 
-func (s *dbStore) RecordAlertFired(id int64, atUnix int64) error {
-	_, err := s.exec(`UPDATE alerts SET last_fired_at=? WHERE id=?`, atUnix, id)
-	return err
+func (s *dbStore) RecordAlertFired(id int64, atUnix int64) (bool, error) {
+	// Conditional UPDATE: only the first replica to push
+	// last_fired_at to atUnix wins the fire, so multi-replica
+	// (Postgres) deployments can't double-send webhooks.
+	// changed=false means another replica already fired with a
+	// newer timestamp.
+	//
+	// <= (not <): with second-granularity timestamps, a rule whose
+	// cooldown is shorter than one second legitimately re-fires
+	// within the same second (e.g. cooldown=0, tick every second);
+	// strictly-newer would silently swallow those fires. The
+	// trade-off is that two replicas firing in the exact same
+	// second can both claim the fire — a much narrower window than
+	// the unconditional UPDATE this replaced.
+	res, err := s.exec(`UPDATE alerts SET last_fired_at=? WHERE id=? AND last_fired_at <= ?`, atUnix, id, atUnix)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // DisableAlert flips the rule's enabled flag to 0 and records

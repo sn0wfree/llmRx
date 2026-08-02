@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -122,4 +123,45 @@ func TestF(t *testing.T) {
 	if f.Key != "k" || f.Value != "v" {
 		t.Errorf("F() = %+v", f)
 	}
+}
+
+// TestConcurrentSetLevelAndLog exercises the SetLevel/log race
+// (run with -race): changing the global level while other
+// goroutines log must not touch level/format/out unsynchronised.
+func TestConcurrentSetLevelAndLog(t *testing.T) {
+	var buf syncBuffer
+	defer SetOutput(nil)
+	SetOutput(&buf)
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 200; i++ {
+			SetLevel(LevelInfo)
+			SetLevel(LevelDebug)
+		}
+		close(done)
+	}()
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				Info("racing", F("n", j))
+				With(map[string]any{"k": "v"}).Debug("racing-sub")
+			}
+		}()
+	}
+	<-done
+	wg.Wait()
+}
+
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
 }

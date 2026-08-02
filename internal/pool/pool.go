@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/secrets"
 	"github.com/sn0wfree/llmRx/internal/store"
 )
 
@@ -176,15 +177,11 @@ func (p *ChannelPool) NextKey(channelID int64) (*model.Key, error) {
 		if ke.Status != model.KeyActive {
 			continue
 		}
-		masked := ke.Key
-		if len(masked) > 8 {
-			masked = masked[:4] + "***" + masked[len(masked)-4:]
-		}
 		return &model.Key{
 			ID:        ke.DBID,
 			ChannelID: channelID,
 			Key:       ke.Key,
-			KeyMasked: masked,
+			KeyMasked: secrets.Mask(ke.Key),
 			Status:    ke.Status,
 		}, nil
 	}

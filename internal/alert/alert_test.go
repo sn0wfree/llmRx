@@ -179,7 +179,7 @@ func TestManagerCooldownSuppresses(t *testing.T) {
 	// LastFiredAt == 0 + WindowSec 60 has at least 10 samples, but
 	// the test here is for the cooldown gate. Pre-fire via store,
 	// then re-evaluate and ensure no second fire.
-	if err := st.RecordAlertFired(a.ID, now.Unix()); err != nil {
+	if _, err := st.RecordAlertFired(a.ID, now.Unix()); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 	m := NewManager(st, ls, []Channel{&recordingChannel{name: "builtin"}}, Config{DefaultCooldown: time.Hour})

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -186,11 +185,11 @@ func (h *Handler) AlertAction(w http.ResponseWriter, r *http.Request) {
 		h.alertDelete(w, r, id)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	method, ok := formMethod(w, r, false)
+	if !ok {
 		return
 	}
-	switch strings.ToUpper(r.FormValue("_method")) {
+	switch method {
 	case "PUT":
 		h.alertUpdate(w, r, id)
 	case "DELETE":
@@ -466,6 +465,5 @@ func loadEffectiveYAML(path string, st interface{ GetRuntimeSettings() ([]byte, 
 	if raw, err := st.GetRuntimeSettings(); err == nil && len(raw) > 0 {
 		out["runtime_settings"] = "(custom - see config dump)"
 	}
-	_ = filepath.Base // suppress unused
 	return out, nil
 }

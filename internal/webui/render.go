@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -49,12 +48,6 @@ func NewRenderer() (*Renderer, error) {
 				return "—"
 			}
 		},
-		"formatTimePtr": func(t *time.Time) string {
-			if t == nil || t.IsZero() {
-				return "—"
-			}
-			return t.Format("2006-01-02 15:04")
-		},
 		"statusBadge": func(status any) template.HTML {
 			s := 0
 			switch v := status.(type) {
@@ -75,23 +68,16 @@ func NewRenderer() (*Renderer, error) {
 			return `<span class="px-2 py-0.5 text-xs bg-gray-100 text-gray-800 rounded">禁用</span>`
 		},
 		"truncate": func(s string, n int) string {
-			if len(s) <= n {
+			r := []rune(s)
+			if len(r) <= n {
 				return s
 			}
-			return s[:n] + "..."
+			return string(r[:n]) + "..."
 		},
 		"add": func(a, b int) int { return a + b },
 		"sub": func(a, b int) int { return a - b },
 		"joinStrings": func(arr []string) string {
 			return strings.Join(arr, "\n")
-		},
-		"contains": func(arr []string, s string) bool {
-			for _, x := range arr {
-				if x == s {
-					return true
-				}
-			}
-			return false
 		},
 		// jstr escapes a value as a double-quoted JS string literal
 		// (strconv.Quote). hx-confirm values are eval'd by htmx as
@@ -101,12 +87,6 @@ func NewRenderer() (*Renderer, error) {
 		// makes the interpolated fragment a plain string literal —
 		// the pair turns the expression into inert data.
 		"jstr": jstr,
-		"maskKey": func(s string) string {
-			if len(s) <= 8 {
-				return "***"
-			}
-			return s[:4] + "..." + s[len(s)-4:]
-		},
 		// fieldError returns the error message for a form field, or
 		// "" if the field is valid. Used by templates to render
 		// inline field-level error text. Renamed from "map" to avoid
@@ -184,35 +164,6 @@ func (r *Renderer) Render(w io.Writer, page string, data any) error {
 // Useful for HTMX partial updates.
 func (r *Renderer) RenderPartial(w io.Writer, name string, data any) error {
 	return r.templates.ExecuteTemplate(w, name, data)
-}
-
-// Flash writes an HTMX OOB flash message to the response.
-func (r *Renderer) Flash(w http.ResponseWriter, level, msg string) {
-	colors := map[string]string{
-		"success": "green",
-		"error":   "red",
-		"warning": "yellow",
-		"info":    "blue",
-	}
-	c := colors[level]
-	if c == "" {
-		c = "blue"
-	}
-	html := fmt.Sprintf(
-		`<div id="flash" hx-swap-oob="innerHTML" class="p-3 rounded bg-%s-100 text-%s-800 border border-%s-200">%s</div>`,
-		c, c, c, template.HTMLEscapeString(msg),
-	)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(html))
-}
-
-// PageData wraps data with common fields needed by base.html.
-type PageData struct {
-	Title  string
-	User   *User
-	Active string
-	Flash  string
-	Data   any
 }
 
 // User is a minimal projection of model.User for templates.

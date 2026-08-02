@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -40,63 +41,41 @@ func TestSetStore_NilStore(t *testing.T) {
 	}
 }
 
-func TestChannelUpdate_DirectCallBadID(t *testing.T) {
-	h, _ := newTestWebUI(t)
-	req := httptest.NewRequest(http.MethodPut, "/channels/abc", nil)
-	req = chiCtx(req, map[string]string{"id": "abc"})
-	rec := httptest.NewRecorder()
-	h.ChannelUpdate(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("code=%d want 400", rec.Code)
-	}
-}
-
-func TestChannelUpdate_DirectCallNotFound(t *testing.T) {
+func TestChannelUpdateImpl_DirectCallNotFound(t *testing.T) {
 	h, _ := newTestWebUI(t)
 	req := httptest.NewRequest(http.MethodPut, "/channels/9999", nil)
 	req = chiCtx(req, map[string]string{"id": "9999"})
 	rec := httptest.NewRecorder()
-	h.ChannelUpdate(rec, req)
+	h.updateChannelByID(rec, req, chiID(t, req))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("code=%d want 404", rec.Code)
 	}
 }
 
-func TestChannelUpdate_DirectCallSuccess(t *testing.T) {
+func TestChannelUpdateImpl_DirectCallSuccess(t *testing.T) {
 	h, st := newTestWebUI(t)
 	ch := newCh(t, st, "ch1", "openai")
 	req := httptest.NewRequest(http.MethodPut, "/channels/"+itoa(ch.ID), nil)
 	req = chiCtx(req, map[string]string{"id": itoa(ch.ID)})
 	rec := httptest.NewRecorder()
-	h.ChannelUpdate(rec, req)
+	h.updateChannelByID(rec, req, chiID(t, req))
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("code=%d want 303, body=%s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestTokenUpdate_DirectCallBadID(t *testing.T) {
-	h, _ := newTestWebUI(t)
-	req := httptest.NewRequest(http.MethodPut, "/tokens/xyz", nil)
-	req = chiCtx(req, map[string]string{"id": "xyz"})
-	rec := httptest.NewRecorder()
-	h.TokenUpdate(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("code=%d want 400", rec.Code)
-	}
-}
-
-func TestTokenUpdate_DirectCallNotFound(t *testing.T) {
+func TestTokenUpdateImpl_DirectCallNotFound(t *testing.T) {
 	h, _ := newTestWebUI(t)
 	req := httptest.NewRequest(http.MethodPut, "/tokens/99999", nil)
 	req = chiCtx(req, map[string]string{"id": "99999"})
 	rec := httptest.NewRecorder()
-	h.TokenUpdate(rec, req)
+	h.updateTokenByID(rec, req, chiID(t, req))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("code=%d want 404", rec.Code)
 	}
 }
 
-func TestTokenUpdate_DirectCallSuccess(t *testing.T) {
+func TestTokenUpdateImpl_DirectCallSuccess(t *testing.T) {
 	h, st := newTestWebUI(t)
 	tk := &model.Token{
 		Name: "tok1", Key: "sk-test-token-1234567890abcdef",
@@ -108,7 +87,7 @@ func TestTokenUpdate_DirectCallSuccess(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/tokens/"+itoa(tk.ID), nil)
 	req = chiCtx(req, map[string]string{"id": itoa(tk.ID)})
 	rec := httptest.NewRecorder()
-	h.TokenUpdate(rec, req)
+	h.updateTokenByID(rec, req, chiID(t, req))
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("code=%d want 303, body=%s", rec.Code, rec.Body.String())
 	}
@@ -151,4 +130,15 @@ func TestChannelDelete_DirectCallSuccess(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code=%d want 200", rec.Code)
 	}
+}
+
+// chiID parses the "id" URL param from a chi-populated request
+// context (helpers for the direct-call tests above).
+func chiID(t *testing.T, req *http.Request) int64 {
+	t.Helper()
+	id, err := strconv.ParseInt(chi.URLParam(req, "id"), 10, 64)
+	if err != nil {
+		t.Fatalf("parse id: %v", err)
+	}
+	return id
 }

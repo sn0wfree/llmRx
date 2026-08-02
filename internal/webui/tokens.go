@@ -263,11 +263,11 @@ func (h *Handler) TokenAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	method, ok := formMethod(w, r, false)
+	if !ok {
 		return
 	}
-	switch strings.ToUpper(r.FormValue("_method")) {
+	switch method {
 	case "PUT":
 		h.updateTokenByID(w, r, id)
 	case "DELETE":
@@ -275,16 +275,6 @@ func (h *Handler) TokenAction(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
-}
-
-// TokenUpdate is kept for API compat (HTMX PUT).
-func (h *Handler) TokenUpdate(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
-		return
-	}
-	h.updateTokenByID(w, r, id)
 }
 
 func (h *Handler) updateTokenByID(w http.ResponseWriter, r *http.Request, id int64) {
@@ -444,14 +434,4 @@ func parseInt64Default(s string, def int64) int64 {
 		return def
 	}
 	return v
-}
-
-// Note: `strings` and `time` already imported. Use existing helpers.
-func containsArr(slice []string, s string) bool {
-	for _, x := range slice {
-		if x == s {
-			return true
-		}
-	}
-	return false
 }

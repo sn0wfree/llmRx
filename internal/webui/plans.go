@@ -125,11 +125,11 @@ func (h *Handler) PlanAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	method, ok := formMethod(w, r, false)
+	if !ok {
 		return
 	}
-	switch strings.ToUpper(r.FormValue("_method")) {
+	switch method {
 	case "PUT":
 		h.updatePlanByID(w, r, id)
 	case "DELETE":

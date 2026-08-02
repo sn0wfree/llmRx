@@ -9,6 +9,7 @@ import (
 
 	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/secrets"
 	"github.com/sn0wfree/llmRx/internal/store"
 )
 
@@ -32,8 +33,8 @@ func TestMaskKey(t *testing.T) {
 		{"sk-abcdefghij123456", "sk-a***3456"},
 	}
 	for _, tc := range tests {
-		if got := maskKey(tc.in); got != tc.want {
-			t.Errorf("maskKey(%q)=%q want %q", tc.in, got, tc.want)
+		if got := secrets.Mask(tc.in); got != tc.want {
+			t.Errorf("secrets.Mask(%q)=%q want %q", tc.in, got, tc.want)
 		}
 	}
 }

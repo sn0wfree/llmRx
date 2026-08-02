@@ -31,13 +31,13 @@ const (
 // GuardrailRule represents a single guardrail check. Rules are global
 // and reusable; tokens and plans reference them by ID.
 type GuardrailRule struct {
-	ID          int64           `json:"id" gorm:"primaryKey"`
-	Name        string          `json:"name" gorm:"size:128"`
-	Description string          `json:"description" gorm:"size:512"`
-	Type        GuardrailType   `json:"type" gorm:"size:32"`
-	Hook        GuardrailHook   `json:"hook" gorm:"size:16"`
-	OnFailure   GuardrailAction `json:"on_failure" gorm:"size:16"`
-	Config      string          `json:"config" gorm:"serializer:json"`
+	ID          int64           `json:"id"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Type        GuardrailType   `json:"type"`
+	Hook        GuardrailHook   `json:"hook"`
+	OnFailure   GuardrailAction `json:"on_failure"`
+	Config      string          `json:"config"`
 	Priority    int             `json:"priority"`
 	Enabled     bool            `json:"enabled"`
 	CreatedAt   time.Time       `json:"created_at"`
@@ -46,15 +46,15 @@ type GuardrailRule struct {
 
 // GuardrailEvent records a guardrail check result for auditing.
 type GuardrailEvent struct {
-	ID        int64     `json:"id" gorm:"primaryKey"`
-	TokenID   int64     `json:"token_id" gorm:"index"`
+	ID        int64     `json:"id"`
+	TokenID   int64     `json:"token_id"`
 	RuleID    int64     `json:"rule_id"`
-	RuleName  string    `json:"rule_name" gorm:"size:128"`
-	RuleType  string    `json:"rule_type" gorm:"size:32"`
-	Hook      string    `json:"hook" gorm:"size:16"`
+	RuleName  string    `json:"rule_name"`
+	RuleType  string    `json:"rule_type"`
+	Hook      string    `json:"hook"`
 	Verdict   bool      `json:"verdict"` // true = passed, false = blocked
-	Action    string    `json:"action" gorm:"size:16"`
-	Detail    string    `json:"detail" gorm:"size:1024"`
-	RequestIP string    `json:"request_ip" gorm:"size:64"`
+	Action    string    `json:"action"`
+	Detail    string    `json:"detail"`
+	RequestIP string    `json:"request_ip"`
 	CreatedAt time.Time `json:"created_at"`
 }
