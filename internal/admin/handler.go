@@ -47,6 +47,9 @@ type Handler struct {
 	responseCache cache.Cache
 	mcpClientMgr *mcp.ClientManager
 	guardrailEngine *guardrail.GuardrailEngine
+	// reloadNotifier broadcasts local config writes to other
+	// replicas (P12 M2 PG NOTIFY). nil = no-op.
+	reloadNotifier func()
 }
 
 // AlertReloader is the narrow contract the admin /reload handler
@@ -78,6 +81,18 @@ func (h *Handler) SetCache(c cache.Cache) { h.responseCache = c }
 func (h *Handler) SetMCPClientManager(m *mcp.ClientManager) { h.mcpClientMgr = m }
 
 func (h *Handler) SetGuardrailEngine(g *guardrail.GuardrailEngine) { h.guardrailEngine = g }
+
+// SetReloadNotifier installs the cross-replica notify sender. It is
+// fired after every admin write that reloads local caches so other
+// replicas reload promptly (P12 M2).
+func (h *Handler) SetReloadNotifier(fn func()) { h.reloadNotifier = fn }
+
+// fireReload notifies other replicas after a config write.
+func (h *Handler) fireReload() {
+	if h.reloadNotifier != nil {
+		h.reloadNotifier()
+	}
+}
 
 // SetSessionTTL overrides the default 24h session lifetime.
 func (h *Handler) SetSessionTTL(d time.Duration) { h.sessionTTL = d }
@@ -694,6 +709,7 @@ func (h *Handler) CreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = h.tokens.Reload()
+	h.fireReload()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":   t.ID,
 		"key":  plain,
@@ -712,6 +728,7 @@ func (h *Handler) DeleteToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = h.tokens.Reload()
+	h.fireReload()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -772,6 +789,7 @@ func (h *Handler) UpdateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = h.tokens.Reload()
+	h.fireReload()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": cur.ID})
 }
 
@@ -799,6 +817,7 @@ func (h *Handler) ReloadAll(w http.ResponseWriter, r *http.Request) {
 			reloads["alerts"] = err
 		}
 	}
+	h.fireReload()
 	if len(reloads) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":             true,
@@ -1482,6 +1501,7 @@ func (h *Handler) CreateCombo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = h.tokens.Reload()
+	h.fireReload()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":   c.ID,
 		"name": c.Name,
@@ -1530,6 +1550,7 @@ func (h *Handler) UpdateCombo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = h.tokens.Reload()
+	h.fireReload()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -1544,6 +1565,7 @@ func (h *Handler) DeleteCombo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = h.tokens.Reload()
+	h.fireReload()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

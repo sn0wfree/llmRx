@@ -19,21 +19,23 @@ import (
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/cache"
 	"github.com/sn0wfree/llmRx/internal/config"
+	"github.com/sn0wfree/llmRx/internal/guardrail"
 	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/mcp"
 	authmw "github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/observability"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/prober"
 	"github.com/sn0wfree/llmRx/internal/provider"
+	"github.com/sn0wfree/llmRx/internal/ratelimit"
 	"github.com/sn0wfree/llmRx/internal/requestid"
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/secrets"
 	"github.com/sn0wfree/llmRx/internal/store"
 	"github.com/sn0wfree/llmRx/internal/tokencache"
-	"github.com/sn0wfree/llmRx/internal/observability"
 	"github.com/sn0wfree/llmRx/internal/webui"
 )
 
@@ -45,24 +47,35 @@ func fatalf(msg string, fields ...logging.Field) {
 }
 
 type Server struct {
-	cfg        *config.Config
-	cfgPath    string
-	keyFile    string
-	router     *router.RouterEngine
-	pool       *pool.ChannelPool
-	store      store.Store
-	logStore   *logstore.Manager
-	tokens     *tokencache.Cache
-	admin      *admin.Handler
-	engine     *chi.Mux
-	httpServer *http.Server
-	prober     *prober.Cache
+	cfg          *config.Config
+	cfgPath      string
+	keyFile      string
+	router       *router.RouterEngine
+	pool         *pool.ChannelPool
+	store        store.Store
+	logStore     *logstore.Manager
+	tokens       *tokencache.Cache
+	admin        *admin.Handler
+	engine       *chi.Mux
+	httpServer   *http.Server
+	prober       *prober.Cache
 	mcpClientMgr *mcp.ClientManager
 	mcpServer    *mcp.Server
+	// limiter overrides the api handler's default process-local
+	// limiter (cluster-shared PG window backend, P12 M2).
+	limiter *ratelimit.Limiter
+	// guardrailEngine is the shared rule cache; reloaded on config
+	// propagation (ReloadConfig) and admin writes.
+	guardrailEngine *guardrail.GuardrailEngine
+	// alertMgr is set via SetAlertManager; reloaded on propagation.
+	alertMgr *alert.Manager
+	// notifyFn broadcasts local config writes to other replicas
+	// (PG NOTIFY). nil = no-op (single node).
+	notifyFn func()
 	// byokHook, when set, is invoked on unknown bearer tokens
 	// so the BYOK manager can probe+register them. nil means
 	// strict 403 (legacy behaviour).
-	byokHook   authmw.UnknownTokenHook
+	byokHook authmw.UnknownTokenHook
 }
 
 // New wires the HTTP router. byokHook (optional) is invoked
@@ -70,7 +83,9 @@ type Server struct {
 // Must be supplied at construction time (not via setter)
 // because the middleware chain is registered before New
 // returns; a setter would silently never be wired.
-func New(cfg *config.Config, cfgPath string, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, ls *logstore.Manager, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults, keyFile string, byokHook authmw.UnknownTokenHook) *Server {
+// lim (optional) is a limiter with a cluster-shared window backend;
+// nil uses the default process-local limiter.
+func New(cfg *config.Config, cfgPath string, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, ls *logstore.Manager, tc *tokencache.Cache, lb *broker.Broker[*model.Log], rt *runtime.Defaults, keyFile string, byokHook authmw.UnknownTokenHook, lim ...*ratelimit.Limiter) *Server {
 	s := &Server{
 		cfg:      cfg,
 		cfgPath:  cfgPath,
@@ -82,6 +97,9 @@ func New(cfg *config.Config, cfgPath string, eng *router.RouterEngine, cp *pool.
 		tokens:   tc,
 		byokHook: byokHook,
 		engine:   chi.NewRouter(),
+	}
+	if len(lim) > 0 && lim[0] != nil {
+		s.limiter = lim[0]
 	}
 	s.registerMiddleware()
 	s.registerRoutes(lb, rt)
@@ -119,6 +137,9 @@ func (s *Server) corsOptions() cors.Options {
 
 func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defaults) {
 	handler := api.New(s.cfg, s.router, s.pool, s.store, s.logStore, lb, rt)
+	if s.limiter != nil {
+		handler.SetLimiter(s.limiter)
+	}
 
 	// Initialize response cache.
 	responseCache := s.initResponseCache()
@@ -159,6 +180,8 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	}
 	adminHandler.SetMCPClientManager(s.mcpClientMgr)
 	adminHandler.SetGuardrailEngine(handler.GuardrailEngine())
+	s.guardrailEngine = handler.GuardrailEngine()
+	adminHandler.SetReloadNotifier(s.fireNotify)
 
 	// WithLimitsAndOptions (vs. WithLimits) is what actually
 	// fires the BYOK hook when an unknown bearer arrives. If
@@ -191,6 +214,7 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 		if err := s.tokens.Reload(); err != nil {
 			return err
 		}
+		s.fireNotify()
 		return s.pool.LoadFromStore(s.store)
 	})
 	webUI, err := webui.New(s.store, s.logStore, webAPIBridge, s.cfgPath)
@@ -345,8 +369,8 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	case <-ctx.Done():
 		logging.Info("server shutdown signal received, draining",
-		logging.F("timeout_s", 25),
-	)
+			logging.F("timeout_s", 25),
+		)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
 		if s.prober != nil {
@@ -363,8 +387,50 @@ func (s *Server) Start(ctx context.Context) error {
 // SetAlertManager injects the alert manager into the admin handler
 // so that POST /api/v1/reload can also refresh alert rules.
 func (s *Server) SetAlertManager(m *alert.Manager) {
+	s.alertMgr = m
 	if s.admin != nil {
 		s.admin.SetAlertManager(m)
+	}
+}
+
+// SetReloadNotifier installs the cross-replica notify sender
+// (PG NOTIFY llmrx_reload). Called on local admin writes so other
+// replicas reload promptly; nil (default) is a no-op.
+func (s *Server) SetReloadNotifier(fn func()) { s.notifyFn = fn }
+
+// fireNotify broadcasts a reload message to other replicas. Safe
+// to call on every admin write path.
+func (s *Server) fireNotify() {
+	if s.notifyFn != nil {
+		s.notifyFn()
+	}
+}
+
+// ReloadConfig refreshes the process-local caches that mirror
+// database state, so admin writes made on other replicas take
+// effect here. Driven by the PG LISTEN/NOTIFY reload channel plus
+// a 30s polling fallback (P12 M2 config propagation). Router
+// breaker/Thompson posterior state is intentionally left alone —
+// it is per-node observation and resets would lose signal.
+func (s *Server) ReloadConfig() {
+	if err := s.tokens.Reload(); err != nil {
+		logging.Warn("config reload: tokencache", logging.F("error", err.Error()))
+	}
+	if s.guardrailEngine != nil {
+		if err := s.guardrailEngine.Reload(); err != nil {
+			logging.Warn("config reload: guardrails", logging.F("error", err.Error()))
+		}
+	}
+	if s.alertMgr != nil {
+		if err := s.alertMgr.Reload(); err != nil {
+			logging.Warn("config reload: alerts", logging.F("error", err.Error()))
+		}
+	}
+	if s.router != nil {
+		s.router.ReloadAllChannels()
+	}
+	if err := s.pool.LoadFromStore(s.store); err != nil {
+		logging.Warn("config reload: pool", logging.F("error", err.Error()))
 	}
 }
 

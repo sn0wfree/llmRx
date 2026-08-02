@@ -137,6 +137,7 @@ func (h *Handler) DeletePlan(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.tokens != nil {
 		_ = h.tokens.Reload()
+		h.fireReload()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

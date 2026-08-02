@@ -148,8 +148,19 @@ func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st 
 }
 
 // Limits exposes the rate limiter for the server to wire into the
-// middleware. The limiter is process-local (in-memory sliding window).
+// middleware. The limiter is process-local unless a cluster backend
+// (PGWindowBackend) was injected via SetLimiter.
 func (h *Handler) Limits() *ratelimit.Limiter { return h.limits }
+
+// SetLimiter swaps in a limiter built with a cluster-shared window
+// backend (P12 M2: PG minute buckets). Must be called before the
+// middleware chain is mounted; New() already created a default
+// process-local limiter for single-node deployments.
+func (h *Handler) SetLimiter(lim *ratelimit.Limiter) {
+	if lim != nil {
+		h.limits = lim
+	}
+}
 
 // SetStore wires the underlying store reference. Tests use this to
 // inject a fake store; production wires the real SQLite.

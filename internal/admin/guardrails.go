@@ -44,6 +44,7 @@ func (h *Handler) CreateGuardrailRule(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.guardrailEngine != nil {
 		_ = h.guardrailEngine.Reload()
+		h.fireReload()
 	}
 	writeJSON(w, http.StatusCreated, rule)
 }
@@ -75,6 +76,7 @@ func (h *Handler) UpdateGuardrailRule(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.guardrailEngine != nil {
 		_ = h.guardrailEngine.Reload()
+		h.fireReload()
 	}
 	writeJSON(w, http.StatusOK, rule)
 }
@@ -93,6 +95,7 @@ func (h *Handler) DeleteGuardrailRule(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.guardrailEngine != nil {
 		_ = h.guardrailEngine.Reload()
+		h.fireReload()
 	}
 	w.WriteHeader(http.StatusOK)
 }

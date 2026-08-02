@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/dialect"
+	"github.com/sn0wfree/llmRx/internal/logging"
 )
 
 // PGWindowBackend shares RPM/TPM counters across every gateway
@@ -32,8 +33,17 @@ type PGWindowBackend struct {
 	// degrade indicates the backend is in local-fallback mode.
 	degrade bool
 
+	// degradeTries counts local-fallback calls; every
+	// recoverProbeCalls the backend probes the DB to restore
+	// cluster-wide accounting after a transient outage.
+	degradeTries int
+
 	stopClean chan struct{}
 }
+
+// recoverProbeCalls is how many fallback calls happen before the
+// backend attempts to recover the shared database path.
+const recoverProbeCalls = 100
 
 // NewPGWindowBackend creates a PG-backed window backend. The
 // ratelimit_buckets table is created if missing. A background
@@ -82,6 +92,32 @@ func (b *PGWindowBackend) cleanupLoop() {
 	}
 }
 
+// degradeToLocal switches to the fail-open fallback and logs the
+// first occurrence.
+func (b *PGWindowBackend) degradeToLocal(reason string) {
+	if !b.degrade {
+		b.degrade = true
+		b.degradeTries = 0
+		logging.Warn("ratelimit: pg backend degraded to local window", logging.F("reason", reason))
+	}
+}
+
+// mayRecover attempts to restore the shared backend after a
+// degradation. Called on fallback paths; every recoverProbeCalls
+// calls try a lightweight ping.
+func (b *PGWindowBackend) mayRecover() {
+	b.degradeTries++
+	if b.degradeTries < recoverProbeCalls {
+		return
+	}
+	b.degradeTries = 0
+	if err := b.db.Ping(); err != nil {
+		return
+	}
+	b.degrade = false
+	logging.Info("ratelimit: pg backend recovered")
+}
+
 // AllowWindow checks rpm/tpm against the key's current+previous
 // minute buckets and records the request atomically. On any
 // database error the backend degrades to the local fallback and
@@ -91,6 +127,7 @@ func (b *PGWindowBackend) AllowWindow(key int64, rpm, tpm int, promptTokens int,
 		return true, ""
 	}
 	if b.degrade {
+		b.mayRecover()
 		return b.memory.AllowWindow(key, rpm, tpm, promptTokens, now)
 	}
 	curMin := now.Unix() / 60
@@ -98,7 +135,7 @@ func (b *PGWindowBackend) AllowWindow(key int64, rpm, tpm int, promptTokens int,
 
 	tx, err := b.db.Begin()
 	if err != nil {
-		b.degrade = true
+		b.degradeToLocal(err.Error())
 		return b.memory.AllowWindow(key, rpm, tpm, promptTokens, now)
 	}
 	defer func() { _ = tx.Rollback() }()
@@ -108,7 +145,7 @@ func (b *PGWindowBackend) AllowWindow(key int64, rpm, tpm int, promptTokens int,
 		`SELECT requests, tokens FROM ratelimit_buckets WHERE key_id = ? AND window_min = ? FOR UPDATE`),
 		key, curMin).Scan(&curReqs, &curToks)
 	if err != nil && err != sql.ErrNoRows {
-		b.degrade = true
+		b.degradeToLocal(err.Error())
 		return b.memory.AllowWindow(key, rpm, tpm, promptTokens, now)
 	}
 
@@ -133,11 +170,11 @@ func (b *PGWindowBackend) AllowWindow(key int64, rpm, tpm int, promptTokens int,
 		   SET requests = ratelimit_buckets.requests + 1,
 		       tokens = ratelimit_buckets.tokens + EXCLUDED.tokens`),
 		key, curMin, promptTokens); err != nil {
-		b.degrade = true
+		b.degradeToLocal(err.Error())
 		return b.memory.AllowWindow(key, rpm, tpm, promptTokens, now)
 	}
 	if err := tx.Commit(); err != nil {
-		b.degrade = true
+		b.degradeToLocal(err.Error())
 		return b.memory.AllowWindow(key, rpm, tpm, promptTokens, now)
 	}
 	return true, ""
@@ -150,6 +187,7 @@ func (b *PGWindowBackend) AccountWindow(key int64, extraTokens int, now time.Tim
 		return
 	}
 	if b.degrade {
+		b.mayRecover()
 		b.memory.AccountWindow(key, extraTokens, now)
 		return
 	}
@@ -160,13 +198,14 @@ func (b *PGWindowBackend) AccountWindow(key int64, extraTokens int, now time.Tim
 		 ON CONFLICT (key_id, window_min) DO UPDATE
 		   SET tokens = ratelimit_buckets.tokens + EXCLUDED.tokens`),
 		key, curMin, extraTokens); err != nil {
-		b.degrade = true
+		b.degradeToLocal(err.Error())
 	}
 }
 
 // AccountRequestWindow records one RPM-only request (MCP calls).
 func (b *PGWindowBackend) AccountRequestWindow(key int64, now time.Time) {
 	if b.degrade {
+		b.mayRecover()
 		b.memory.AccountRequestWindow(key, now)
 		return
 	}
@@ -177,7 +216,7 @@ func (b *PGWindowBackend) AccountRequestWindow(key int64, now time.Time) {
 		 ON CONFLICT (key_id, window_min) DO UPDATE
 		   SET requests = ratelimit_buckets.requests + 1`),
 		key, curMin); err != nil {
-		b.degrade = true
+		b.degradeToLocal(err.Error())
 	}
 }
 

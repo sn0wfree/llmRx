@@ -16,10 +16,13 @@ import (
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/byok"
 	"github.com/sn0wfree/llmRx/internal/config"
+	"github.com/sn0wfree/llmRx/internal/dialect"
 	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/logstore"
 	authmw "github.com/sn0wfree/llmRx/internal/middleware"
+	"github.com/sn0wfree/llmRx/internal/notify"
 	"github.com/sn0wfree/llmRx/internal/observability"
+	"github.com/sn0wfree/llmRx/internal/ratelimit"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/modelmeta"
 	"github.com/sn0wfree/llmRx/internal/pool"
@@ -339,8 +342,35 @@ func main() {
 		logging.Info("byok hook enabled", logging.F("prefixes", byokCfg.ProviderPrefixes))
 	}
 
-	srv := server.New(cfg, *cfgPath, eng, cp, st, logStore, tokCache, logBroker, rt, "/data/llmrx.key", byokHook)
+	// P12 M2: cluster mode. With a Postgres store, the rate limiter
+	// shares minute-bucket counters across replicas (PGWindowBackend)
+	// and config changes propagate via LISTEN/NOTIFY with a 30s poll
+	// fallback. Single-node SQLite keeps the process-local limiter
+	// and no propagation goroutines.
+	var lim *ratelimit.Limiter
+	if cfg.Database.Driver == "postgres" {
+		pgBackend, err := ratelimit.NewPGWindowBackend(st.RawDB(), dialect.Postgres{})
+		if err != nil {
+			fatalf("ratelimit backend failed", logging.F("error", err.Error()))
+		}
+		defer pgBackend.Close()
+		lim = ratelimit.NewWithBackend(pgBackend)
+		logging.Info("ratelimit: cluster backend (postgres minute buckets)")
+	}
+
+	srv := server.New(cfg, *cfgPath, eng, cp, st, logStore, tokCache, logBroker, rt, "/data/llmrx.key", byokHook, lim)
 	srv.SetAlertManager(alertMgr)
+
+	// Cross-replica config propagation (P12 M2): NOTIFY listener +
+	// 30s polling fallback. Only in cluster mode.
+	if cfg.Database.Driver == "postgres" {
+		srv.SetReloadNotifier(func() {
+			_, _ = st.RawDB().Exec("SELECT pg_notify('llmrx_reload', '')")
+		})
+		go notify.Listen(ctx, cfg.Database.DSN, srv.ReloadConfig)
+		go notify.Poll(ctx, 30*time.Second, srv.ReloadConfig)
+		logging.Info("config propagation: notify listener + 30s poll active")
+	}
 
 	// Hook SIGINT/SIGTERM into ctx so server.Start drains in-flight
 	// requests instead of hard-cutting active chat completions
