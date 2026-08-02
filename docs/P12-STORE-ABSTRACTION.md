@@ -51,7 +51,7 @@ INSERT helper）。
 
 ## 4. `internal/dialect` 包设计
 
-### 4.1 接口（5 点）
+### 4.1 接口（6 点）
 
 ```go
 // Package dialect abstracts the SQL dialect differences between
@@ -63,23 +63,38 @@ type Dialect interface {
     // argument (1-based). SQLite: "?", Postgres: "$1".
     Placeholder(i int) string
 
+    // RewriteQuery translates a query written with '?' bind markers
+    // into this dialect's native syntax. SQLite is the identity;
+    // Postgres rewrites ? → $1, $2, ... with a state machine that
+    // skips single-quoted string literals (so 'a?b' is untouched).
+    // This codebase never uses '?' as a JSON path operator, and a
+    // test asserts no store query contains '?' inside a literal.
+    RewriteQuery(q string) string
+
     // AutoIncrement declares the id column type in CREATE TABLE.
     // SQLite: "INTEGER PRIMARY KEY AUTOINCREMENT",
     // Postgres: "BIGSERIAL PRIMARY KEY".
     AutoIncrement() string
 
     // ReturningClause returns the SQL fragment appended to an
-    // INSERT to return the generated id, or "" if the generated
-    // id must be read via LastInsertId.
+    // INSERT to return the generated id, or "" if the generated id
+    // must be read via LastInsertId.
     ReturningClause() string
 
     // Bool converts a Go bool for storage.
     // SQLite: int64(1)/int64(0), Postgres: true/false.
     Bool(v bool) any
 
-    // ParseBool converts a scanned raw value into a bool.
-    // Accepts int64/int/bool/[]byte string forms ("1"/"true").
+    // ParseBool converts a scanned raw value into a bool. Accepts
+    // bool, int64/int/float64 and string/[]byte forms
+    // ("1", "true", "t", "yes").
     ParseBool(v any) bool
+
+    // BoolColumn rewrites a boolean column declaration for CREATE
+    // TABLE. SQLite keeps INTEGER 0/1; Postgres uses BOOLEAN with
+    // true/false defaults. Only pure boolean columns go through
+    // this; multi-value enum columns (e.g. status) stay INTEGER.
+    BoolColumn(decl string) string
 
     // AddColumnIfMissing returns an idempotent ALTER statement, or
     // "" if the dialect requires a schema-introspection guard
@@ -104,18 +119,35 @@ func InsertOne(d Dialect, db *sql.DB, query string, args ...any) (int64, error)
 ### 4.3 实现
 
 ```go
-type SQLite struct{}     // Placeholder="?", AutoIncrement="INTEGER
-                         // PRIMARY KEY AUTOINCREMENT", Returning="",
-                         // Bool=1/0, AddColumnIfMissing=""
-type Postgres struct{}   // Placeholder="$N", AutoIncrement="BIGSERIAL
+type SQLite struct{}     // RewriteQuery=identity, Placeholder="?",
+                         // AutoIncrement="INTEGER PRIMARY KEY
+                         // AUTOINCREMENT", Returning="", Bool=1/0,
+                         // BoolColumn=identity, AddColumnIfMissing=""
+type Postgres struct{}   // RewriteQuery=?→$N (state machine, skips
+                         // 'literal'), AutoIncrement="BIGSERIAL
                          // PRIMARY KEY", Returning=" RETURNING id",
-                         // Bool=true/false, AddColumnIfMissing=
+                         // Bool=true/false, BoolColumn=INTEGER→BOOLEAN
+                         // (+DEFAULT true/false), AddColumnIfMissing=
                          // "ALTER TABLE t ADD COLUMN IF NOT EXISTS c d"
 ```
 
 - 无状态、无依赖，纯函数集合；`var SQLite = SQLite{}` / `var PG = Postgres{}`。
 - SQLite 的 `AddColumnIfMissing` 返回 ""：store 层保留现有 PRAGMA
   检查逻辑作为 fallback（`migrate()` 中判断 `d.AddColumnIfMissing(...) == ""`）。
+
+### 4.4 为什么是 RewriteQuery 而不是逐点占位符
+
+sqlite.go 有 110 个 `s.db.Exec/Query/QueryRow` 调用点、82 处 `?`。
+逐点把 `?` 换成 `dialect.Placeholders` 会让 SQL 难以阅读（单占位符
+也得写成 `WHERE id = ` + d.Placeholder(1)），且改动面大、易错。
+
+RewriteQuery 方案：**SQL 文本保持 `?` 零改动**，store 层加 3 个
+wrapper（`exec/query/queryRow`）统一过 `d.RewriteQuery`——SQLite
+恒等，PG 自动翻译。改动集中在 wrapper + 结构点（InsertOne/布尔/
+DDL/迁移），PG 复用时同一方法体直接可用。风险由测试兜底：
+- 状态机正确跳过单引号字面量（'a?b' 不动）
+- 测试断言：所有 store SQL 字符串内不含 `?`（字面量）、
+  RewritePG 输出等价于手写 `$N`
 
 ## 5. store 重构策略（路线 B：SQLite 回填）
 
@@ -137,11 +169,11 @@ type SQLite struct {
 
 | 现状写法 | 重构后 |
 |---|---|
-| `INSERT ... VALUES (?, ?)` + `LastInsertId` | `INSERT ... VALUES (?, ?)`（经 `dialect.Placeholders` 生成）+ `dialect.InsertOne` |
+| `s.db.Exec/Query/QueryRow(...)`（110 处） | `s.exec/query/queryRow(...)`——内部 `d.RewriteQuery`，SQL 文本零改动 |
+| `INSERT ... VALUES (?, ?)` + `LastInsertId`（13 处） | `INSERT` 不变 + `dialect.InsertOne(s.d, s.db, ...)`（PG 自动走 RETURNING id） |
 | `id INTEGER PRIMARY KEY AUTOINCREMENT` | `%s` 用 `d.AutoIncrement()` 占位 |
-| `enabled INTEGER NOT NULL DEFAULT 1` + scan `*int` | 列声明不变仍由 schema 定；**写侧** `d.Bool(v)`，**读侧** scan 到局部 `any` 后 `d.ParseBool(raw)` |
+| `enabled INTEGER NOT NULL DEFAULT 1` + scan `*int` | 列声明经 `d.BoolColumn()`；**写侧** `d.Bool(v)`，**读侧** scan 到局部 `any` 后 `d.ParseBool(raw)` |
 | `addColumnIfMissing(table, col, decl)` | `d.AddColumnIfMissing(...)` 非空则直接执行该语句，否则走现有 PRAGMA 守卫 |
-| 手写 `?, ?, ?` 列表 | `dialect.Placeholders(d, n)`（INSERT 的 VALUES 与 IN 子句） |
 
 ### 5.3 迁移 DDL 统一
 
@@ -227,7 +259,7 @@ M0 完成后 M1（PG store 补齐）的验收 = 实现 Postgres + 跑 storetest
 |---|---|
 | 2235 行重构回归 | 逐组提交 + 每组全量测试 + 套件先行（重构前套件已绿） |
 | 布尔 scan 类型重构出错 | `ParseBool` 单测覆盖 int64/int/bool/string 四种形态；scan 改动局部化 |
-| Placeholder 替换遗漏 `?` | 重构后 `grep -c '?,' sqlite.go` 应仅剩字符串字面量 0 处（SQL 内）；dialect 单测断言 SQLite 输出保持 `?` |
+| RewriteQuery 误翻字面 `?` | 状态机跳过单引号字面量；测试断言 store SQL 无字面 `?`；`grep -n "?'" sqlite.go` 应零命中（JSON 路径操作符不在 codebase 使用） |
 | 覆盖率下降 | 重构不删测试；迁移进套件时断言套件触达 88/88 |
 | 未来新后端适配慢 | 适配路径固定为：实现 Dialect → 跑 storetest → 修方言 bug（循环收敛） |
 
