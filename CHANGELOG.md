@@ -209,6 +209,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **覆盖率**：`internal/mcp` 46% → 77.1%（目标 ≥70%），
   `internal/sse` 44.3% → 81.8%。
 
+#### P12 M2 分布式限额 + 配置传播
+- **ratelimit 后端抽象**：`Backend` 接口（窗口计数），预算 gate
+  留在 Limiter（used_usd 在 DB 天然全局）；`MemoryBackend` 保持
+  单机行为，`PGWindowBackend` 用分钟桶表跨节点共享 RPM/TPM 计数
+  （FOR UPDATE + upsert 事务原子，fail-open 降级本地桶 + 自动恢复）。
+- **配置传播**：PG LISTEN/NOTIFY（`llmrx_reload` 频道）+ 30s 轮询
+  兜底；admin/webui 写路径发 NOTIFY，各节点 `ReloadConfig`
+  （tokencache/guardrails/alertMgr/router 静态/pool）。
+- **验证**：两节点共享计数 e2e 测试（A 节点耗尽 rpm，B 节点立即被限）。
+
 #### P11.5 MCP stdio + OAuth（收尾）
 - **stdio transport**：`Client` 抽 transport 接口；`stdioTransport`
   以 `sh -c` 启动本地 sidecar，支持 newline-delimited JSON 与
