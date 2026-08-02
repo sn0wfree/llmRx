@@ -1,11 +1,13 @@
-package main
-
 // Simple HTTP load tester: spawns N goroutines hammering a single
 // endpoint for D seconds, then prints throughput / latency stats.
 //
-// Usage: go run loadtest.go -url <url> -token <token> [-c concurrency] [-d duration]
+// Usage:
+//
+//	go run ./scripts/loadtest -url <url> -token <token> [-c concurrency] [-d duration] [-stream] [-body '{"..."}']
+package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"flag"
@@ -13,6 +15,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,16 +27,21 @@ func main() {
 	token := flag.String("token", "sk-test-token-123", "bearer token")
 	concurrency := flag.Int("c", 50, "concurrency")
 	duration := flag.Duration("d", 10*time.Second, "duration")
+	stream := flag.Bool("stream", false, "read the SSE body until [DONE] (streaming path)")
+	body := flag.String("body", "", "request body (default: deepseek-chat hello)")
 	flag.Parse()
 
-	body := []byte(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}`)
+	if *body == "" {
+		*body = `{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}`
+	}
 
 	var (
-		total    int64
-		failures int64
-		totalNs  int64
-		minNs    int64 = 1 << 62
-		maxNs    int64
+		total      int64
+		failures   int64
+		sampleErrs int64
+		statuses   sync.Map // code -> *int64
+		mu         sync.Mutex
+		lats       []int64 // all per-request latencies, sampled for percentiles
 	)
 
 	deadline := time.Now().Add(*duration)
@@ -42,49 +51,67 @@ func main() {
 	var wg sync.WaitGroup
 	wg.Add(*concurrency)
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
 			MaxIdleConns:        200,
 			MaxIdleConnsPerHost: 200,
 			IdleConnTimeout:     30 * time.Second,
 		},
 	}
+	bodyBytes := []byte(*body)
 	for i := 0; i < *concurrency; i++ {
 		go func() {
 			defer wg.Done()
-			req, _ := http.NewRequestWithContext(ctx, "POST", *url, bytes.NewReader(body))
-			req.Header.Set("Authorization", "Bearer "+*token)
-			req.Header.Set("Content-Type", "application/json")
 			for ctx.Err() == nil {
-				t0 := time.Now()
-				resp, err := client.Do(req.Clone(ctx))
-				d := time.Since(t0).Nanoseconds()
-				if err != nil {
-					atomic.AddInt64(&failures, 1)
-					continue
+				// Fresh request per attempt: the body reader is
+				// consumed by the previous call.
+				req, _ := http.NewRequestWithContext(ctx, "POST", *url, bytes.NewReader(bodyBytes))
+				req.Header.Set("Authorization", "Bearer "+*token)
+				req.Header.Set("Content-Type", "application/json")
+				if *stream {
+					req.Header.Set("Accept", "text/event-stream")
 				}
-				if resp.StatusCode != 200 {
-					atomic.AddInt64(&failures, 1)
+				t0 := time.Now()
+				resp, err := client.Do(req)
+				d := time.Since(t0).Nanoseconds()
+				code := 0
+				if err == nil {
+					code = resp.StatusCode
+				} else {
+					// sample the first few client-side errors
+					// for diagnosis (connection refused, reset...)
+					if n := atomic.AddInt64(&sampleErrs, 1); n <= 5 {
+						fmt.Fprintf(os.Stderr, "client error: %v\n", err)
+					}
+				}
+				if code == 200 {
+					if *stream {
+						err = drainSSE(resp)
+					} else {
+						_, err = io.Copy(io.Discard, resp.Body)
+					}
+					resp.Body.Close()
+					if err != nil {
+						code = -1
+					}
+				} else if err == nil {
 					_, _ = io.Copy(io.Discard, resp.Body)
 					resp.Body.Close()
+				}
+				if code != 200 {
+					atomic.AddInt64(&failures, 1)
+					if code > 0 {
+						v, _ := statuses.LoadOrStore(code, new(int64))
+						atomic.AddInt64(v.(*int64), 1)
+					}
 					continue
 				}
-				_, _ = io.Copy(io.Discard, resp.Body)
-				resp.Body.Close()
+				v, _ := statuses.LoadOrStore(code, new(int64))
+				atomic.AddInt64(v.(*int64), 1)
 				atomic.AddInt64(&total, 1)
-				atomic.AddInt64(&totalNs, d)
-				for {
-					old := atomic.LoadInt64(&minNs)
-					if d >= old || atomic.CompareAndSwapInt64(&minNs, old, d) {
-						break
-					}
-				}
-				for {
-					old := atomic.LoadInt64(&maxNs)
-					if d <= old || atomic.CompareAndSwapInt64(&maxNs, old, d) {
-						break
-					}
-				}
+				mu.Lock()
+				lats = append(lats, d)
+				mu.Unlock()
 			}
 		}()
 	}
@@ -95,15 +122,52 @@ func main() {
 		fmt.Fprintln(os.Stderr, "no successful requests")
 		os.Exit(1)
 	}
-	avgNs := atomic.LoadInt64(&totalNs) / n
+	sort.Slice(lats, func(i, j int) bool { return lats[i] < lats[j] })
+	pct := func(p float64) time.Duration {
+		if len(lats) == 0 {
+			return 0
+		}
+		i := int(float64(len(lats)-1) * p)
+		return time.Duration(lats[i])
+	}
+
 	fmt.Printf("\n== HTTP load test ==\n")
 	fmt.Printf("  url:           %s\n", *url)
+	fmt.Printf("  stream:        %v\n", *stream)
 	fmt.Printf("  concurrency:   %d\n", *concurrency)
 	fmt.Printf("  duration:      %s\n", *duration)
-	fmt.Printf("  requests:      %d (failures: %d)\n", n, atomic.LoadInt64(&failures))
-	throughput := float64(n) / duration.Seconds()
-	fmt.Printf("  throughput:    %.0f req/s\n", throughput)
-	fmt.Printf("  latency avg:   %s\n", time.Duration(avgNs))
-	fmt.Printf("  latency min:   %s\n", time.Duration(atomic.LoadInt64(&minNs)))
-	fmt.Printf("  latency max:   %s\n", time.Duration(atomic.LoadInt64(&maxNs)))
+	fmt.Printf("  requests:      %d (failures: %d, %.2f%%)\n", n, atomic.LoadInt64(&failures),
+		100*float64(atomic.LoadInt64(&failures))/float64(n+atomic.LoadInt64(&failures)))
+	fmt.Printf("  throughput:    %.0f req/s\n", float64(n)/duration.Seconds())
+	var sum int64
+	for _, l := range lats {
+		sum += l
+	}
+	fmt.Printf("  latency avg:   %s\n", time.Duration(sum/int64(len(lats))))
+	fmt.Printf("  latency min:   %s\n", time.Duration(lats[0]))
+	fmt.Printf("  latency p50:   %s\n", pct(0.50))
+	fmt.Printf("  latency p95:   %s\n", pct(0.95))
+	fmt.Printf("  latency p99:   %s\n", pct(0.99))
+	fmt.Printf("  latency max:   %s\n", time.Duration(lats[len(lats)-1]))
+	statuses.Range(func(k, v any) bool {
+		fmt.Printf("  status %d:     %d responses\n", k, atomic.LoadInt64(v.(*int64)))
+		return true
+	})
+}
+
+// drainSSE consumes a streaming response until [DONE].
+func drainSSE(resp *http.Response) error {
+	br := bufio.NewReader(resp.Body)
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+		if strings.HasPrefix(line, "data: [DONE]") {
+			return nil
+		}
+	}
 }
