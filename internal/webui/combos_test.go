@@ -3,6 +3,7 @@ package webui
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -611,5 +612,87 @@ func TestComboSetDefault_BadComboID(t *testing.T) {
 	h.Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestComboCreate_AutoModeWithTiers(t *testing.T) {
+	h, st := newTestWebUI(t)
+	admin, _ := st.GetUserByUsername("admin")
+	tok := sessionCookieFor(t, st, admin)
+	tk := newComboToken(t, st, "tk-auto")
+
+	tiers := `{"simple":{"models":["deepseek-chat","gpt-4o-mini"]},"standard":{"models":["deepseek-chat","gpt-4o"]},"complex":{"models":["gpt-4o","claude-3-5-sonnet"]},"agentic":{"models":["claude-3-5-sonnet"]}}`
+	body := "name=smart-auto&mode=auto&models=&strategy=&tiers=" + url.QueryEscape(tiers) + "&fallback=deepseek-chat&status=1"
+	req := httptest.NewRequest(http.MethodPost, "/tokens/"+itoa(tk.ID)+"/combos", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: tok})
+	rec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	combos, _ := st.GetComboModels(tk.ID)
+	if len(combos) != 1 {
+		t.Fatalf("expected 1 combo, got %d", len(combos))
+	}
+	c := combos[0]
+	if c.Mode != model.ComboModeAuto {
+		t.Fatalf("mode = %q, want auto", c.Mode)
+	}
+	if len(c.Tiers) != 4 {
+		t.Fatalf("tiers = %d entries, want 4: %+v", len(c.Tiers), c.Tiers)
+	}
+	if c.Tiers["simple"].Models[0] != "deepseek-chat" || c.Tiers["agentic"].Models[0] != "claude-3-5-sonnet" {
+		t.Errorf("tiers content wrong: %+v", c.Tiers)
+	}
+	if len(c.Fallback) != 1 || c.Fallback[0] != "deepseek-chat" {
+		t.Errorf("fallback: %+v", c.Fallback)
+	}
+}
+
+func TestComboCreate_AutoModeRequiresTiers(t *testing.T) {
+	h, st := newTestWebUI(t)
+	admin, _ := st.GetUserByUsername("admin")
+	tok := sessionCookieFor(t, st, admin)
+	tk := newComboToken(t, st, "tk-auto-bad")
+
+	body := "name=bad-auto&mode=auto&models=m1&tiers=&fallback="
+	req := httptest.NewRequest(http.MethodPost, "/tokens/"+itoa(tk.ID)+"/combos", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: tok})
+	rec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d want 200 (form re-render)", rec.Code)
+	}
+	if !contains(rec.Body.String(), "auto 模式需要复杂度分档配置") {
+		t.Errorf("expected tiers validation error, got: %s", rec.Body.String())
+	}
+	combos, _ := st.GetComboModels(tk.ID)
+	if len(combos) != 0 {
+		t.Fatal("invalid auto combo must not be persisted")
+	}
+}
+
+func TestComboCreate_AutoModeBadTiersJSON(t *testing.T) {
+	h, st := newTestWebUI(t)
+	admin, _ := st.GetUserByUsername("admin")
+	tok := sessionCookieFor(t, st, admin)
+	tk := newComboToken(t, st, "tk-auto-badjson")
+
+	body := "name=badjson-auto&mode=auto&models=&tiers=" + url.QueryEscape("{not json}") + "&fallback="
+	req := httptest.NewRequest(http.MethodPost, "/tokens/"+itoa(tk.ID)+"/combos", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: tok})
+	rec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d want 200 (form re-render)", rec.Code)
+	}
+	if !contains(rec.Body.String(), "tiers JSON 解析失败") {
+		t.Errorf("expected tiers JSON error, got: %s", rec.Body.String())
 	}
 }

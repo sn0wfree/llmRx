@@ -77,3 +77,55 @@ func TestLoad_InvalidYAML(t *testing.T) {
 		t.Fatal("expected YAML parse error")
 	}
 }
+
+func TestLoad_AutoRouterConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yml")
+	yaml := `
+server:
+  port: 9000
+
+auto_router:
+  tier_thresholds: [0.2, 0.5, 0.75]
+  llm_classifier:
+    enabled: true
+    base_url: http://127.0.0.1:9999/v1
+    api_key: sk-classifier
+    model: classifier-1b
+    timeout_sec: 2.5
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	ar := cfg.AutoRouter
+	if len(ar.TierThresholds) != 3 || ar.TierThresholds[0] != 0.2 || ar.TierThresholds[2] != 0.75 {
+		t.Errorf("tier thresholds: %v", ar.TierThresholds)
+	}
+	lc := ar.LLMClassifier
+	if !lc.Enabled || lc.BaseURL != "http://127.0.0.1:9999/v1" || lc.APIKey != "sk-classifier" ||
+		lc.Model != "classifier-1b" || lc.TimeoutSec != 2.5 {
+		t.Errorf("llm classifier: %+v", lc)
+	}
+}
+
+func TestLoad_AutoRouterDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yml")
+	if err := os.WriteFile(path, []byte("server:\n  port: 9000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.AutoRouter.TierThresholds) != 0 {
+		t.Errorf("default thresholds should be empty: %v", cfg.AutoRouter.TierThresholds)
+	}
+	if cfg.AutoRouter.LLMClassifier.Enabled {
+		t.Error("llm classifier should default to disabled")
+	}
+}

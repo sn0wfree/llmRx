@@ -1,8 +1,8 @@
 # 智能路由 + 自我进化学习（v1/v2/v3 实施规划）
 
-> 状态：**定稿**（2026-08-02）。所有决策点已拍板，v1 待实施。
+> 状态：**v1 已实施完成**（2026-08-02，5 个 commit 全部合入）。v2/v3 待排期。
 > 调研背景见 [RESEARCH-ROUTING.md](RESEARCH-ROUTING.md)。
-> 实施顺序：v1 基础闭环 → v2 进化成熟 → v3 离线进化 + 反馈。
+> 实施顺序：v1 基础闭环 ✅ → v2 进化成熟（规划）→ v3 离线进化 + 反馈（规划）。
 
 ## 0. 已锁定决策汇总
 
@@ -32,7 +32,7 @@
 
 ## 2. 配置形态（v1 定稿）
 
-扩展 `TokenComboModel`（`internal/model/types.go:57` 加 `ComboModeAuto` + `Tiers` 字段），沿用现有 combo CRUD/API：
+扩展 `TokenComboModel`（`internal/model/types.go:57` 加 `ComboModeAuto` + `Tiers` 字段），沿用现有 combo CRUD/API。combo 的 `tiers` 以 JSON 存入 `token_combo_models.tiers` 列（表单/API 均可配置）：
 
 ```yaml
 - name: auto
@@ -46,11 +46,25 @@
   fallback: [deepseek-chat]     # 分类失败/无 tier 命中
 ```
 
+全局参数（`config.yml`，v1 已实现）：
+
+```yaml
+auto_router:
+  tier_thresholds: [0.25, 0.55, 0.80]   # 覆盖默认分档阈值（3 个数字）
+  llm_classifier:                        # 可选 LLM 分类器（独立端点，不占业务 channel）
+    enabled: false
+    base_url: http://127.0.0.1:9999/v1
+    api_key: sk-classifier
+    model: classifier-1b
+    timeout_sec: 1.5                     # 超时/失败自动回落启发式（cause=heuristic_fallback）
+```
+
 - 每 tier 候选内按 L3 成本策略选（同模型多渠道则 L1-L5 选渠道）
 - tier 阈值全局默认、可运行时调整（阈值全局 + combo 可覆盖）
 - 4 档 tier（simple/standard/complex/agentic），默认阈值见上
 - tier 候选表显式给模型（可解释，非 OpenRouter cost_tier 百分位风格）
 - LLM 分类器独立端点配置（小模型端点，不占业务 channel）
+- 管理端观测：`GET /admin/api/v1/auto-router/state`（臂 α/β + 决策计数，只读）；`POST /admin/api/v1/reload` 同时重置臂与计数
 
 ## 3. 架构
 
@@ -116,13 +130,23 @@ model=auto → auto 分支
 - 延迟窗口排序（latency-aware provider 调度，需延迟统计）
 - 管理端可视化（v3）
 
-## 8. 实施顺序（v1，5 个 commit）
+## 8. 实施顺序（v1，5 个 commit）✅ 全部完成
 
-1. **thompson V2**：维度升级 + V1 兼容 + 单测（迁移/持久化/并发）
-2. **分类器**：`scorer.go` + tier 映射 + 单测（中文/空输入/各维度边界）
-3. **选择与集成**：`pool.go` + `decision.go` + types/combo auto 分支 + 失败转移 + 端到端测试（mock provider）+ cause= 日志 + 响应头
-4. **执行层增强**：失败分桶（RecordFailure 签名扩展）+ weighted-random + context 过滤 + 安全网 + 单测
-5. **配套**：LLM 分类器（mock 回落测试）→ admin state 端点 + combo 表单 → config.yml 示例 → 文档 → 全量回归（-race + PG 复测）
+1. **thompson V2**：维度升级 + V1 兼容 + 单测（迁移/持久化/并发）✅
+2. **分类器**：`scorer.go` + tier 映射 + 单测（中文/空输入/各维度边界）✅
+3. **选择与集成**：`pool.go` + `decision.go` + types/combo auto 分支 + 失败转移 + 端到端测试（mock provider）+ cause= 日志 + 响应头 ✅
+4. **执行层增强**：失败分桶（RecordFailure 签名扩展）+ weighted-random + context 过滤 + 安全网 + 单测 ✅
+5. **配套**：LLM 分类器（mock 回落测试）→ admin state 端点 + combo 表单 → config.yml 示例 → 文档 → 全量回归（-race + PG 复测）✅
+
+## 11. 实施记录（v1 已完成）
+
+| commit | 内容 |
+|---|---|
+| `61f0948` | thompson V2：双臂空间（channel + `"tier:model"`）、V1 文件自动迁移、`SampleArms` |
+| `4513542` | 启发式分类器：7 维加权 + 4 档 tier 映射（CJK 公平计量、短文本惩罚抑制） |
+| `ef23161` | auto 集成：combo `mode:auto` + tiers 列、TS 臂采样、模型级失败转移、fallback 去重、`auto.decision` 日志 + `X-llmRx-Auto-Tier/Routed-Model` 头 |
+| `b27ea14` | 执行层：失败分桶（401/404 hard-reject、429 5s、分钟窗口失败率）、`weighted_random` 策略、context 预算过滤、fallback 绕过熔断安全网 |
+| commit 5 | LLM 分类器（1.5s 超时回落 heuristic_fallback）、`auto.Stats` 决策计数、admin state 端点（只读 + /reload 重置）、webui 表单（auto 模式 + tiers JSON + fallback）、`auto_router` 配置、文档 |
 
 ## 9. 验收标准（v1）
 

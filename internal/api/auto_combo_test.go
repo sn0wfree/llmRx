@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/provider"
+	"github.com/sn0wfree/llmRx/internal/router/auto"
 	"github.com/sn0wfree/llmRx/internal/testhelper"
 )
 
@@ -339,5 +341,56 @@ func TestAutoCombo_ContextBudget(t *testing.T) {
 	}
 	if got := rec.Header().Get("X-llmRx-Routed-Model"); got != "claude-3-5-sonnet" {
 		t.Errorf("huge prompt routed = %q, want claude-3-5-sonnet (context budget)", got)
+	}
+}
+
+// TestAutoCombo_LLMClassifier: with an LLM classifier wired in, the
+// tier decision comes from the endpoint (cause=llm) and a dead
+// endpoint falls back to the heuristic (cause=heuristic_fallback).
+func TestAutoCombo_LLMClassifier(t *testing.T) {
+	app := testhelper.New(t)
+	app.AddToken("sk-t", "t")
+	app.AddChannel("c1", "openai", "https://x", []string{"m1"}, "sk-1")
+	addAutoCombo(t, app, "sk-t", autoComboTiers(), []string{"m1"})
+
+	// 1) Healthy classifier: always says agentic.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": `{"tier":"agentic","score":0.9}`}},
+			},
+		})
+	}))
+	defer srv.Close()
+	app.Chat.SetAutoScorer(auto.NewLLMClassifier(auto.LLMClassifierConfig{
+		BaseURL: srv.URL, Model: "classifier", Timeout: time.Second,
+	}, nil))
+
+	rec := doAutoChat(t, app, `{"model":"auto","messages":[{"role":"user","content":"hello"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-llmRx-Auto-Tier"); got != "agentic" {
+		t.Errorf("tier header = %q, want agentic (LLM verdict)", got)
+	}
+	stats := app.Chat.AutoStats().Snapshot()
+	if stats.CauseHits["llm"] != 1 {
+		t.Errorf("llm cause hits = %d, want 1: %+v", stats.CauseHits["llm"], stats.CauseHits)
+	}
+
+	// 2) Dead classifier: heuristic takes over, tier stays simple.
+	app.Chat.SetAutoScorer(auto.NewLLMClassifier(auto.LLMClassifierConfig{
+		BaseURL: "http://127.0.0.1:1", Model: "classifier", Timeout: 50 * time.Millisecond,
+	}, nil))
+	rec = doAutoChat(t, app, `{"model":"auto","messages":[{"role":"user","content":"hello"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-llmRx-Auto-Tier"); got != "simple" {
+		t.Errorf("tier header = %q, want simple (heuristic fallback)", got)
+	}
+	stats = app.Chat.AutoStats().Snapshot()
+	if stats.CauseHits["heuristic_fallback"] != 1 {
+		t.Errorf("fallback cause hits = %d, want 1: %+v", stats.CauseHits["heuristic_fallback"], stats.CauseHits)
 	}
 }

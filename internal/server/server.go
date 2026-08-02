@@ -181,6 +181,7 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	}
 	adminHandler.SetMCPClientManager(s.mcpClientMgr)
 	adminHandler.SetGuardrailEngine(handler.GuardrailEngine())
+	adminHandler.SetAutoStats(handler.AutoStats())
 	s.guardrailEngine = handler.GuardrailEngine()
 	adminHandler.SetReloadNotifier(s.fireNotify)
 

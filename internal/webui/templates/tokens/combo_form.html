@@ -28,21 +28,23 @@
       </div>
       <div>
         <label class="block text-sm font-medium text-gray-700">模式</label>
-        <select name="mode" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+        <select name="mode" onchange="comboToggleAutoSection(this.value)" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
           <option value="load_balance" {{if or (not .Combo) (eq .Combo.Mode "load_balance")}}selected{{end}}>负载均衡（load_balance）</option>
           <option value="serial" {{if and .Combo (eq .Combo.Mode "serial")}}selected{{end}}>串行（serial）</option>
+          <option value="auto" {{if and .Combo (eq .Combo.Mode "auto")}}selected{{end}}>智能路由（auto）</option>
         </select>
+        <p class="mt-1 text-xs text-gray-500">auto 模式按提示词复杂度分档，TS 采样自动选模型并自我进化学习。</p>
       </div>
     </div>
   </div>
 
   <div>
-    <label class="block text-sm font-medium text-gray-700 mb-2">底层模型列表 *</label>
-    <textarea name="models" id="combo-models" rows="5" required
+    <label class="block text-sm font-medium text-gray-700 mb-2">底层模型列表 {{if or (not .Combo) (ne .Combo.Mode "auto")}}*{{end}}</label>
+    <textarea name="models" id="combo-models" rows="5" {{if or (not .Combo) (ne .Combo.Mode "auto")}}required{{end}}
               placeholder="gpt-4o&#10;claude-3-5-sonnet&#10;gemini-2.5-flash"
               class="mt-1 block w-full px-3 py-2 border {{if .FieldErrors.models}}border-red-500{{else}}border-gray-300{{end}} rounded-md font-mono text-sm">{{if .Combo}}{{range .Combo.Models}}{{.}}
 {{end}}{{end}}</textarea>
-    <p class="mt-1 text-xs text-gray-500">每行一个模型名，至少 1 项，最多 100 项。</p>
+    <p class="mt-1 text-xs text-gray-500">每行一个模型名，最多 100 项。auto 模式可留空（候选来自复杂度分档）。</p>
     {{template "partials/field_error.html" (dict "Msg" (fieldError .FieldErrors "models"))}}
 
     <div class="mt-3 p-3 rounded border border-gray-200 bg-gray-50">
@@ -80,6 +82,26 @@
     </div>
   </div>
 
+  <div id="combo-auto-section" class="{{if and .Combo (ne .Combo.Mode "auto")}}hidden{{end}}">
+    <h2 class="text-lg font-medium text-gray-900 mb-4">智能路由分档（auto 模式）</h2>
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700">复杂度分档 JSON *</label>
+        <textarea name="tiers" id="combo-tiers" rows="10"
+                  placeholder='{"simple": {"models": ["deepseek-chat", "gpt-4o-mini"]},&#10;"standard": {"models": ["deepseek-chat", "gpt-4o"]},&#10;"complex": {"models": ["gpt-4o", "claude-3-5-sonnet"]},&#10;"agentic": {"models": ["claude-3-5-sonnet"]}}'
+                  class="mt-1 block w-full px-3 py-2 border {{if .FieldErrors.tiers}}border-red-500{{else}}border-gray-300{{end}} rounded-md font-mono text-sm">{{.TiersJSON}}</textarea>
+        <p class="mt-1 text-xs text-gray-500">tier 名：simple / standard / complex / agentic。每档模型列表顺序 = 成本升序（便宜的在前）。</p>
+        {{template "partials/field_error.html" (dict "Msg" (fieldError .FieldErrors "tiers"))}}
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700">降级兜底模型</label>
+        <textarea name="fallback" id="combo-fallback" rows="4" placeholder="deepseek-chat"
+                  class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm">{{.FallbackStr}}</textarea>
+        <p class="mt-1 text-xs text-gray-500">每行一个模型名（可选）。全部候选失败时串行尝试，绕过熔断——宁可降级不报错。</p>
+      </div>
+    </div>
+  </div>
+
   <div>
     <label class="block text-sm font-medium text-gray-700">策略覆盖</label>
     <select name="strategy" class="mt-1 block w-full max-w-xs px-3 py-2 border border-gray-300 rounded-md text-sm">
@@ -87,8 +109,9 @@
       <option value="cheapest" {{if and .Combo (eq .Combo.Strategy "cheapest")}}selected{{end}}>cheapest</option>
       <option value="fastest" {{if and .Combo (eq .Combo.Strategy "fastest")}}selected{{end}}>fastest</option>
       <option value="balanced" {{if and .Combo (eq .Combo.Strategy "balanced")}}selected{{end}}>balanced</option>
+      <option value="weighted_random" {{if and .Combo (eq .Combo.Strategy "weighted_random")}}selected{{end}}>weighted_random</option>
     </select>
-    <p class="mt-1 text-xs text-gray-500">仅在 load_balance 模式下生效。串行模式忽略此字段。</p>
+    <p class="mt-1 text-xs text-gray-500">仅在 load_balance 模式下生效。串行 / auto 模式忽略此字段。</p>
   </div>
 
   <div>
@@ -326,27 +349,49 @@ document.getElementById('combo-provider-select').addEventListener('change', func
   loadComboProviderOptions();
   loadComboConfigured();
   setupComboClientValidation();
+  comboToggleAutoSection(document.querySelector('select[name="mode"]') ? document.querySelector('select[name="mode"]').value : 'load_balance');
 })();
 
 function setupComboClientValidation() {
   var nameInput = document.querySelector('input[name="name"]');
   var modelsTa = document.getElementById('combo-models');
+  var tiersTa = document.getElementById('combo-tiers');
+  var modeSel = document.querySelector('select[name="mode"]');
   var submitBtn = document.querySelector('form[action*="/combos"] button[type="submit"]');
   if (!nameInput || !modelsTa || !submitBtn) return;
 
   function validate() {
+    var mode = modeSel ? modeSel.value : 'load_balance';
     var name = nameInput.value.trim();
     var models = modelsTa.value.split('\n').map(function(s){return s.trim();}).filter(function(s){return s;});
     var nameOk = /^[a-zA-Z0-9_-]{1,64}$/.test(name);
-    var modelsOk = models.length > 0;
+    var modelsOk = mode === 'auto' || models.length > 0;
+    var tiersOk = true;
+    if (mode === 'auto' && tiersTa) {
+      var raw = tiersTa.value.trim();
+      if (!raw) {
+        tiersOk = false;
+      } else {
+        try { JSON.parse(raw); } catch (e) { tiersOk = false; }
+      }
+    }
     nameInput.classList.toggle('border-red-500', !nameOk);
     modelsTa.classList.toggle('border-red-500', !modelsOk);
-    submitBtn.disabled = !(nameOk && modelsOk);
+    if (tiersTa) tiersTa.classList.toggle('border-red-500', !tiersOk);
+    submitBtn.disabled = !(nameOk && modelsOk && tiersOk);
     submitBtn.classList.toggle('opacity-50', submitBtn.disabled);
   }
 
   nameInput.addEventListener('input', validate);
   modelsTa.addEventListener('input', validate);
+  if (tiersTa) tiersTa.addEventListener('input', validate);
+  if (modeSel) modeSel.addEventListener('change', validate);
   validate();
+}
+
+function comboToggleAutoSection(mode) {
+  var section = document.getElementById('combo-auto-section');
+  if (!section) return;
+  section.classList.toggle('hidden', mode !== 'auto');
 }
 </script>{{end}}

@@ -8,14 +8,15 @@ import (
 )
 
 type Config struct {
-	Server    ServerConfig     `yaml:"server"`
-	Database  DatabaseConfig   `yaml:"database"`
-	Strategy  StrategyConfig   `yaml:"strategy"`
-	Tokens    []TokenConfig    `yaml:"tokens"`
-	Channels  []ChannelConfig  `yaml:"channels"`
-	Secrets   SecretsConfig    `yaml:"secrets"`
-	BYOK      BYOKConfig       `yaml:"byok"`
-	Providers []ProviderConfig `yaml:"providers"`
+	Server     ServerConfig     `yaml:"server"`
+	Database   DatabaseConfig   `yaml:"database"`
+	Strategy   StrategyConfig   `yaml:"strategy"`
+	Tokens     []TokenConfig    `yaml:"tokens"`
+	Channels   []ChannelConfig  `yaml:"channels"`
+	Secrets    SecretsConfig    `yaml:"secrets"`
+	BYOK       BYOKConfig       `yaml:"byok"`
+	Providers  []ProviderConfig `yaml:"providers"`
+	AutoRouter AutoRouterConfig `yaml:"auto_router"`
 }
 
 type ServerConfig struct {
@@ -117,7 +118,32 @@ type ServerConfig struct {
 }
 
 type StrategyConfig struct {
-	CostStrategy string `yaml:"cost_strategy"` // cheapest | fastest | balanced
+	CostStrategy string `yaml:"cost_strategy"` // cheapest | fastest | balanced | weighted_random
+}
+
+// AutoRouterConfig configures the mode:auto combos: the global
+// tier thresholds and the optional LLM complexity classifier.
+type AutoRouterConfig struct {
+	// TierThresholds are the score cutoffs [simple, standard,
+	// complex]; scores at or above the third cutoff are agentic.
+	// Empty = built-in defaults (0.25 / 0.55 / 0.80).
+	TierThresholds []float64 `yaml:"tier_thresholds"`
+	// LLMClassifier is the optional independent classifier
+	// endpoint. When enabled, every auto request asks it for a
+	// tier verdict (1.5s budget); any failure falls back to the
+	// heuristic scorer.
+	LLMClassifier LLMClassifierConfig `yaml:"llm_classifier"`
+}
+
+// LLMClassifierConfig describes the optional OpenAI-compatible
+// classifier endpoint used to upgrade tier decisions.
+type LLMClassifierConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	BaseURL string `yaml:"base_url"`
+	APIKey  string `yaml:"api_key"`
+	Model   string `yaml:"model"`
+	// TimeoutSec bounds the classifier call; default 1.5.
+	TimeoutSec float64 `yaml:"timeout_sec"`
 }
 
 type ChannelConfig struct {

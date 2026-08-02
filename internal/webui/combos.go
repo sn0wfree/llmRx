@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -54,11 +55,13 @@ func (h *Handler) ComboNewForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := map[string]any{
-		"Body":   "combo_form_body",
-		"Title":  "新建组合模型",
-		"User":   userToView(getUser(r)),
-		"Active": "tokens",
-		"Token":  token,
+		"Body":        "combo_form_body",
+		"Title":       "新建组合模型",
+		"User":        userToView(getUser(r)),
+		"Active":      "tokens",
+		"Token":       token,
+		"TiersJSON":   "",
+		"FallbackStr": "",
 	}
 	if err := h.renderer.Render(w, "combo_form_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -88,12 +91,14 @@ func (h *Handler) ComboEditForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := map[string]any{
-		"Body":   "combo_form_body",
-		"Title":  "编辑组合模型",
-		"User":   userToView(getUser(r)),
-		"Active": "tokens",
-		"Token":  token,
-		"Combo":  combo,
+		"Body":        "combo_form_body",
+		"Title":       "编辑组合模型",
+		"User":        userToView(getUser(r)),
+		"Active":      "tokens",
+		"Token":       token,
+		"Combo":       combo,
+		"TiersJSON":   tiersJSON(combo.Tiers),
+		"FallbackStr": strings.Join(combo.Fallback, "\n"),
 	}
 	if err := h.renderer.Render(w, "combo_form_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -101,7 +106,36 @@ func (h *Handler) ComboEditForm(w http.ResponseWriter, r *http.Request) {
 }
 
 // comboFormFields is the canonical field list for combo forms.
-var comboFormFields = []string{"name", "mode", "models", "strategy", "status"}
+var comboFormFields = []string{"name", "mode", "models", "tiers", "fallback", "strategy", "status"}
+
+// parseComboTiers decodes the tiers JSON textarea. Empty input
+// yields nil (no tiers). A malformed document is an error so the
+// form can surface it instead of silently creating an auto combo
+// with no candidates.
+func parseComboTiers(raw string) (map[string]model.TierConfig, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var t map[string]model.TierConfig
+	if err := json.Unmarshal([]byte(raw), &t); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+// tiersJSON renders a combo's tier table back into the form's JSON
+// textarea (pretty-printed for operators).
+func tiersJSON(t map[string]model.TierConfig) string {
+	if len(t) == 0 {
+		return ""
+	}
+	b, err := json.MarshalIndent(t, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
 
 // ComboCreate handles form POST to create a new combo.
 func (h *Handler) ComboCreate(w http.ResponseWriter, r *http.Request) {
@@ -118,6 +152,8 @@ func (h *Handler) ComboCreate(w http.ResponseWriter, r *http.Request) {
 	modelsRaw := strings.TrimSpace(r.FormValue("models"))
 	mode := r.FormValue("mode")
 	strategy := r.FormValue("strategy")
+	tiersRaw := strings.TrimSpace(r.FormValue("tiers"))
+	fallbackRaw := strings.TrimSpace(r.FormValue("fallback"))
 	enabled := r.FormValue("status") == "1"
 
 	fieldErrors := map[string]string{}
@@ -126,28 +162,41 @@ func (h *Handler) ComboCreate(w http.ResponseWriter, r *http.Request) {
 	} else if !isValidComboName(name) {
 		fieldErrors["name"] = "仅允许字母数字下划线连字符，≤64 字符"
 	}
-	if modelsRaw == "" {
+	if mode == "auto" {
+		if tiersRaw == "" {
+			fieldErrors["tiers"] = "auto 模式需要复杂度分档配置"
+		} else if _, err := parseComboTiers(tiersRaw); err != nil {
+			fieldErrors["tiers"] = "tiers JSON 解析失败: " + err.Error()
+		}
+	} else if modelsRaw == "" {
 		fieldErrors["models"] = "至少需要一个底层模型"
 	}
 	if len(fieldErrors) > 0 {
 		h.renderComboFormError(w, r, tokenID, nil, "请修正表单错误", r.Form, fieldErrors)
 		return
 	}
-	models := splitLines(modelsRaw)
-	if len(models) == 0 {
-		fieldErrors["models"] = "模型列表解析为空"
-		h.renderComboFormError(w, r, tokenID, nil, "请修正表单错误", r.Form, fieldErrors)
-		return
+	var models []string
+	if modelsRaw != "" {
+		models = splitLines(modelsRaw)
+		if len(models) == 0 {
+			fieldErrors["models"] = "模型列表解析为空"
+			h.renderComboFormError(w, r, tokenID, nil, "请修正表单错误", r.Form, fieldErrors)
+			return
+		}
 	}
 	if mode == "" {
 		mode = "load_balance"
 	}
+	tiers, _ := parseComboTiers(tiersRaw)
+	fallback := splitLines(fallbackRaw)
 	c := &model.TokenComboModel{
 		TokenID:  tokenID,
 		Name:     name,
 		Models:   models,
 		Mode:     model.ComboMode(mode),
 		Strategy: model.CostStrategy(strategy),
+		Tiers:    tiers,
+		Fallback: fallback,
 		Enabled:  enabled,
 	}
 	if err := h.store.CreateComboModel(c); err != nil {
@@ -178,6 +227,8 @@ func (h *Handler) renderComboFormError(w http.ResponseWriter, r *http.Request, t
 			fd["Name"] = firstOrEmpty(form["name"])
 			fd["Mode"] = firstOrEmpty(form["mode"])
 			fd["ModelsStr"] = firstOrEmpty(form["models"])
+			fd["TiersStr"] = firstOrEmpty(form["tiers"])
+			fd["FallbackStr"] = firstOrEmpty(form["fallback"])
 			fd["Strategy"] = firstOrEmpty(form["strategy"])
 			fd["Status"] = firstOrEmpty(form["status"])
 		}
@@ -190,6 +241,8 @@ func (h *Handler) renderComboFormError(w http.ResponseWriter, r *http.Request, t
 			"Combo":       combo,
 			"FormError":   msg,
 			"FormData":    fd,
+			"TiersJSON":   fd["TiersStr"],
+			"FallbackStr": fd["FallbackStr"],
 			"FieldErrors": fieldErrors,
 		}
 		if err := h.renderer.Render(w, "combo_form_body", data); err != nil {
@@ -257,13 +310,21 @@ func (h *Handler) comboUpdateByID(w http.ResponseWriter, r *http.Request, tokenI
 	modelsRaw := strings.TrimSpace(r.FormValue("models"))
 	mode := r.FormValue("mode")
 	strategy := r.FormValue("strategy")
+	tiersRaw := strings.TrimSpace(r.FormValue("tiers"))
+	fallbackRaw := strings.TrimSpace(r.FormValue("fallback"))
 	enabled := r.FormValue("status") == "1"
 
 	fieldErrors := map[string]string{}
 	if name != "" && !isValidComboName(name) {
 		fieldErrors["name"] = "仅允许字母数字下划线连字符，≤64 字符"
 	}
-	if modelsRaw != "" && len(splitLines(modelsRaw)) == 0 {
+	if mode == "auto" {
+		if tiersRaw == "" {
+			fieldErrors["tiers"] = "auto 模式需要复杂度分档配置"
+		} else if _, err := parseComboTiers(tiersRaw); err != nil {
+			fieldErrors["tiers"] = "tiers JSON 解析失败: " + err.Error()
+		}
+	} else if modelsRaw != "" && len(splitLines(modelsRaw)) == 0 {
 		fieldErrors["models"] = "模型列表解析为空"
 	}
 	if len(fieldErrors) > 0 {
@@ -279,6 +340,12 @@ func (h *Handler) comboUpdateByID(w http.ResponseWriter, r *http.Request, tokenI
 	}
 	if mode != "" {
 		existing.Mode = model.ComboMode(mode)
+	}
+	if tiersRaw != "" || mode == "auto" {
+		existing.Tiers, _ = parseComboTiers(tiersRaw)
+	}
+	if fallbackRaw != "" || mode == "auto" {
+		existing.Fallback = splitLines(fallbackRaw)
 	}
 	existing.Strategy = model.CostStrategy(strategy)
 	existing.Enabled = enabled

@@ -25,6 +25,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/provider"
 	"github.com/sn0wfree/llmRx/internal/router"
+	"github.com/sn0wfree/llmRx/internal/router/auto"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/secrets"
 	"github.com/sn0wfree/llmRx/internal/sse"
@@ -47,6 +48,10 @@ type Handler struct {
 	responseCache   cache.Cache
 	mcpClientMgr    *mcp.ClientManager
 	guardrailEngine *guardrail.GuardrailEngine
+	// autoStats exposes the auto-router decision counters for the
+	// state endpoint. Wired from the api handler via SetAutoStats;
+	// nil renders the state endpoint without the stats block.
+	autoStats *auto.Stats
 	// reloadNotifier broadcasts local config writes to other
 	// replicas (P12 M2 PG NOTIFY). nil = no-op.
 	reloadNotifier func()
@@ -70,6 +75,10 @@ func New(st store.Store, ls *logstore.Manager, cp *pool.ChannelPool, eng *router
 // to inject a mock store to exercise error paths.
 func (h *Handler) SetStore(st store.Store) { h.store = st }
 
+// SetAutoStats wires the auto-router decision counter accumulator
+// (owned by the api handler) into the state endpoint and /reload.
+func (h *Handler) SetAutoStats(s *auto.Stats) { h.autoStats = s }
+
 // SetAlertManager lets main.go inject the alert manager for /reload.
 // Accepts the AlertReloader interface to keep the import graph
 // acyclic.
@@ -78,6 +87,8 @@ func (h *Handler) SetAlertManager(m AlertReloader) { h.alertMgr = m }
 // SetCache wires the response cache for stats and purge endpoints.
 func (h *Handler) SetCache(c cache.Cache) { h.responseCache = c }
 
+// SetMCPClientManager lets main.go inject the MCP client manager
+// for admin pages.
 func (h *Handler) SetMCPClientManager(m *mcp.ClientManager) { h.mcpClientMgr = m }
 
 func (h *Handler) SetGuardrailEngine(g *guardrail.GuardrailEngine) { h.guardrailEngine = g }
@@ -116,6 +127,7 @@ func (h *Handler) Routes() http.Handler {
 		r.Use(authn)
 		r.Use(middleware.RequireRole(model.RoleAdmin))
 		r.Get("/dashboard", h.Dashboard)
+		r.Get("/auto-router/state", h.AutoRouterState)
 		r.Get("/channels", h.ListChannels)
 		r.Post("/channels", h.CreateChannel)
 		r.Put("/channels/{id}", h.UpdateChannel)
@@ -812,6 +824,11 @@ func (h *Handler) ReloadAll(w http.ResponseWriter, r *http.Request) {
 		reloads["channels"] = err
 	}
 	h.router.ReloadAllChannels()
+	if h.autoStats != nil {
+		// /reload also resets the auto-router decision counters so
+		// operators get a clean observation window.
+		h.autoStats.Reset()
+	}
 	if h.alertMgr != nil {
 		if err := h.alertMgr.Reload(); err != nil {
 			reloads["alerts"] = err
@@ -831,6 +848,24 @@ func (h *Handler) ReloadAll(w http.ResponseWriter, r *http.Request) {
 		"ok":      false,
 		"reloads": reloads,
 	})
+}
+
+// AutoRouterState serves the read-only auto-router observability
+// snapshot: the (tier, model) Thompson arm posteriors and the
+// per-request decision counters. Arms reset via admin /reload;
+// the counters reset alongside it.
+func (h *Handler) AutoRouterState(w http.ResponseWriter, r *http.Request) {
+	arms := h.router.Thompson().SnapshotArms()
+	if arms == nil {
+		arms = map[string][2]float64{}
+	}
+	out := map[string]any{
+		"arms": arms,
+	}
+	if h.autoStats != nil {
+		out["stats"] = h.autoStats.Snapshot()
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (h *Handler) RotateSecrets(w http.ResponseWriter, r *http.Request) {

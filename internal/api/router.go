@@ -124,9 +124,13 @@ type Handler struct {
 
 	// autoPool drives Thompson arm sampling for mode:auto combos;
 	// autoScorer classifies prompts into complexity tiers. Swap the
-	// scorer via SetAutoScorer (the LLM classifier lands in v1.5).
+	// scorer via SetAutoScorer (the LLM classifier is wired from
+	// config in New).
 	autoPool   *auto.Pool
 	autoScorer auto.ComplexityScorer
+	// autoStats accumulates decision counters for the admin state
+	// endpoint; reset via admin /reload.
+	autoStats *auto.Stats
 }
 
 func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, ls *logstore.Manager, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Handler {
@@ -151,10 +155,36 @@ func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st 
 		costCalc:   cc,
 		emitter:    NewLogEmitter(ls, lb, st, lim, cc),
 		autoPool:   auto.NewPool(eng.Thompson()),
-		autoScorer: auto.NewHeuristicScorer(auto.DefaultThresholds()),
+		autoScorer: buildAutoScorer(cfg),
+		autoStats:  auto.NewStats(),
 	}
 	return h
 }
+
+// buildAutoScorer assembles the complexity classifier from config:
+// heuristic scorer with (optional) custom tier thresholds, wrapped
+// by the LLM classifier when an endpoint is configured.
+func buildAutoScorer(cfg *config.Config) auto.ComplexityScorer {
+	th := auto.DefaultThresholds()
+	if cfg != nil && len(cfg.AutoRouter.TierThresholds) == 3 {
+		th = auto.Thresholds{cfg.AutoRouter.TierThresholds[0], cfg.AutoRouter.TierThresholds[1], cfg.AutoRouter.TierThresholds[2]}
+	}
+	heuristic := auto.NewHeuristicScorer(th)
+	if cfg != nil && cfg.AutoRouter.LLMClassifier.Enabled && cfg.AutoRouter.LLMClassifier.BaseURL != "" {
+		llmCfg := auto.LLMClassifierConfig{
+			BaseURL: cfg.AutoRouter.LLMClassifier.BaseURL,
+			APIKey:  cfg.AutoRouter.LLMClassifier.APIKey,
+			Model:   cfg.AutoRouter.LLMClassifier.Model,
+			Timeout: time.Duration(cfg.AutoRouter.LLMClassifier.TimeoutSec * float64(time.Second)),
+		}
+		return auto.NewLLMClassifier(llmCfg, heuristic)
+	}
+	return heuristic
+}
+
+// AutoStats exposes the decision counter accumulator so the admin
+// handler can serve it and reset it via /reload.
+func (h *Handler) AutoStats() *auto.Stats { return h.autoStats }
 
 // SetAutoScorer replaces the complexity classifier used by
 // mode:auto combos. The default is the heuristic scorer; the
@@ -1112,7 +1142,10 @@ func isTierCandidate(combo model.TokenComboModel, tier, m string) bool {
 // emitAutoDecision writes the per-request decision line so every
 // auto-routed call is auditable:
 // auto_tier=complex cause=heuristic score=0.71 arm=complex:gpt-4o θ=0.62 routed=deepseek-chat fallback=false attempted=...
+// and folds the decision into the stats accumulator for the admin
+// state endpoint.
 func (h *Handler) emitAutoDecision(r *http.Request, d *auto.Decision) {
+	h.autoStats.Record(*d)
 	logging.Debug("auto.decision",
 		logging.F("auto_tier", d.Tier),
 		logging.F("cause", d.Cause),

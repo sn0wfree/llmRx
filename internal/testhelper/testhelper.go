@@ -98,6 +98,7 @@ func New(t *testing.T) *App {
 
 	mp := &MockProvider{}
 	chatH := api.New(cfg, eng, cp, st, logStore, logBroker, rt)
+	adminH.SetAutoStats(chatH.AutoStats())
 	chatH.SetProvider(mp)
 	chatH.SetProviders(map[string]provider.Provider{
 		"":          mp,
@@ -180,6 +181,7 @@ func NewWithStore(t *testing.T, st store.Store) *App {
 
 	mp := &MockProvider{}
 	chatH := api.New(cfg, eng, cp, st, logStore, logBroker, rt)
+	adminH.SetAutoStats(chatH.AutoStats())
 	chatH.SetProvider(mp)
 	chatH.SetProviders(map[string]provider.Provider{
 		"":          mp,
