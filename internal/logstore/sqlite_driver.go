@@ -65,9 +65,9 @@ type dayFile struct {
 // NewSQLiteDriver returns an unopened driver. Call Open before use.
 func NewSQLiteDriver() *SQLiteDriver {
 	return &SQLiteDriver{
-		conns:   make(map[string]*dayFile),
-		current: make(map[string]string),
-		maxOpen: 4, // today + 3 historical
+		conns:    make(map[string]*dayFile),
+		current:  make(map[string]string),
+		maxOpen:  4, // today + 3 historical
 		syncMode: "normal",
 	}
 }
@@ -243,8 +243,9 @@ func (d *SQLiteDriver) acquire(date string, seqHint int) (*dayFile, string, erro
 		}
 		// Full: checkpoint the WAL into the file (so the sealed
 		// file is complete and its WAL doesn't linger at 100MB+),
-		// then close and evict; fall through to next seq.
-		checkpointConn(df.conn)
+		// then close and evict; fall through to next seq. The
+		// file has no writers now, so TRUNCATE reliably completes.
+		checkpointWithRetry(df.conn, "TRUNCATE", 20)
 		_ = df.conn.Close()
 		delete(d.conns, key)
 		if d.current[date] == key {
@@ -257,7 +258,7 @@ func (d *SQLiteDriver) acquire(date string, seqHint int) (*dayFile, string, erro
 		for k, df := range d.conns {
 			// Compact the WAL before closing so a sealed file
 			// doesn't keep a 4MB+ WAL on disk.
-			checkpointConn(df.conn)
+			checkpointWithRetry(df.conn, "TRUNCATE", 20)
 			_ = df.conn.Close()
 			delete(d.conns, k)
 			if d.current[date] == k {
@@ -330,27 +331,41 @@ func (d *SQLiteDriver) acquire(date string, seqHint int) (*dayFile, string, erro
 	return df, key, nil
 }
 
-// checkpointConn runs a TRUNCATE checkpoint on a connection,
-// transferring the WAL into the database file and resetting it to
-// zero bytes. Errors are ignored on purpose: this is a maintenance
-// operation — a busy file (active reader) simply defers the WAL
-// compaction to the next periodic checkpoint. The busy_timeout on
-// the DSN bounds any blocking.
-func checkpointConn(conn *sql.DB) {
-	_, _ = conn.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+// checkpointConn runs a checkpoint on a connection and reports
+// whether it completed. SQLite returns a busy count in the pragma's
+// RESULT ROW (not as an error), so Exec would silently swallow it —
+// a concurrent writer would leave the WAL un-compacted. QueryRow
+// reads the (busy, log, checkpointed) triple; busy==0 means done.
+func checkpointConn(conn *sql.DB, mode string) (busy int) {
+	_ = conn.QueryRow("PRAGMA wal_checkpoint("+mode+")").Scan(&busy, new(int), new(int))
+	return busy
+}
+
+// checkpointWithRetry compacts a file's WAL, retrying while the
+// checkpoint reports busy (a writer or another checkpointer got the
+// lock first). Sealed files have no writers, so a handful of retries
+// reliably completes; the busy_timeout on the DSN bounds each try.
+func checkpointWithRetry(conn *sql.DB, mode string, retries int) {
+	for i := 0; i <= retries; i++ {
+		if checkpointConn(conn, mode) == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // CheckpointActive compacts the WAL of every cached day file
-// (TRUNCATE resets each WAL to zero bytes, so a 240MB WAL returns
-// to ~0). Called periodically by the Manager; safe to run
+// (TRUNCATE resets each WAL file to zero bytes, so a 240MB WAL
+// returns to ~0). Called periodically by the Manager; safe to run
 // concurrently with inserts (SQLite serialises). Checking every
 // cached file (≤ maxOpen) keeps sealed-but-cached files compact
-// too, not just the active writer.
+// too, not just the active writer. The active file may report busy
+// under a write burst — the next tick retries.
 func (d *SQLiteDriver) CheckpointActive() error {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	for _, df := range d.conns {
-		checkpointConn(df.conn)
+		checkpointWithRetry(df.conn, "TRUNCATE", 3)
 	}
 	return nil
 }
