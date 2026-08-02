@@ -59,19 +59,19 @@ func testChannels(t *testing.T, newStore func(*testing.T) store.Store) {
 
 	now := time.Now().UTC()
 	ch := &model.Channel{
-		Name:    "ch1",
-		Provider: "openai",
-		Protocol: "openai",
-		BaseURL: "https://api.openai.com/v1",
-		Models:  []string{"gpt-4o"},
-		Intents: []string{"chat"},
-		Priority: 5,
-		InputPrice: 2.5,
-		OutputPrice: 10,
+		Name:                "ch1",
+		Provider:            "openai",
+		Protocol:            "openai",
+		BaseURL:             "https://api.openai.com/v1",
+		Models:              []string{"gpt-4o"},
+		Intents:             []string{"chat"},
+		Priority:            5,
+		InputPrice:          2.5,
+		OutputPrice:         10,
 		CachedInputDiscount: 0.1,
-		Status: model.ChannelEnabled,
-		CreatedAt: now,
-		UpdatedAt: now,
+		Status:              model.ChannelEnabled,
+		CreatedAt:           now,
+		UpdatedAt:           now,
 	}
 	if err := st.CreateChannel(ch); err != nil {
 		t.Fatalf("CreateChannel: %v", err)
