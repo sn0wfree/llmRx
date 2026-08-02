@@ -4,6 +4,36 @@ import (
 	"testing"
 )
 
+func TestSQLiteRewriteQuery(t *testing.T) {
+	q := `INSERT INTO channels(name, provider) VALUES (?, ?)`
+	if got := (SQLite{}).RewriteQuery(q); got != q {
+		t.Fatalf("SQLite RewriteQuery should be identity, got %q", got)
+	}
+}
+
+func TestPostgresRewriteQuery(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`INSERT INTO channels(name, provider) VALUES (?, ?)`,
+			`INSERT INTO channels(name, provider) VALUES ($1, $2)`},
+		{`SELECT id FROM keys WHERE channel_id = ? ORDER BY id`,
+			`SELECT id FROM keys WHERE channel_id = $1 ORDER BY id`},
+		{`UPDATE keys SET key='', key_ciphertext=? WHERE id=?`,
+			`UPDATE keys SET key='', key_ciphertext=$1 WHERE id=$2`},
+		// '?' inside a string literal must be preserved.
+		{`SELECT id FROM channels WHERE name = 'a?b' AND status = ?`,
+			`SELECT id FROM channels WHERE name = 'a?b' AND status = $1`},
+		// SQLite '' escape inside a literal.
+		{`SELECT id FROM guardrails WHERE config = 'it''s ? here' AND priority > ?`,
+			`SELECT id FROM guardrails WHERE config = 'it''s ? here' AND priority > $1`},
+		{`SELECT 1`, `SELECT 1`},
+	}
+	for _, c := range cases {
+		if got := (Postgres{}).RewriteQuery(c.in); got != c.want {
+			t.Fatalf("RewriteQuery(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestSQLitePlaceholders(t *testing.T) {
 	got := Placeholders(SQLite{}, 3)
 	if got != "(?, ?, ?)" {

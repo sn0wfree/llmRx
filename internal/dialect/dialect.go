@@ -12,6 +12,7 @@ package dialect
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -24,6 +25,12 @@ type Dialect interface {
 	// Placeholder returns the bind-parameter marker for the i-th
 	// argument (1-based). SQLite: "?", Postgres: "$1".
 	Placeholder(i int) string
+
+	// RewriteQuery translates a query written with '?' bind markers
+	// into this dialect's native syntax. SQLite is the identity;
+	// Postgres rewrites ? -> $1, $2, ... with a state machine that
+	// skips single-quoted string literals so 'a?b' is untouched.
+	RewriteQuery(q string) string
 
 	// AutoIncrement declares the id column type in CREATE TABLE.
 	// SQLite: "INTEGER PRIMARY KEY AUTOINCREMENT",
@@ -97,6 +104,10 @@ func InsertOne(d Dialect, db *sql.DB, query string, args ...any) (int64, error) 
 
 func (SQLite) Placeholder(int) string { return "?" }
 
+// RewriteQuery is the identity for SQLite — the canonical queries
+// are written in SQLite's own '?' syntax.
+func (SQLite) RewriteQuery(q string) string { return q }
+
 func (SQLite) AutoIncrement() string { return "INTEGER PRIMARY KEY AUTOINCREMENT" }
 
 func (SQLite) ReturningClause() string { return "" }
@@ -113,6 +124,45 @@ func (SQLite) BoolColumn(decl string) string { return decl }
 func (SQLite) AddColumnIfMissing(string, string, string) string { return "" }
 
 func (Postgres) Placeholder(i int) string { return fmt.Sprintf("$%d", i) }
+
+// RewriteQuery converts '?' bind markers to Postgres' $N syntax.
+// A small state machine skips single-quoted string literals
+// (including '' escapes) so literal '?' inside strings is preserved.
+// The codebase never uses '?' as a JSON path operator; a test
+// asserts no store query contains a literal '?'.
+func (Postgres) RewriteQuery(q string) string {
+	var b strings.Builder
+	b.Grow(len(q) + 8)
+	n := 1
+	for i := 0; i < len(q); i++ {
+		c := q[i]
+		if c == '\'' {
+			j := i + 1
+			for j < len(q) {
+				if q[j] == '\'' {
+					if j+1 < len(q) && q[j+1] == '\'' {
+						j += 2 // escaped ''
+						continue
+					}
+					j++
+					break
+				}
+				j++
+			}
+			b.WriteString(q[i:j])
+			i = j - 1
+			continue
+		}
+		if c == '?' {
+			b.WriteByte('$')
+			b.WriteString(strconv.Itoa(n))
+			n++
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
 
 func (Postgres) AutoIncrement() string { return "BIGSERIAL PRIMARY KEY" }
 
