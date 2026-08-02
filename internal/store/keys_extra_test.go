@@ -196,9 +196,9 @@ func TestWipeKeys_EmptyDB2(t *testing.T) {
 
 func TestWipeKeys_WithKeys2(t *testing.T) {
 	s, _ := openTempWithSecrets(t)
-	seedEncryptedKey(t, s, s.Secrets, "sk-aaaaaaaaaaaaaaaaaaaa", "c1")
-	seedEncryptedKey(t, s, s.Secrets, "sk-bbbbbbbbbbbbbbbbbbbb", "c2")
-	seedEncryptedKey(t, s, s.Secrets, "sk-cccccccccccccccccccc", "c3")
+	seedEncryptedKey(t, s, s.secrets, "sk-aaaaaaaaaaaaaaaaaaaa", "c1")
+	seedEncryptedKey(t, s, s.secrets, "sk-bbbbbbbbbbbbbbbbbbbb", "c2")
+	seedEncryptedKey(t, s, s.secrets, "sk-cccccccccccccccccccc", "c3")
 
 	n, err := s.WipeKeys()
 	if err != nil {
@@ -219,7 +219,7 @@ func TestWipeKeys_WithKeys2(t *testing.T) {
 
 func TestWipeKeys_Idempotent2(t *testing.T) {
 	s, _ := openTempWithSecrets(t)
-	seedEncryptedKey(t, s, s.Secrets, "sk-test", "c1")
+	seedEncryptedKey(t, s, s.secrets, "sk-test", "c1")
 	if _, err := s.WipeKeys(); err != nil {
 		t.Fatalf("first wipe: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestWipeKeys_Idempotent2(t *testing.T) {
 
 func TestReencryptAllKeys_MultipleKeys2(t *testing.T) {
 	s, _ := openTempWithSecrets(t)
-	mgr1 := s.Secrets
+	mgr1 := s.secrets
 	seedEncryptedKey(t, s, mgr1, "sk-key-1-aaaaaaaaaaaaaaaa", "c1")
 	seedEncryptedKey(t, s, mgr1, "sk-key-2-bbbbbbbbbbbbbbbb", "c2")
 
@@ -248,7 +248,7 @@ func TestReencryptAllKeys_MultipleKeys2(t *testing.T) {
 	if n != 2 {
 		t.Errorf("count = %d, want 2", n)
 	}
-	s.Secrets = mgr2
+	s.secrets = mgr2
 	chs, _ := s.GetChannels()
 	for _, ch := range chs {
 		ks, _ := s.GetKeys(ch.ID)
@@ -262,7 +262,7 @@ func TestReencryptAllKeys_MultipleKeys2(t *testing.T) {
 
 func TestReencryptAllKeys_EmptyDB2(t *testing.T) {
 	s, _ := openTempWithSecrets(t)
-	mgr1 := s.Secrets
+	mgr1 := s.secrets
 	mgr2, _ := secrets.FromBytes(differentBytesKeys())
 	n, err := s.ReencryptAllKeys(mgr1, mgr2)
 	if err != nil {
@@ -275,7 +275,7 @@ func TestReencryptAllKeys_EmptyDB2(t *testing.T) {
 
 func TestReencryptAllKeys_WrongOldKey2(t *testing.T) {
 	s, _ := openTempWithSecrets(t)
-	mgrA := s.Secrets
+	mgrA := s.secrets
 	seedEncryptedKey(t, s, mgrA, "sk-secret-key-aaaaaaaaaaaaaa", "c1")
 
 	mgrWrong, _ := secrets.FromBytes(differentBytesKeys())

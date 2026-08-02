@@ -35,10 +35,17 @@ var (
 	errNotImplemented = errors.New("not implemented (Phase 1.5 reserved)")
 )
 
-type SQLite struct {
+// dbStore implements every store.Store method against *sql.DB using
+// a Dialect. SQLite and Postgres embed it; backend-specific code is
+// limited to Open*/applyPragmas/migrate hooks.
+type dbStore struct {
 	db      *sql.DB
 	d       dialect.Dialect
-	Secrets *secrets.Manager // nil ⇒ plaintext only (legacy mode); set by SetSecrets
+	secrets *secrets.Manager // nil ⇒ plaintext only (legacy mode); set by SetSecrets
+}
+
+type SQLite struct {
+	dbStore
 }
 
 // SetSecrets attaches a secrets manager used to encrypt new key rows
@@ -47,15 +54,15 @@ type SQLite struct {
 //   - decrypt KeyCiphertext on every read, falling back to the
 //     legacy plaintext Key column for rows written before the
 //     migration landed.
-func (s *SQLite) SetSecrets(m *secrets.Manager) { s.Secrets = m }
+func (s *dbStore) SetSecrets(m *secrets.Manager) { s.secrets = m }
 
-// Secrets returns the attached secrets manager (nil when unset).
-// Satisfies store.SecretsProvider.
-func (s *SQLite) SecretsManager() *secrets.Manager { return s.Secrets }
+// SecretsManager returns the attached secrets manager (nil when
+// unset). Satisfies store.SecretsProvider.
+func (s *dbStore) SecretsManager() *secrets.Manager { return s.secrets }
 
 // Ping verifies the underlying database connection is responsive.
 // Returns nil when the connection is healthy.
-func (s *SQLite) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
+func (s *dbStore) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
 func OpenSQLite(dsn string) (*SQLite, error) {
 	if dsn == "" {
@@ -86,7 +93,7 @@ func OpenSQLite(dsn string) (*SQLite, error) {
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(0)
-	s := &SQLite{db: db, d: dialect.SQLite{}}
+	s := &SQLite{dbStore: dbStore{db: db, d: dialect.SQLite{}}}
 	if err := s.applyPragmas(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("pragma: %w", err)
@@ -101,7 +108,7 @@ func OpenSQLite(dsn string) (*SQLite, error) {
 // applyPragmas sets SQLite pragmas that can't be passed via DSN.
 // Note: pragmas are per-connection; Go's database/sql reuses
 // connections so subsequent queries inherit these settings.
-func (s *SQLite) applyPragmas() error {
+func (s *dbStore) applyPragmas() error {
 	pragmas := []string{
 		"PRAGMA cache_size=-20000",       // 20MB page cache
 		"PRAGMA temp_store=MEMORY",       // temp tables in RAM
@@ -116,37 +123,37 @@ func (s *SQLite) applyPragmas() error {
 	return nil
 }
 
-func (s *SQLite) Close() error { return s.db.Close() }
+func (s *dbStore) Close() error { return s.db.Close() }
 
 // exec/query/queryRow route every store statement through
 // s.d.RewriteQuery so the SQL text can stay in '?' syntax while
 // non-SQLite backends translate to their native bind markers
 // (e.g. Postgres $N). SQLite's dialect is the identity.
-func (s *SQLite) exec(q string, args ...any) (sql.Result, error) {
+func (s *dbStore) exec(q string, args ...any) (sql.Result, error) {
 	return s.db.Exec(s.d.RewriteQuery(q), args...)
 }
 
-func (s *SQLite) query(q string, args ...any) (*sql.Rows, error) {
+func (s *dbStore) query(q string, args ...any) (*sql.Rows, error) {
 	return s.db.Query(s.d.RewriteQuery(q), args...)
 }
 
-func (s *SQLite) queryRow(q string, args ...any) *sql.Row {
+func (s *dbStore) queryRow(q string, args ...any) *sql.Row {
 	return s.db.QueryRow(s.d.RewriteQuery(q), args...)
 }
 
-func (s *SQLite) execContext(ctx context.Context, q string, args ...any) (sql.Result, error) {
+func (s *dbStore) execContext(ctx context.Context, q string, args ...any) (sql.Result, error) {
 	return s.db.ExecContext(ctx, s.d.RewriteQuery(q), args...)
 }
 
-func (s *SQLite) queryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error) {
+func (s *dbStore) queryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error) {
 	return s.db.QueryContext(ctx, s.d.RewriteQuery(q), args...)
 }
 
-func (s *SQLite) queryRowContext(ctx context.Context, q string, args ...any) *sql.Row {
+func (s *dbStore) queryRowContext(ctx context.Context, q string, args ...any) *sql.Row {
 	return s.db.QueryRowContext(ctx, s.d.RewriteQuery(q), args...)
 }
 
-func (s *SQLite) migrate() error {
+func (s *dbStore) migrate() error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS users (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -391,7 +398,7 @@ func (s *SQLite) migrate() error {
 // Name == "auto", so the data created by Phase 1 (token-form-driven)
 // is consistent with the new explicit default-flag semantics. Best
 // effort, errors are logged but never block startup.
-func (s *SQLite) migrateDefaultFlag() {
+func (s *dbStore) migrateDefaultFlag() {
 	res, err := s.exec(`UPDATE token_combo_models SET is_default = 1 WHERE name = 'auto' AND is_default = 0`)
 	if err != nil {
 		logging.Debug("migrate default flag: skipped", logging.F("err", err.Error()))
@@ -411,7 +418,7 @@ func (s *SQLite) migrateDefaultFlag() {
 // startup (the table may not exist yet on a fresh DB, or the
 // models_whitelist column may be missing on old schemas during
 // upgrade tests).
-func (s *SQLite) migrateAutoCombos() {
+func (s *dbStore) migrateAutoCombos() {
 	toks, err := s.GetTokens()
 	if err != nil {
 		logging.Debug("migrate auto combos: skipped (cannot list tokens)",
@@ -464,7 +471,7 @@ func (s *SQLite) migrateAutoCombos() {
 // addColumn ensures the column exists. Dialects with a native
 // idempotent form (Postgres: ADD COLUMN IF NOT EXISTS) run it
 // directly; SQLite falls back to a PRAGMA-guarded ALTER.
-func (s *SQLite) addColumn(table, column, decl string) error {
+func (s *dbStore) addColumn(table, column, decl string) error {
 	if stmt := s.d.AddColumnIfMissing(table, column, decl); stmt != "" {
 		_, err := s.exec(stmt)
 		return err
@@ -472,7 +479,7 @@ func (s *SQLite) addColumn(table, column, decl string) error {
 	return s.addColumnIfMissing(table, column, decl)
 }
 
-func (s *SQLite) addColumnIfMissing(table, column, decl string) error {
+func (s *dbStore) addColumnIfMissing(table, column, decl string) error {
 	rows, err := s.query(`PRAGMA table_info(` + table + `)`)
 	if err != nil {
 		return err
@@ -531,7 +538,7 @@ func decodeCB(s string) model.CircuitBreakerConfig {
 
 // ---------------- Channels ----------------
 
-func (s *SQLite) GetChannels() ([]model.Channel, error) {
+func (s *dbStore) GetChannels() ([]model.Channel, error) {
 	rows, err := s.query(`SELECT id, name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, created_at, updated_at FROM channels ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -548,12 +555,12 @@ func (s *SQLite) GetChannels() ([]model.Channel, error) {
 	return out, rows.Err()
 }
 
-func (s *SQLite) GetChannel(id int64) (*model.Channel, error) {
+func (s *dbStore) GetChannel(id int64) (*model.Channel, error) {
 	row := s.queryRow(`SELECT id, name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, created_at, updated_at FROM channels WHERE id = ?`, id)
 	return scanChannel(row)
 }
 
-func (s *SQLite) CreateChannel(ch *model.Channel) error {
+func (s *dbStore) CreateChannel(ch *model.Channel) error {
 	now := time.Now().UTC()
 	ch.CreatedAt = now
 	ch.UpdatedAt = now
@@ -578,7 +585,7 @@ func (s *SQLite) CreateChannel(ch *model.Channel) error {
 	return nil
 }
 
-func (s *SQLite) UpdateChannel(ch *model.Channel) error {
+func (s *dbStore) UpdateChannel(ch *model.Channel) error {
 	ch.UpdatedAt = time.Now().UTC()
 	if ch.Protocol == "" {
 		ch.Protocol = "openai"
@@ -593,12 +600,12 @@ func (s *SQLite) UpdateChannel(ch *model.Channel) error {
 	return err
 }
 
-func (s *SQLite) DeleteChannel(id int64) error {
+func (s *dbStore) DeleteChannel(id int64) error {
 	_, err := s.exec(`DELETE FROM channels WHERE id = ?`, id)
 	return err
 }
 
-func (s *SQLite) GetDrainedChannels() ([]DrainedChannel, error) {
+func (s *dbStore) GetDrainedChannels() ([]DrainedChannel, error) {
 	rows, err := s.query(`SELECT c.id, c.name FROM channels c WHERE c.status = 1 AND NOT EXISTS (SELECT 1 FROM keys k WHERE k.channel_id = c.id AND k.status = 0)`)
 	if err != nil {
 		return nil, err
@@ -644,7 +651,7 @@ func scanChannel(r interface {
 
 // ---------------- Keys ----------------
 
-func (s *SQLite) GetKeys(channelID int64) ([]model.Key, error) {
+func (s *dbStore) GetKeys(channelID int64) ([]model.Key, error) {
 	rows, err := s.query(`SELECT id, channel_id, key, key_ciphertext, key_masked, status, last_used_at, created_at FROM keys WHERE channel_id = ? ORDER BY id`, channelID)
 	if err != nil {
 		return nil, err
@@ -679,9 +686,9 @@ func (s *SQLite) GetKeys(channelID int64) ([]model.Key, error) {
 	out := make([]model.Key, 0, len(raws))
 	badKeyIDs := make([]int64, 0)
 	for _, rr := range raws {
-		if s.Secrets != nil {
+		if s.secrets != nil {
 			if rr.cipher != "" {
-				pt, derr := s.Secrets.Decrypt(rr.cipher)
+				pt, derr := s.secrets.Decrypt(rr.cipher)
 				if derr != nil {
 					// Master-key mismatch or tampered ciphertext:
 					// mark this key as disabled and skip — the row
@@ -705,7 +712,7 @@ func (s *SQLite) GetKeys(channelID int64) ([]model.Key, error) {
 				rr.k.Key = rr.plain
 				// Best-effort background migration to ciphertext.
 				// Failures are retried on the next read.
-				if ct, eerr := s.Secrets.Encrypt([]byte(rr.plain)); eerr == nil {
+				if ct, eerr := s.secrets.Encrypt([]byte(rr.plain)); eerr == nil {
 					_, _ = s.exec(`UPDATE keys SET key='', key_ciphertext=? WHERE id=?`, ct, rr.k.ID)
 				}
 			}
@@ -735,7 +742,7 @@ func (s *SQLite) GetKeys(channelID int64) ([]model.Key, error) {
 	return out, nil
 }
 
-func (s *SQLite) CreateKey(k *model.Key) error {
+func (s *dbStore) CreateKey(k *model.Key) error {
 	k.CreatedAt = time.Now().UTC()
 	plain := k.Key
 	if plain == "" {
@@ -743,8 +750,8 @@ func (s *SQLite) CreateKey(k *model.Key) error {
 	}
 	cipher := ""
 	storedPlain := plain // default for legacy mode
-	if s.Secrets != nil {
-		ct, err := s.Secrets.Encrypt([]byte(plain))
+	if s.secrets != nil {
+		ct, err := s.secrets.Encrypt([]byte(plain))
 		if err != nil {
 			return fmt.Errorf("encrypt key: %w", err)
 		}
@@ -764,7 +771,7 @@ func (s *SQLite) CreateKey(k *model.Key) error {
 	return nil
 }
 
-func (s *SQLite) DeleteKey(id int64) error {
+func (s *dbStore) DeleteKey(id int64) error {
 	_, err := s.exec(`DELETE FROM keys WHERE id = ?`, id)
 	return err
 }
@@ -776,7 +783,7 @@ func (s *SQLite) DeleteKey(id int64) error {
 // to invalidate should set KeyDisabled explicitly. Used by the
 // `-wipe-keys` recovery command after a master-key rotation
 // renders existing ciphertext undecryptable.
-func (s *SQLite) WipeKeys() (int64, error) {
+func (s *dbStore) WipeKeys() (int64, error) {
 	res, err := s.exec(`UPDATE keys SET key='', key_ciphertext='' WHERE key != '' OR key_ciphertext != ''`)
 	if err != nil {
 		return 0, err
@@ -784,7 +791,7 @@ func (s *SQLite) WipeKeys() (int64, error) {
 	return res.RowsAffected()
 }
 
-func (s *SQLite) ReencryptAllKeys(oldMgr, newMgr *secrets.Manager) (int, error) {
+func (s *dbStore) ReencryptAllKeys(oldMgr, newMgr *secrets.Manager) (int, error) {
 	rows, err := s.query(`SELECT id, key_ciphertext FROM keys WHERE key_ciphertext != ''`)
 	if err != nil {
 		return 0, err
@@ -823,23 +830,23 @@ func (s *SQLite) ReencryptAllKeys(oldMgr, newMgr *secrets.Manager) (int, error) 
 	return len(keys), nil
 }
 
-func (s *SQLite) RotateMasterKey(newKeyHex string) (int, error) {
+func (s *dbStore) RotateMasterKey(newKeyHex string) (int, error) {
 	m, err := secrets.FromHexKey(newKeyHex)
 	if err != nil {
 		return 0, err
 	}
-	if s.Secrets == nil {
+	if s.secrets == nil {
 		return 0, errors.New("no secrets manager configured; cannot rotate")
 	}
-	n, err := s.ReencryptAllKeys(s.Secrets, m)
+	n, err := s.ReencryptAllKeys(s.secrets, m)
 	if err != nil {
 		return 0, err
 	}
-	tn, err := s.reencryptAllTokens(s.Secrets, m)
+	tn, err := s.reencryptAllTokens(s.secrets, m)
 	if err != nil {
 		return n, err
 	}
-	s.Secrets = m
+	s.secrets = m
 	logging.Info("secrets rotated master key",
 		logging.F("channel_keys", n),
 		logging.F("tokens", tn),
@@ -850,7 +857,7 @@ func (s *SQLite) RotateMasterKey(newKeyHex string) (int, error) {
 // reencryptAllTokens re-encrypts every tokens.key_ciphertext row
 // from oldMgr to newMgr. Returns the count of tokens rotated.
 // Mirror of ReencryptAllKeys but on the tokens table.
-func (s *SQLite) reencryptAllTokens(oldMgr, newMgr *secrets.Manager) (int, error) {
+func (s *dbStore) reencryptAllTokens(oldMgr, newMgr *secrets.Manager) (int, error) {
 	rows, err := s.query(`SELECT id, key_ciphertext FROM tokens WHERE key_ciphertext != ''`)
 	if err != nil {
 		return 0, err
@@ -887,7 +894,7 @@ func (s *SQLite) reencryptAllTokens(oldMgr, newMgr *secrets.Manager) (int, error
 
 // ---------------- Tokens ----------------
 
-func (s *SQLite) GetToken(key string) (*model.Token, error) {
+func (s *dbStore) GetToken(key string) (*model.Token, error) {
 	// With ciphertext-only mode, the SQL `key = ?` lookup can't
 	// match an encrypted bearer directly. Fall back to scanning
 	// all rows and comparing in plaintext — production callers
@@ -910,12 +917,12 @@ func (s *SQLite) GetToken(key string) (*model.Token, error) {
 	return nil, ErrNotFound
 }
 
-func (s *SQLite) GetTokenByID(id int64) (*model.Token, error) {
+func (s *dbStore) GetTokenByID(id int64) (*model.Token, error) {
 	row := s.queryRow(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens WHERE id = ?`, id)
 	return scanTokenRow(s, row)
 }
 
-func (s *SQLite) GetTokens() ([]model.Token, error) {
+func (s *dbStore) GetTokens() ([]model.Token, error) {
 	rows, err := s.query(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -932,7 +939,7 @@ func (s *SQLite) GetTokens() ([]model.Token, error) {
 	return out, rows.Err()
 }
 
-func (s *SQLite) CreateToken(t *model.Token) error {
+func (s *dbStore) CreateToken(t *model.Token) error {
 	t.CreatedAt = time.Now().UTC()
 	plain := t.Key
 	if plain == "" {
@@ -940,8 +947,8 @@ func (s *SQLite) CreateToken(t *model.Token) error {
 	}
 	cipher := ""
 	storedPlain := plain
-	if s.Secrets != nil {
-		ct, err := s.Secrets.Encrypt([]byte(plain))
+	if s.secrets != nil {
+		ct, err := s.secrets.Encrypt([]byte(plain))
 		if err != nil {
 			return fmt.Errorf("encrypt token: %w", err)
 		}
@@ -968,7 +975,7 @@ func (s *SQLite) CreateToken(t *model.Token) error {
 		return err
 	}
 	t.ID = id
-	if s.Secrets != nil {
+	if s.secrets != nil {
 		// Replace the sentinel with "__enc_<id>" so it stays unique
 		// and gives a deterministic lookup if anyone wants to identify
 		// the row from its key column. scanTokenRow never reads the
@@ -979,13 +986,13 @@ func (s *SQLite) CreateToken(t *model.Token) error {
 	return nil
 }
 
-func (s *SQLite) UpdateToken(t *model.Token) error {
+func (s *dbStore) UpdateToken(t *model.Token) error {
 	t.LastUsedAt = time.Now().UTC()
 	plain := t.Key
 	cipher := ""
 	storedPlain := plain
-	if plain != "" && s.Secrets != nil {
-		ct, err := s.Secrets.Encrypt([]byte(plain))
+	if plain != "" && s.secrets != nil {
+		ct, err := s.secrets.Encrypt([]byte(plain))
 		if err != nil {
 			return fmt.Errorf("encrypt token: %w", err)
 		}
@@ -1013,7 +1020,7 @@ func (s *SQLite) UpdateToken(t *model.Token) error {
 	return nil
 }
 
-func (s *SQLite) IncrementTokenSpend(tokenID int64, amount float64) error {
+func (s *dbStore) IncrementTokenSpend(tokenID int64, amount float64) error {
 	if amount == 0 {
 		return nil
 	}
@@ -1041,7 +1048,7 @@ func (s *SQLite) IncrementTokenSpend(tokenID int64, amount float64) error {
 // Callers that pair this with IncrementTokenSpend must roll the
 // token spend back on ErrBudgetExceeded to keep the two ledgers in
 // agreement.
-func (s *SQLite) IncrementPlanSpend(planID int64, amount float64) error {
+func (s *dbStore) IncrementPlanSpend(planID int64, amount float64) error {
 	if amount == 0 || planID == 0 {
 		return nil
 	}
@@ -1079,7 +1086,7 @@ func (s *SQLite) IncrementPlanSpend(planID int64, amount float64) error {
 // planID == 0 skips the plan leg (no plan bound to the token),
 // in which case only the token ledger is touched and no
 // ErrBudgetExceeded can be raised.
-func (s *SQLite) RecordRequestSpend(tokenID, planID int64, amount float64) error {
+func (s *dbStore) RecordRequestSpend(tokenID, planID int64, amount float64) error {
 	if amount == 0 {
 		return nil
 	}
@@ -1139,7 +1146,7 @@ func (s *SQLite) RecordRequestSpend(tokenID, planID int64, amount float64) error
 // in-memory cache will skip it on the next reload and any stale
 // request still holding the bearer will be rejected by the
 // Expiry check in middleware. Idempotent.
-func (s *SQLite) MarkTokenExpired(tokenID int64) error {
+func (s *dbStore) MarkTokenExpired(tokenID int64) error {
 	_, err := s.exec(
 		`UPDATE tokens SET status = ? WHERE id = ? AND status = ?`,
 		int(model.TokenExpired), tokenID, int(model.TokenActive),
@@ -1147,12 +1154,12 @@ func (s *SQLite) MarkTokenExpired(tokenID int64) error {
 	return err
 }
 
-func (s *SQLite) DeleteToken(id int64) error {
+func (s *dbStore) DeleteToken(id int64) error {
 	_, err := s.exec(`DELETE FROM tokens WHERE id = ?`, id)
 	return err
 }
 
-func scanTokenRow(s *SQLite, r interface {
+func scanTokenRow(s *dbStore, r interface {
 	Scan(dest ...any) error
 }) (*model.Token, error) {
 	var t model.Token
@@ -1179,8 +1186,8 @@ func scanTokenRow(s *SQLite, r interface {
 	// upgrade to ciphertext form so subsequent reads go through
 	// the manager.
 	switch {
-	case s.Secrets != nil && cipher != "":
-		pt, derr := s.Secrets.Decrypt(cipher)
+	case s.secrets != nil && cipher != "":
+		pt, derr := s.secrets.Decrypt(cipher)
 		if derr != nil {
 			// Master-key mismatch or tampered ciphertext: leave
 			// the token empty and let cache reload skip it.
@@ -1192,9 +1199,9 @@ func scanTokenRow(s *SQLite, r interface {
 		} else {
 			t.Key = string(pt)
 		}
-	case s.Secrets != nil && plain != "":
+	case s.secrets != nil && plain != "":
 		t.Key = plain
-		if ct, eerr := s.Secrets.Encrypt([]byte(plain)); eerr == nil {
+		if ct, eerr := s.secrets.Encrypt([]byte(plain)); eerr == nil {
 			_, _ = s.exec(`UPDATE tokens SET key='', key_ciphertext=? WHERE id=?`, ct, t.ID)
 		}
 	default:
@@ -1205,7 +1212,7 @@ func scanTokenRow(s *SQLite, r interface {
 
 // ---------------- Plans ----------------
 
-func (s *SQLite) GetPlans() ([]model.Plan, error) {
+func (s *dbStore) GetPlans() ([]model.Plan, error) {
 	rows, err := s.query(`SELECT id, name, budget_usd, used_usd, markup_ratio, status, created_at, updated_at FROM plans ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -1226,7 +1233,7 @@ func (s *SQLite) GetPlans() ([]model.Plan, error) {
 	return out, rows.Err()
 }
 
-func (s *SQLite) GetPlan(id int64) (*model.Plan, error) {
+func (s *dbStore) GetPlan(id int64) (*model.Plan, error) {
 	row := s.queryRow(`SELECT id, name, budget_usd, used_usd, markup_ratio, status, created_at, updated_at FROM plans WHERE id = ?`, id)
 	var p model.Plan
 	var status, created, updated int64
@@ -1242,7 +1249,7 @@ func (s *SQLite) GetPlan(id int64) (*model.Plan, error) {
 	return &p, nil
 }
 
-func (s *SQLite) CreatePlan(p *model.Plan) error {
+func (s *dbStore) CreatePlan(p *model.Plan) error {
 	now := time.Now().UTC()
 	p.CreatedAt = now
 	p.UpdatedAt = now
@@ -1257,7 +1264,7 @@ func (s *SQLite) CreatePlan(p *model.Plan) error {
 	return nil
 }
 
-func (s *SQLite) UpdatePlan(p *model.Plan) error {
+func (s *dbStore) UpdatePlan(p *model.Plan) error {
 	p.UpdatedAt = time.Now().UTC()
 	_, err := s.exec(
 		`UPDATE plans SET name=?, budget_usd=?, used_usd=?, markup_ratio=?, status=?, updated_at=? WHERE id=?`,
@@ -1271,14 +1278,14 @@ func (s *SQLite) UpdatePlan(p *model.Plan) error {
 // treats plan_id=0 (or unknown) as "no plan limit". Callers
 // (admin handler) are expected to null out tokens.plan_id FIRST
 // when an explicit unlink is desired.
-func (s *SQLite) DeletePlan(id int64) error {
+func (s *dbStore) DeletePlan(id int64) error {
 	_, err := s.exec(`DELETE FROM plans WHERE id=?`, id)
 	return err
 }
 
 // ---------------- Users ----------------
 
-func (s *SQLite) GetUsers() ([]model.User, error) {
+func (s *dbStore) GetUsers() ([]model.User, error) {
 	rows, err := s.query(`SELECT id, username, password_hash, role, status, session_token, session_exp, created_at FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -1295,17 +1302,17 @@ func (s *SQLite) GetUsers() ([]model.User, error) {
 	return out, rows.Err()
 }
 
-func (s *SQLite) GetUser(id int64) (*model.User, error) {
+func (s *dbStore) GetUser(id int64) (*model.User, error) {
 	row := s.queryRow(`SELECT id, username, password_hash, role, status, session_token, session_exp, created_at FROM users WHERE id = ?`, id)
 	return scanUser(row)
 }
 
-func (s *SQLite) GetUserByUsername(username string) (*model.User, error) {
+func (s *dbStore) GetUserByUsername(username string) (*model.User, error) {
 	row := s.queryRow(`SELECT id, username, password_hash, role, status, session_token, session_exp, created_at FROM users WHERE username = ?`, username)
 	return scanUser(row)
 }
 
-func (s *SQLite) GetUserBySession(token string) (*model.User, error) {
+func (s *dbStore) GetUserBySession(token string) (*model.User, error) {
 	if token == "" {
 		return nil, ErrNotFound
 	}
@@ -1318,7 +1325,7 @@ func (s *SQLite) GetUserBySession(token string) (*model.User, error) {
 	return scanUser(row)
 }
 
-func (s *SQLite) CreateUser(u *model.User) error {
+func (s *dbStore) CreateUser(u *model.User) error {
 	u.CreatedAt = time.Now().UTC()
 	id, err := dialect.InsertOne(s.d, s.db,
 		`INSERT INTO users(username, password_hash, role, status, session_token, session_exp, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -1331,7 +1338,7 @@ func (s *SQLite) CreateUser(u *model.User) error {
 	return nil
 }
 
-func (s *SQLite) UpdateUser(u *model.User) error {
+func (s *dbStore) UpdateUser(u *model.User) error {
 	_, err := s.exec(
 		`UPDATE users SET password_hash=?, role=?, status=?, session_token=?, session_exp=? WHERE id=?`,
 		u.PasswordHash, int(u.Role), u.Status, u.SessionToken, sessionExpUnix(u.SessionExp), u.ID,
@@ -1341,7 +1348,7 @@ func (s *SQLite) UpdateUser(u *model.User) error {
 
 // CleanupExpiredSessions clears session_token for users whose
 // session_exp is set and in the past. Returns rows affected.
-func (s *SQLite) CleanupExpiredSessions() (int64, error) {
+func (s *dbStore) CleanupExpiredSessions() (int64, error) {
 	now := time.Now().UTC().UnixMilli()
 	res, err := s.exec(
 		`UPDATE users SET session_token = '' WHERE session_exp > 0 AND session_exp <= ?`,
@@ -1383,7 +1390,7 @@ func scanUser(r interface {
 
 // ---------------- alerts ----------------
 
-func (s *SQLite) GetAlerts() ([]model.Alert, error) {
+func (s *dbStore) GetAlerts() ([]model.Alert, error) {
 	rows, err := s.query(`SELECT id, name, type, threshold, window_sec, cooldown_sec, webhook_url, enabled, last_fired_at, disabled_reason, created_at FROM alerts ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -1404,7 +1411,7 @@ func (s *SQLite) GetAlerts() ([]model.Alert, error) {
 	return out, rows.Err()
 }
 
-func (s *SQLite) GetAlert(id int64) (*model.Alert, error) {
+func (s *dbStore) GetAlert(id int64) (*model.Alert, error) {
 	row := s.queryRow(`SELECT id, name, type, threshold, window_sec, cooldown_sec, webhook_url, enabled, last_fired_at, disabled_reason, created_at FROM alerts WHERE id=?`, id)
 	var a model.Alert
 	var enabled any
@@ -1420,7 +1427,7 @@ func (s *SQLite) GetAlert(id int64) (*model.Alert, error) {
 	return &a, nil
 }
 
-func (s *SQLite) CreateAlert(a *model.Alert) error {
+func (s *dbStore) CreateAlert(a *model.Alert) error {
 	if a.CreatedAt.IsZero() {
 		a.CreatedAt = time.Now()
 	}
@@ -1433,7 +1440,7 @@ func (s *SQLite) CreateAlert(a *model.Alert) error {
 	return nil
 }
 
-func (s *SQLite) UpdateAlert(a *model.Alert) error {
+func (s *dbStore) UpdateAlert(a *model.Alert) error {
 	enabled := 0
 	if a.Enabled {
 		enabled = 1
@@ -1443,12 +1450,12 @@ func (s *SQLite) UpdateAlert(a *model.Alert) error {
 	return err
 }
 
-func (s *SQLite) DeleteAlert(id int64) error {
+func (s *dbStore) DeleteAlert(id int64) error {
 	_, err := s.exec(`DELETE FROM alerts WHERE id=?`, id)
 	return err
 }
 
-func (s *SQLite) RecordAlertFired(id int64, atUnix int64) error {
+func (s *dbStore) RecordAlertFired(id int64, atUnix int64) error {
 	_, err := s.exec(`UPDATE alerts SET last_fired_at=? WHERE id=?`, atUnix, id)
 	return err
 }
@@ -1456,7 +1463,7 @@ func (s *SQLite) RecordAlertFired(id int64, atUnix int64) error {
 // DisableAlert flips the rule's enabled flag to 0 and records
 // the reason so the admin UI / /alerts listing can surface why
 // the rule was auto-disabled. Idempotent.
-func (s *SQLite) DisableAlert(id int64, reason string) error {
+func (s *dbStore) DisableAlert(id int64, reason string) error {
 	res, err := s.exec(
 		`UPDATE alerts SET enabled=?, disabled_reason=? WHERE id=?`,
 		s.d.Bool(false), reason, id,
@@ -1470,7 +1477,7 @@ func (s *SQLite) DisableAlert(id int64, reason string) error {
 	return nil
 }
 
-func (s *SQLite) CreateAlertEvent(e *model.AlertEvent) error {
+func (s *dbStore) CreateAlertEvent(e *model.AlertEvent) error {
 	if e.FiredAt.IsZero() {
 		e.FiredAt = time.Now()
 	}
@@ -1483,7 +1490,7 @@ func (s *SQLite) CreateAlertEvent(e *model.AlertEvent) error {
 	return nil
 }
 
-func (s *SQLite) GetAlertEvents(limit int) ([]model.AlertEvent, error) {
+func (s *dbStore) GetAlertEvents(limit int) ([]model.AlertEvent, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -1508,28 +1515,28 @@ func (s *SQLite) GetAlertEvents(limit int) ([]model.AlertEvent, error) {
 	return out, rows.Err()
 }
 
-func (s *SQLite) AckAlertEvent(id int64) error {
+func (s *dbStore) AckAlertEvent(id int64) error {
 	_, err := s.exec(`UPDATE alert_events SET acknowledged=? WHERE id=?`, s.d.Bool(true), id)
 	return err
 }
 
 // ---------------- raw access ----------------
 
-func (s *SQLite) RawQueryRow(query string, args ...any) *sql.Row {
+func (s *dbStore) RawQueryRow(query string, args ...any) *sql.Row {
 	return s.queryRow(query, args...)
 }
 
-func (s *SQLite) RawQuery(query string, args ...any) (*sql.Rows, error) {
+func (s *dbStore) RawQuery(query string, args ...any) (*sql.Rows, error) {
 	return s.query(query, args...)
 }
 
-func (s *SQLite) RawDB() *sql.DB { return s.db }
+func (s *dbStore) RawDB() *sql.DB { return s.db }
 
 // ---------------- runtime settings ----------------
 
 // GetRuntimeSettings returns the persisted JSON snapshot written by
 // SetRuntimeSettings, or (nil, nil) when no row exists yet.
-func (s *SQLite) GetRuntimeSettings() ([]byte, error) {
+func (s *dbStore) GetRuntimeSettings() ([]byte, error) {
 	var raw []byte
 	err := s.queryRow(`SELECT settings_json FROM runtime_settings WHERE id = 1`).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1543,7 +1550,7 @@ func (s *SQLite) GetRuntimeSettings() ([]byte, error) {
 
 // SetRuntimeSettings upserts the single row. payload must be valid
 // JSON; callers should validate before persisting.
-func (s *SQLite) SetRuntimeSettings(payload []byte) error {
+func (s *dbStore) SetRuntimeSettings(payload []byte) error {
 	now := time.Now().Unix()
 	_, err := s.exec(`
 		INSERT INTO runtime_settings(id, settings_json, updated_at) VALUES (1, ?, ?)
@@ -1560,7 +1567,7 @@ func (s *SQLite) SetRuntimeSettings(payload []byte) error {
 // key against the upstream, stores the encrypted ciphertext, and
 // proceeds with the request using the consumer's key.
 
-func (s *SQLite) CreateBYOKChannel(ctx context.Context, ch *model.BYOKChannel) (int64, error) {
+func (s *dbStore) CreateBYOKChannel(ctx context.Context, ch *model.BYOKChannel) (int64, error) {
 	if ch.Provider == "" {
 		return 0, errors.New("provider is required")
 	}
@@ -1581,7 +1588,7 @@ func (s *SQLite) CreateBYOKChannel(ctx context.Context, ch *model.BYOKChannel) (
 	return id, nil
 }
 
-func (s *SQLite) ListBYOKChannels(ctx context.Context) ([]*model.BYOKChannel, error) {
+func (s *dbStore) ListBYOKChannels(ctx context.Context) ([]*model.BYOKChannel, error) {
 	rows, err := s.queryContext(ctx, `
 		SELECT id, provider, key_ciphertext, key_masked, owner_ip, owner_email,
 		       status, last_used_at, use_count, expires_at, created_at
@@ -1602,7 +1609,7 @@ func (s *SQLite) ListBYOKChannels(ctx context.Context) ([]*model.BYOKChannel, er
 	return out, rows.Err()
 }
 
-func (s *SQLite) GetBYOKChannel(ctx context.Context, id int64) (*model.BYOKChannel, error) {
+func (s *dbStore) GetBYOKChannel(ctx context.Context, id int64) (*model.BYOKChannel, error) {
 	row := s.queryRowContext(ctx, `
 		SELECT id, provider, key_ciphertext, key_masked, owner_ip, owner_email,
 		       status, last_used_at, use_count, expires_at, created_at
@@ -1616,7 +1623,7 @@ func (s *SQLite) GetBYOKChannel(ctx context.Context, id int64) (*model.BYOKChann
 
 // GetBYOKChannelByIP looks up an active BYOK row by client IP. Used
 // by the UnknownTokenHook to find a previously registered consumer key.
-func (s *SQLite) GetBYOKChannelByIP(ctx context.Context, ownerIP string) (*model.BYOKChannel, error) {
+func (s *dbStore) GetBYOKChannelByIP(ctx context.Context, ownerIP string) (*model.BYOKChannel, error) {
 	row := s.queryRowContext(ctx, `
 		SELECT id, provider, key_ciphertext, key_masked, owner_ip, owner_email,
 		       status, last_used_at, use_count, expires_at, created_at
@@ -1631,7 +1638,7 @@ func (s *SQLite) GetBYOKChannelByIP(ctx context.Context, ownerIP string) (*model
 }
 
 // TouchBYOKChannel increments use_count and updates last_used_at.
-func (s *SQLite) TouchBYOKChannel(ctx context.Context, id int64) error {
+func (s *dbStore) TouchBYOKChannel(ctx context.Context, id int64) error {
 	_, err := s.execContext(ctx, `
 		UPDATE byok_channels
 		   SET use_count = use_count + 1, last_used_at = ?
@@ -1639,7 +1646,7 @@ func (s *SQLite) TouchBYOKChannel(ctx context.Context, id int64) error {
 	return err
 }
 
-func (s *SQLite) DeleteBYOKChannel(ctx context.Context, id int64) error {
+func (s *dbStore) DeleteBYOKChannel(ctx context.Context, id int64) error {
 	res, err := s.execContext(ctx, `DELETE FROM byok_channels WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete byok channel: %w", err)
@@ -1675,7 +1682,7 @@ func scanBYOKRow(r interface {
 
 // ---------- ProviderDefs ----------
 
-func (s *SQLite) GetProviderDefs() ([]model.ProviderDef, error) {
+func (s *dbStore) GetProviderDefs() ([]model.ProviderDef, error) {
 	rows, err := s.query(`SELECT id, name, display_name, protocol, base_url, created_at, updated_at FROM providers ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -1695,7 +1702,7 @@ func (s *SQLite) GetProviderDefs() ([]model.ProviderDef, error) {
 	return out, rows.Err()
 }
 
-func (s *SQLite) CreateProviderDef(p *model.ProviderDef) error {
+func (s *dbStore) CreateProviderDef(p *model.ProviderDef) error {
 	now := time.Now().Unix()
 	pid, err := dialect.InsertOne(s.d, s.db, `INSERT INTO providers (name, display_name, protocol, base_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
 		p.Name, p.DisplayName, p.Protocol, p.BaseURL, now, now)
@@ -1708,14 +1715,14 @@ func (s *SQLite) CreateProviderDef(p *model.ProviderDef) error {
 	return nil
 }
 
-func (s *SQLite) DeleteProviderDef(id int64) error {
+func (s *dbStore) DeleteProviderDef(id int64) error {
 	_, err := s.exec(`DELETE FROM providers WHERE id = ?`, id)
 	return err
 }
 
 // ---------- ComboModels ----------
 
-func (s *SQLite) scanComboRow(r interface{ Scan(dest ...any) error }) (*model.TokenComboModel, error) {
+func (s *dbStore) scanComboRow(r interface{ Scan(dest ...any) error }) (*model.TokenComboModel, error) {
 	var c model.TokenComboModel
 	var modelsJSON, mode, strategy string
 	var enabled, isDefault any
@@ -1736,7 +1743,7 @@ func (s *SQLite) scanComboRow(r interface{ Scan(dest ...any) error }) (*model.To
 	return &c, nil
 }
 
-func (s *SQLite) GetComboModels(tokenID int64) ([]model.TokenComboModel, error) {
+func (s *dbStore) GetComboModels(tokenID int64) ([]model.TokenComboModel, error) {
 	rows, err := s.query(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models WHERE token_id = ? ORDER BY id`, tokenID)
 	if err != nil {
 		return nil, err
@@ -1753,12 +1760,12 @@ func (s *SQLite) GetComboModels(tokenID int64) ([]model.TokenComboModel, error) 
 	return out, rows.Err()
 }
 
-func (s *SQLite) GetComboModel(id int64) (*model.TokenComboModel, error) {
+func (s *dbStore) GetComboModel(id int64) (*model.TokenComboModel, error) {
 	row := s.queryRow(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models WHERE id = ?`, id)
 	return s.scanComboRow(row)
 }
 
-func (s *SQLite) GetAllComboModels() ([]model.TokenComboModel, error) {
+func (s *dbStore) GetAllComboModels() ([]model.TokenComboModel, error) {
 	rows, err := s.query(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models WHERE enabled = 1 ORDER BY token_id, id`)
 	if err != nil {
 		return nil, err
@@ -1779,7 +1786,7 @@ func (s *SQLite) GetAllComboModels() ([]model.TokenComboModel, error) {
 // all tokens. Used by the admin UI's model-sets page where the
 // operator wants to see disabled entries too. Routing-time lookup
 // uses GetAllComboModels (enabled-only).
-func (s *SQLite) ListAllComboModels() ([]model.TokenComboModel, error) {
+func (s *dbStore) ListAllComboModels() ([]model.TokenComboModel, error) {
 	rows, err := s.query(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models ORDER BY token_id, id`)
 	if err != nil {
 		return nil, err
@@ -1796,7 +1803,7 @@ func (s *SQLite) ListAllComboModels() ([]model.TokenComboModel, error) {
 	return out, rows.Err()
 }
 
-func (s *SQLite) CreateComboModel(c *model.TokenComboModel) error {
+func (s *dbStore) CreateComboModel(c *model.TokenComboModel) error {
 	if err := s.validateCombo(c); err != nil {
 		return err
 	}
@@ -1819,7 +1826,7 @@ func (s *SQLite) CreateComboModel(c *model.TokenComboModel) error {
 	return nil
 }
 
-func (s *SQLite) validateCombo(c *model.TokenComboModel) error {
+func (s *dbStore) validateCombo(c *model.TokenComboModel) error {
 	// name format: ^[a-zA-Z0-9_-]{1,64}$
 	if !comboNameRe.MatchString(c.Name) {
 		return fmt.Errorf("combo name %q must match ^[a-zA-Z0-9_-]{1,64}$", c.Name)
@@ -1870,7 +1877,7 @@ var (
 	comboModelRe = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,128}$`)
 )
 
-func (s *SQLite) UpdateComboModel(c *model.TokenComboModel) error {
+func (s *dbStore) UpdateComboModel(c *model.TokenComboModel) error {
 	if c.IsDefault {
 		if err := s.clearDefaultFlag(c.TokenID, c.ID); err != nil {
 			return fmt.Errorf("clear default flag: %w", err)
@@ -1888,7 +1895,7 @@ func (s *SQLite) UpdateComboModel(c *model.TokenComboModel) error {
 	return nil
 }
 
-func (s *SQLite) DeleteComboModel(id int64) error {
+func (s *dbStore) DeleteComboModel(id int64) error {
 	_, err := s.exec(`DELETE FROM token_combo_models WHERE id = ?`, id)
 	return err
 }
@@ -1897,7 +1904,7 @@ func (s *SQLite) DeleteComboModel(id int64) error {
 // set and demotes any other. The "auto" routing alias resolves to
 // the default set. If comboID is 0 the call is a no-op (used when
 // the operator wants to clear the default).
-func (s *SQLite) SetDefaultModelSet(tokenID, comboID int64) error {
+func (s *dbStore) SetDefaultModelSet(tokenID, comboID int64) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -1920,7 +1927,7 @@ func (s *SQLite) SetDefaultModelSet(tokenID, comboID int64) error {
 // except excludeID. Used inside Create/Update to keep the per-token
 // default-set invariant at most one row has is_default=1. excludeID
 // 0 means "no exclusion".
-func (s *SQLite) clearDefaultFlag(tokenID, excludeID int64) error {
+func (s *dbStore) clearDefaultFlag(tokenID, excludeID int64) error {
 	if excludeID == 0 {
 		_, err := s.exec(`UPDATE token_combo_models SET is_default = 0, updated_at = ? WHERE token_id = ?`,
 			time.Now().Unix(), tokenID)
@@ -1933,7 +1940,7 @@ func (s *SQLite) clearDefaultFlag(tokenID, excludeID int64) error {
 
 // ---------- Guardrails ----------
 
-func (s *SQLite) scanGuardrailRow(r interface{ Scan(dest ...any) error }) (*model.GuardrailRule, error) {
+func (s *dbStore) scanGuardrailRow(r interface{ Scan(dest ...any) error }) (*model.GuardrailRule, error) {
 	var g model.GuardrailRule
 	var hook, onFailure, config string
 	var enabled any
@@ -1953,7 +1960,7 @@ func (s *SQLite) scanGuardrailRow(r interface{ Scan(dest ...any) error }) (*mode
 	return &g, nil
 }
 
-func (s *SQLite) GetEnabledGuardrailRules() ([]model.GuardrailRule, error) {
+func (s *dbStore) GetEnabledGuardrailRules() ([]model.GuardrailRule, error) {
 	rows, err := s.query(`SELECT id, name, description, type, hook, on_failure, config, priority, enabled, created_at, updated_at FROM guardrails WHERE enabled = 1 ORDER BY priority, id`)
 	if err != nil {
 		return nil, err
@@ -1970,7 +1977,7 @@ func (s *SQLite) GetEnabledGuardrailRules() ([]model.GuardrailRule, error) {
 	return out, rows.Err()
 }
 
-func (s *SQLite) GetGuardrailRules() ([]model.GuardrailRule, error) {
+func (s *dbStore) GetGuardrailRules() ([]model.GuardrailRule, error) {
 	rows, err := s.query(`SELECT id, name, description, type, hook, on_failure, config, priority, enabled, created_at, updated_at FROM guardrails ORDER BY priority, id`)
 	if err != nil {
 		return nil, err
@@ -1987,12 +1994,12 @@ func (s *SQLite) GetGuardrailRules() ([]model.GuardrailRule, error) {
 	return out, rows.Err()
 }
 
-func (s *SQLite) GetGuardrailRule(id int64) (*model.GuardrailRule, error) {
+func (s *dbStore) GetGuardrailRule(id int64) (*model.GuardrailRule, error) {
 	row := s.queryRow(`SELECT id, name, description, type, hook, on_failure, config, priority, enabled, created_at, updated_at FROM guardrails WHERE id = ?`, id)
 	return s.scanGuardrailRow(row)
 }
 
-func (s *SQLite) CreateGuardrailRule(r *model.GuardrailRule) error {
+func (s *dbStore) CreateGuardrailRule(r *model.GuardrailRule) error {
 	now := time.Now().Unix()
 	ruleID, err := dialect.InsertOne(s.d, s.db,
 		`INSERT INTO guardrails (name, description, type, hook, on_failure, config, priority, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -2007,7 +2014,7 @@ func (s *SQLite) CreateGuardrailRule(r *model.GuardrailRule) error {
 	return nil
 }
 
-func (s *SQLite) UpdateGuardrailRule(r *model.GuardrailRule) error {
+func (s *dbStore) UpdateGuardrailRule(r *model.GuardrailRule) error {
 	now := time.Now().Unix()
 	_, err := s.exec(
 		`UPDATE guardrails SET name=?, description=?, type=?, hook=?, on_failure=?, config=?, priority=?, enabled=?, updated_at=? WHERE id=?`,
@@ -2020,12 +2027,12 @@ func (s *SQLite) UpdateGuardrailRule(r *model.GuardrailRule) error {
 	return nil
 }
 
-func (s *SQLite) DeleteGuardrailRule(id int64) error {
+func (s *dbStore) DeleteGuardrailRule(id int64) error {
 	_, err := s.exec(`DELETE FROM guardrails WHERE id = ?`, id)
 	return err
 }
 
-func (s *SQLite) CreateGuardrailEvent(e *model.GuardrailEvent) error {
+func (s *dbStore) CreateGuardrailEvent(e *model.GuardrailEvent) error {
 	now := time.Now().Unix()
 	evID, err := dialect.InsertOne(s.d, s.db,
 		`INSERT INTO guardrail_events (token_id, rule_id, rule_name, rule_type, hook, verdict, action, detail, request_ip, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -2039,7 +2046,7 @@ func (s *SQLite) CreateGuardrailEvent(e *model.GuardrailEvent) error {
 	return nil
 }
 
-func (s *SQLite) GetGuardrailEvents(tokenID int64, limit int) ([]model.GuardrailEvent, error) {
+func (s *dbStore) GetGuardrailEvents(tokenID int64, limit int) ([]model.GuardrailEvent, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -2063,7 +2070,7 @@ func (s *SQLite) GetGuardrailEvents(tokenID int64, limit int) ([]model.Guardrail
 	return out, rows.Err()
 }
 
-func (s *SQLite) GetMCPServers(ctx context.Context) ([]MCPServer, error) {
+func (s *dbStore) GetMCPServers(ctx context.Context) ([]MCPServer, error) {
 	rows, err := s.queryContext(ctx, `SELECT id, name, url, auth_header, transport, command, oauth_config_json, token_json, enabled, created_at FROM mcp_servers ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -2084,7 +2091,7 @@ func (s *SQLite) GetMCPServers(ctx context.Context) ([]MCPServer, error) {
 	return out, rows.Err()
 }
 
-func (s *SQLite) GetMCPServer(ctx context.Context, id int64) (*MCPServer, error) {
+func (s *dbStore) GetMCPServer(ctx context.Context, id int64) (*MCPServer, error) {
 	row := s.queryRowContext(ctx, `SELECT id, name, url, auth_header, transport, command, oauth_config_json, token_json, enabled, created_at FROM mcp_servers WHERE id = ?`, id)
 	var srv MCPServer
 	var created int64
@@ -2100,7 +2107,7 @@ func (s *SQLite) GetMCPServer(ctx context.Context, id int64) (*MCPServer, error)
 	return &srv, nil
 }
 
-func (s *SQLite) CreateMCPServer(ctx context.Context, srv *MCPServer) error {
+func (s *dbStore) CreateMCPServer(ctx context.Context, srv *MCPServer) error {
 	now := time.Now().Unix()
 	if srv.Transport == "" {
 		srv.Transport = "http"
@@ -2117,7 +2124,7 @@ func (s *SQLite) CreateMCPServer(ctx context.Context, srv *MCPServer) error {
 	return nil
 }
 
-func (s *SQLite) UpdateMCPServer(ctx context.Context, srv *MCPServer) error {
+func (s *dbStore) UpdateMCPServer(ctx context.Context, srv *MCPServer) error {
 	if srv.Transport == "" {
 		srv.Transport = "http"
 	}
@@ -2128,12 +2135,12 @@ func (s *SQLite) UpdateMCPServer(ctx context.Context, srv *MCPServer) error {
 	return err
 }
 
-func (s *SQLite) DeleteMCPServer(ctx context.Context, id int64) error {
+func (s *dbStore) DeleteMCPServer(ctx context.Context, id int64) error {
 	_, err := s.execContext(ctx, `DELETE FROM mcp_servers WHERE id = ?`, id)
 	return err
 }
 
-func (s *SQLite) GetMCPTools(ctx context.Context, serverID int64) ([]MCPTool, error) {
+func (s *dbStore) GetMCPTools(ctx context.Context, serverID int64) ([]MCPTool, error) {
 	rows, err := s.queryContext(ctx,
 		`SELECT id, server_id, name, description, input_schema_json FROM mcp_tools WHERE server_id = ? ORDER BY name`,
 		serverID,
@@ -2153,7 +2160,7 @@ func (s *SQLite) GetMCPTools(ctx context.Context, serverID int64) ([]MCPTool, er
 	return out, rows.Err()
 }
 
-func (s *SQLite) SetMCPTools(ctx context.Context, serverID int64, tools []MCPTool) error {
+func (s *dbStore) SetMCPTools(ctx context.Context, serverID int64, tools []MCPTool) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -2175,7 +2182,7 @@ func (s *SQLite) SetMCPTools(ctx context.Context, serverID int64, tools []MCPToo
 	return tx.Commit()
 }
 
-func (s *SQLite) GetMCPToolPricing(ctx context.Context, toolID int64) (*MCPToolPricing, error) {
+func (s *dbStore) GetMCPToolPricing(ctx context.Context, toolID int64) (*MCPToolPricing, error) {
 	row := s.queryRowContext(ctx, `SELECT mcp_tool_id, price_per_call_usd FROM mcp_tool_pricing WHERE mcp_tool_id = ?`, toolID)
 	var p MCPToolPricing
 	if err := row.Scan(&p.MCPToolID, &p.PricePerCallUSD); err != nil {
@@ -2187,7 +2194,7 @@ func (s *SQLite) GetMCPToolPricing(ctx context.Context, toolID int64) (*MCPToolP
 	return &p, nil
 }
 
-func (s *SQLite) SetMCPToolPricing(ctx context.Context, p *MCPToolPricing) error {
+func (s *dbStore) SetMCPToolPricing(ctx context.Context, p *MCPToolPricing) error {
 	_, err := s.execContext(ctx,
 		`INSERT INTO mcp_tool_pricing (mcp_tool_id, price_per_call_usd) VALUES (?, ?)
 		 ON CONFLICT(mcp_tool_id) DO UPDATE SET price_per_call_usd = excluded.price_per_call_usd`,
@@ -2196,7 +2203,7 @@ func (s *SQLite) SetMCPToolPricing(ctx context.Context, p *MCPToolPricing) error
 	return err
 }
 
-func (s *SQLite) GetAllMCPTools(ctx context.Context) ([]MCPTool, error) {
+func (s *dbStore) GetAllMCPTools(ctx context.Context) ([]MCPTool, error) {
 	rows, err := s.queryContext(ctx,
 		`SELECT t.id, t.server_id, t.name, t.description, t.input_schema_json
 		 FROM mcp_tools t
@@ -2219,7 +2226,7 @@ func (s *SQLite) GetAllMCPTools(ctx context.Context) ([]MCPTool, error) {
 	return out, rows.Err()
 }
 
-func (s *SQLite) GetEnabledMCPServers(ctx context.Context) ([]MCPServer, error) {
+func (s *dbStore) GetEnabledMCPServers(ctx context.Context) ([]MCPServer, error) {
 	rows, err := s.queryContext(ctx, `SELECT id, name, url, auth_header, transport, command, oauth_config_json, token_json, enabled, created_at FROM mcp_servers WHERE enabled = 1 ORDER BY id`)
 	if err != nil {
 		return nil, err
