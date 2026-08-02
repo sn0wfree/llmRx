@@ -97,15 +97,34 @@ BenchmarkE2E_AutoCombo_Parallel      12.0 µs/op  18.9KB  204 allocs
 
 ## 容量发现（重要）
 
-持续合成负载（~10-40K rps，数分钟）下观察到的网关上限：
+持续合成负载（~40K rps，数分钟）下观察到的网关上限与修复（2026-08-02 全部验证）：
 
+**修复前**（2026-08-02 首测）：
 1. **logstore SQLite 写路径饱和**：220 万行后 WAL 膨胀至 240MB、网关 RSS 5.2GB、
    批量插入开始失败（`logstore batch insert failed`，审计日志丢弃，请求不受影响）
-2. **文件描述符耗尽**：`accept4: too many open files`（与 keep-alive 连接数相关）
+2. **文件描述符耗尽**：`accept4: too many open files`
+3. 根因链：异步日志队列满 → **请求路径回退同步写日志**（与批量 worker 争写锁）→
+   在途请求堆积 → 连接/fd 耗尽 → 雪崩
 
-两者都在**远高于生产 LLM 流量**（通常几十~几百 rps，1-2s 延迟）的负载下出现，
-不构成生产问题；但集群/超高频场景应启用 **PG logstore**（或削峰/限流）。
-修复建议记录在 git log（本轮未实施）。
+**修复后**（同一压测：c=200、60s×3 轮、~2.5M 请求/轮）：
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| 吞吐 | 坍塌（42K 后断崖） | **42.7-43.2K rps 稳定**（失败 0.01% 熔断瞬态，自愈） |
+| fd 数 | 32,186 且 +10K/轮线性增长 | **67 平坦**（根因：acquire 每次重开 -N 文件泄漏连接池，166 fd/s） |
+| RSS | 3,183MB 且 +1GB/轮 | **58MB 平坦** |
+| WAL | 240MB 无界 | **0-4.2MB 有界**（密封文件关闭即删；`journal_size_limit=32MB` 硬上限） |
+| 日志丢弃 | 请求阻塞 | NORMAL ~1%、**synchronous=off 时 0%**（计数+限频告警） |
+
+修复内容：
+- `logstore.drop_on_full`（默认 true）：队列满**丢弃+计数**，请求路径永不触碰 SQLite
+- `logstore.synchronous: off`（默认 normal）：写入吞吐 2-5x（崩溃丢最近 <1s，Redis AOF everysec 语义）
+- 独立 checkpoint goroutine（60s `wal_checkpoint(TRUNCATE)`，读 busy 结果行重试）+ 轮转/驱逐前 TRUNCATE + `journal_size_limit`
+- `server.max_inflight_requests`（默认 10000，负值关闭）：在途超限立即 503，防连接级联
+
+两者都在**远高于生产 LLM 流量**（通常几十~几百 rps，1-2s 延迟）的负载下才出现；
+超高频场景启用 **PG logstore** 或 `logstore.synchronous: off` 即可。处置手册见
+OPERATIONS.md §11.8。
 
 ## 热点修复记录（本轮，已合入）
 
