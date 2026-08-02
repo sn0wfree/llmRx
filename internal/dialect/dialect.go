@@ -1,0 +1,162 @@
+// Package dialect abstracts the SQL dialect differences between
+// the supported relational backends (SQLite today, Postgres in
+// P12 M1, future SQL-family backends).
+//
+// A dialect is a stateless collection of SQL generation helpers.
+// Store implementations (internal/store, later internal/logstore)
+// write their queries against Dialect so that adopting a new
+// backend means implementing Dialect + running the shared
+// test suite, not rewriting SQL.
+package dialect
+
+import (
+	"database/sql"
+	"fmt"
+	"strings"
+)
+
+// Dialect captures every portability difference observed in the
+// store layer (see docs/P12-STORE-ABSTRACTION.md §3-4). Notably
+// absent are identifier quoting (the codebase never quotes
+// identifiers), timestamps (stored as unix int64 everywhere) and
+// upserts (ON CONFLICT ... DO UPDATE is portable).
+type Dialect interface {
+	// Placeholder returns the bind-parameter marker for the i-th
+	// argument (1-based). SQLite: "?", Postgres: "$1".
+	Placeholder(i int) string
+
+	// AutoIncrement declares the id column type in CREATE TABLE.
+	// SQLite: "INTEGER PRIMARY KEY AUTOINCREMENT",
+	// Postgres: "BIGSERIAL PRIMARY KEY".
+	AutoIncrement() string
+
+	// ReturningClause returns the SQL fragment appended to an
+	// INSERT to return the generated id, or "" if the generated id
+	// must be read via LastInsertId.
+	ReturningClause() string
+
+	// Bool converts a Go bool for storage.
+	// SQLite: int64(1)/int64(0), Postgres: true/false.
+	Bool(v bool) any
+
+	// ParseBool converts a scanned raw value into a bool. Accepts
+	// bool, int64/int/float64 and string/[]byte forms
+	// ("1", "true", "t", "yes").
+	ParseBool(v any) bool
+
+	// BoolColumn rewrites a boolean column declaration for CREATE
+	// TABLE. SQLite keeps INTEGER 0/1; Postgres uses BOOLEAN with
+	// true/false defaults. Only pure boolean columns go through
+	// this; multi-value enum columns (e.g. status) stay INTEGER.
+	BoolColumn(decl string) string
+
+	// AddColumnIfMissing returns an idempotent ALTER statement, or
+	// "" if the dialect requires a schema-introspection guard
+	// (SQLite: PRAGMA table_info before ALTER).
+	AddColumnIfMissing(table, column, decl string) string
+}
+
+// SQLite is the canonical implementation for mattn/go-sqlite3.
+type SQLite struct{}
+
+// Postgres is the implementation for the Postgres backend
+// (internal/store/postgres.go, P12 M1).
+type Postgres struct{}
+
+// Placeholders renders n bind markers: "(?,?,?)" or "($1,$2,$3)".
+// n <= 0 returns "".
+func Placeholders(d Dialect, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	parts := make([]string, n)
+	for i := range parts {
+		parts[i] = d.Placeholder(i + 1)
+	}
+	return "(" + strings.Join(parts, ", ") + ")"
+}
+
+// InsertOne executes an INSERT and returns the generated id. When
+// the dialect has a ReturningClause the query is appended with it
+// and the id is scanned from the returned row; otherwise the id is
+// read via LastInsertId.
+func InsertOne(d Dialect, db *sql.DB, query string, args ...any) (int64, error) {
+	if rc := d.ReturningClause(); rc != "" {
+		var id int64
+		if err := db.QueryRow(query+rc, args...).Scan(&id); err != nil {
+			return 0, err
+		}
+		return id, nil
+	}
+	res, err := db.Exec(query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (SQLite) Placeholder(int) string { return "?" }
+
+func (SQLite) AutoIncrement() string { return "INTEGER PRIMARY KEY AUTOINCREMENT" }
+
+func (SQLite) ReturningClause() string { return "" }
+
+func (SQLite) Bool(v bool) any {
+	if v {
+		return int64(1)
+	}
+	return int64(0)
+}
+
+func (SQLite) BoolColumn(decl string) string { return decl }
+
+func (SQLite) AddColumnIfMissing(string, string, string) string { return "" }
+
+func (Postgres) Placeholder(i int) string { return fmt.Sprintf("$%d", i) }
+
+func (Postgres) AutoIncrement() string { return "BIGSERIAL PRIMARY KEY" }
+
+func (Postgres) ReturningClause() string { return " RETURNING id" }
+
+func (Postgres) Bool(v bool) any { return v }
+
+// BoolColumn maps an INTEGER boolean declaration to the Postgres
+// BOOLEAN form, rewriting DEFAULT 1/0 to true/false.
+func (Postgres) BoolColumn(decl string) string {
+	s := strings.Replace(decl, "INTEGER", "BOOLEAN", 1)
+	s = strings.Replace(s, "DEFAULT 1", "DEFAULT true", 1)
+	s = strings.Replace(s, "DEFAULT 0", "DEFAULT false", 1)
+	return s
+}
+
+func (Postgres) AddColumnIfMissing(table, column, decl string) string {
+	return fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s", table, column, decl)
+}
+
+// ParseBool is the reader-side counterpart of Bool. Both
+// implementations share the same tolerant conversion.
+func (SQLite) ParseBool(v any) bool   { return ParseBool(v) }
+func (Postgres) ParseBool(v any) bool { return ParseBool(v) }
+
+// ParseBool converts a scanned raw value into a bool. It is the
+// shared reader-side counterpart of Dialect.Bool.
+func ParseBool(v any) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case int64:
+		return x != 0
+	case int:
+		return x != 0
+	case float64:
+		return x != 0
+	case []byte:
+		s := strings.TrimSpace(string(x))
+		return s == "1" || s == "true" || s == "t" || s == "yes" || s == "TRUE" || s == "True"
+	case string:
+		s := strings.TrimSpace(x)
+		return s == "1" || s == "true" || s == "t" || s == "yes" || s == "TRUE" || s == "True"
+	default:
+		return false
+	}
+}
