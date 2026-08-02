@@ -209,6 +209,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **覆盖率**：`internal/mcp` 46% → 77.1%（目标 ≥70%），
   `internal/sse` 44.3% → 81.8%。
 
+#### P12 M3 共享响应缓存（store 数据库）
+- `SQLiteCache` → `DBCache`（db + dialect）：`cache_backend=sqlite`
+  自动跟随 store 驱动——Postgres 下多副本共享一张 `response_cache`
+  表（集群级命中率），SQLite-on-Postgres 的方言错配结构性消失。
+- `RewriteDDL` 支持 BLOB→BYTEA 与 stored_at 时间戳列。
+- 测试：SQLite 套件 + `TestPostgresCache`（miss/set/get/upsert/
+  delete/purge/stats）真 PG 验证。
+
 #### P12 M2 分布式限额 + 配置传播
 - **ratelimit 后端抽象**：`Backend` 接口（窗口计数），预算 gate
   留在 Limiter（used_usd 在 DB 天然全局）；`MemoryBackend` 保持
