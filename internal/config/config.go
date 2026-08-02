@@ -35,6 +35,12 @@ type ServerConfig struct {
 	// of the last ~1s of logs for ~2-5x write throughput (Redis AOF
 	// everysec semantics); only meaningful for logstore_backend=sqlite.
 	LogstoreSynchronous string `yaml:"logstore_synchronous"`
+	// MaxInflightRequests caps concurrently in-flight requests
+	// (unset/0 = default 10000; negative = disable). Beyond the cap
+	// new requests get an immediate 503, protecting the process
+	// from connection/fd exhaustion cascades when any downstream
+	// component stalls.
+	MaxInflightRequests int `yaml:"max_inflight_requests"`
 	MarkupRatio        float64 `yaml:"markup_ratio"`
 	BreakerMax         int     `yaml:"breaker_max_failures"`
 	BreakerResetMs     int     `yaml:"breaker_reset_timeout_ms"`

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"os"
 	"time"
 
@@ -113,6 +114,9 @@ func (s *Server) registerMiddleware() {
 	s.engine.Use(chimw.Recoverer)
 	s.engine.Use(chimw.RealIP)
 	s.engine.Use(chimw.Timeout(120 * time.Second))
+	if limit := inflightLimit(s.cfg.Server.MaxInflightRequests); limit > 0 {
+		s.engine.Use(inflightGuard(limit))
+	}
 	// chi/cors defaults to AllowedOrigins=* when the slice is
 	// empty, so we skip the middleware entirely when no origins
 	// are configured. This matches the safe default for a
@@ -121,6 +125,44 @@ func (s *Server) registerMiddleware() {
 	// requests before they reach our handlers.
 	if len(s.cfg.Server.CORSAllowedOrigins) > 0 {
 		s.engine.Use(cors.Handler(s.corsOptions()))
+	}
+}
+
+// inflightLimit resolves the configured max-inflight guard: unset
+// (0) means the 10000 default; a negative value explicitly disables
+// the guard.
+func inflightLimit(cfgMax int) int {
+	if cfgMax < 0 {
+		return 0
+	}
+	if cfgMax == 0 {
+		return 10000
+	}
+	return cfgMax
+}
+
+// inflightGuard rejects requests when the number of concurrently
+// in-flight requests exceeds limit, returning 503 immediately. It
+// protects the process from connection/fd exhaustion cascades (the
+// observed accept4: too many open files failure mode): when any
+// downstream component stalls, new work is shed instead of piling
+// up connections. The guard counts every request after the header
+// is read; streaming requests hold their slot until the stream
+// completes.
+func inflightGuard(limit int) func(http.Handler) http.Handler {
+	var inflight int64
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if atomic.AddInt64(&inflight, 1) > int64(limit) {
+				atomic.AddInt64(&inflight, -1)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":{"message":"gateway overloaded","type":"api_error","code":"overloaded"}}`))
+				return
+			}
+			defer atomic.AddInt64(&inflight, -1)
+			next.ServeHTTP(w, r)
+		})
 	}
 }
 

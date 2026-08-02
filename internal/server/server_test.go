@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -312,3 +313,51 @@ func containsAny(s []string, want string) bool {
 // silence unused-import for strings in case future edits drop
 // the helpers above
 var _ = strings.Contains
+
+func TestInflightLimit_Resolution(t *testing.T) {
+	if got := inflightLimit(0); got != 10000 {
+		t.Errorf("unset should default to 10000, got %d", got)
+	}
+	if got := inflightLimit(250); got != 250 {
+		t.Errorf("explicit 250 should stay 250, got %d", got)
+	}
+	if got := inflightLimit(-1); got != 0 {
+		t.Errorf("negative should disable (0), got %d", got)
+	}
+}
+
+// TestInflightGuard_RejectsOverLimit: with a tiny limit, concurrent
+// requests beyond the cap get an immediate 503 while the held
+// request is still in flight; once it completes the guard lets the
+// next request through.
+func TestInflightGuard_RejectsOverLimit(t *testing.T) {
+	release := make(chan struct{})
+	var accepted int64
+	handler := inflightGuard(1)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&accepted, 1)
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// First request takes the single slot.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	}()
+	// Wait until it's inside the handler.
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt64(&accepted) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+
+	// Second request must be shed with 503.
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("over-limit status = %d, want 503", rec.Code)
+	}
+
+	close(release)
+	<-done
+}
