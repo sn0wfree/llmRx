@@ -16,9 +16,21 @@
              class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
     </div>
     <div>
+      <label class="block text-sm font-medium text-gray-700">传输类型</label>
+      <select name="transport" id="mcp-transport" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+        <option value="http">HTTP (远程)</option>
+        <option value="stdio">stdio (本地进程)</option>
+      </select>
+    </div>
+    <div id="mcp-url-field">
       <label class="block text-sm font-medium text-gray-700">URL *</label>
-      <input type="url" name="url" required placeholder="https://api.github.com/mcp"
+      <input type="url" name="url" placeholder="https://api.github.com/mcp"
              class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+    </div>
+    <div id="mcp-cmd-field" style="display:none">
+      <label class="block text-sm font-medium text-gray-700">启动命令 *</label>
+      <input type="text" name="command" placeholder="npx @modelcontextprotocol/server-github"
+             class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono">
     </div>
     <div>
       <label class="block text-sm font-medium text-gray-700">认证头</label>
@@ -31,12 +43,25 @@
   </form>
 </div>
 
+<script>
+document.getElementById('mcp-transport').addEventListener('change', function (e) {
+  var stdio = e.target.value === 'stdio';
+  document.getElementById('mcp-cmd-field').style.display = stdio ? 'block' : 'none';
+  document.getElementById('mcp-url-field').style.display = stdio ? 'none' : 'block';
+  document.getElementById('mcp-url-field').querySelector('input').required = !stdio;
+  document.getElementById('mcp-cmd-field').querySelector('input').required = stdio;
+});
+</script>
+
 <div class="space-y-4">
   {{range .Servers}}
   <div class="bg-white shadow rounded-lg overflow-hidden">
     <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
       <div class="flex items-center gap-3">
         <h3 class="text-lg font-medium text-gray-900">{{.Name}}</h3>
+        <span class="px-2 py-0.5 text-xs rounded {{if eq .Transport "stdio"}}bg-purple-100 text-purple-800{{else}}bg-blue-100 text-blue-800{{end}}">
+          {{if eq .Transport "stdio"}}stdio{{else}}http{{end}}
+        </span>
         <span class="px-2 py-0.5 text-xs rounded {{if .Enabled}}bg-green-100 text-green-800{{else}}bg-gray-100 text-gray-500{{end}}">
           {{if .Enabled}}启用{{else}}禁用{{end}}
         </span>
@@ -49,7 +74,7 @@
                 class="px-3 py-1.5 text-sm bg-red-100 text-red-700 rounded-md hover:bg-red-200">删除</button>
       </div>
     </div>
-    <div class="px-6 py-2 text-sm text-gray-500 font-mono truncate">{{.URL}}</div>
+    <div class="px-6 py-2 text-sm text-gray-500 font-mono truncate">{{if eq .Transport "stdio"}}{{.Command}}{{else}}{{.URL}}{{end}}</div>
     {{if .Tools}}
     <table class="min-w-full divide-y divide-gray-200">
       <thead class="bg-gray-50">

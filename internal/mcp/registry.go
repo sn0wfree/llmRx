@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -54,7 +55,14 @@ func (m *ClientManager) GetClient(ctx context.Context, serverID int64) (*Client,
 	if srv == nil {
 		return nil, nil
 	}
-	c = NewClient(srv.URL, srv.AuthHdr)
+	if srv.Transport == "stdio" {
+		if srv.Command == "" {
+			return nil, fmt.Errorf("mcp: stdio server %s has empty command", srv.Name)
+		}
+		c = NewStdioClient(srv.Command)
+	} else {
+		c = NewClient(srv.URL, srv.AuthHdr)
+	}
 	m.clients[serverID] = c
 	return c, nil
 }

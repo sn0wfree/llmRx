@@ -52,17 +52,34 @@ func (h *Handler) MCPServerCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.FormValue("name")
+	transport := r.FormValue("transport")
+	if transport == "" {
+		transport = "http"
+	}
 	url := r.FormValue("url")
+	command := r.FormValue("command")
 	authHeader := r.FormValue("auth_header")
-	if name == "" || url == "" {
-		http.Error(w, "name and url are required", http.StatusBadRequest)
+	if name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	if transport == "stdio" {
+		if command == "" {
+			http.Error(w, "command is required for stdio servers", http.StatusBadRequest)
+			return
+		}
+		url = "stdio://" + name
+	} else if url == "" {
+		http.Error(w, "url is required for http servers", http.StatusBadRequest)
 		return
 	}
 	s := &store.MCPServer{
-		Name:    name,
-		URL:     url,
-		AuthHdr: authHeader,
-		Enabled: true,
+		Name:      name,
+		URL:       url,
+		AuthHdr:   authHeader,
+		Transport: transport,
+		Command:   command,
+		Enabled:   true,
 	}
 	if err := h.store.CreateMCPServer(r.Context(), s); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

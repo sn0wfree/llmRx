@@ -336,6 +336,12 @@ func (s *SQLite) migrate() error {
 	if err := s.addColumnIfMissing("token_combo_models", "is_default", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	if err := s.addColumnIfMissing("mcp_servers", "transport", "TEXT NOT NULL DEFAULT 'http'"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing("mcp_servers", "command", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	s.migrateAutoCombos()
 	s.migrateDefaultFlag()
 	return nil
@@ -2034,7 +2040,7 @@ func (s *SQLite) GetGuardrailEvents(tokenID int64, limit int) ([]model.Guardrail
 }
 
 func (s *SQLite) GetMCPServers(ctx context.Context) ([]MCPServer, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, url, auth_header, enabled, created_at FROM mcp_servers ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, url, auth_header, transport, command, enabled, created_at FROM mcp_servers ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -2044,7 +2050,7 @@ func (s *SQLite) GetMCPServers(ctx context.Context) ([]MCPServer, error) {
 		var srv MCPServer
 		var created int64
 		var enabled int
-		if err := rows.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.AuthHdr, &enabled, &created); err != nil {
+		if err := rows.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.AuthHdr, &srv.Transport, &srv.Command, &enabled, &created); err != nil {
 			return nil, err
 		}
 		srv.Enabled = enabled == 1
@@ -2055,11 +2061,11 @@ func (s *SQLite) GetMCPServers(ctx context.Context) ([]MCPServer, error) {
 }
 
 func (s *SQLite) GetMCPServer(ctx context.Context, id int64) (*MCPServer, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, name, url, auth_header, enabled, created_at FROM mcp_servers WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, name, url, auth_header, transport, command, enabled, created_at FROM mcp_servers WHERE id = ?`, id)
 	var srv MCPServer
 	var created int64
 	var enabled int
-	if err := row.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.AuthHdr, &enabled, &created); err != nil {
+	if err := row.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.AuthHdr, &srv.Transport, &srv.Command, &enabled, &created); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -2076,9 +2082,12 @@ func (s *SQLite) CreateMCPServer(ctx context.Context, srv *MCPServer) error {
 	if srv.Enabled {
 		enabled = 1
 	}
+	if srv.Transport == "" {
+		srv.Transport = "http"
+	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO mcp_servers (name, url, auth_header, enabled, created_at) VALUES (?, ?, ?, ?, ?)`,
-		srv.Name, srv.URL, srv.AuthHdr, enabled, now,
+		`INSERT INTO mcp_servers (name, url, auth_header, transport, command, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		srv.Name, srv.URL, srv.AuthHdr, srv.Transport, srv.Command, enabled, now,
 	)
 	if err != nil {
 		return err
@@ -2093,9 +2102,12 @@ func (s *SQLite) UpdateMCPServer(ctx context.Context, srv *MCPServer) error {
 	if srv.Enabled {
 		enabled = 1
 	}
+	if srv.Transport == "" {
+		srv.Transport = "http"
+	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE mcp_servers SET name=?, url=?, auth_header=?, enabled=? WHERE id=?`,
-		srv.Name, srv.URL, srv.AuthHdr, enabled, srv.ID,
+		`UPDATE mcp_servers SET name=?, url=?, auth_header=?, transport=?, command=?, enabled=? WHERE id=?`,
+		srv.Name, srv.URL, srv.AuthHdr, srv.Transport, srv.Command, enabled, srv.ID,
 	)
 	return err
 }
@@ -2192,7 +2204,7 @@ func (s *SQLite) GetAllMCPTools(ctx context.Context) ([]MCPTool, error) {
 }
 
 func (s *SQLite) GetEnabledMCPServers(ctx context.Context) ([]MCPServer, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, url, auth_header, enabled, created_at FROM mcp_servers WHERE enabled = 1 ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, url, auth_header, transport, command, enabled, created_at FROM mcp_servers WHERE enabled = 1 ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -2202,7 +2214,7 @@ func (s *SQLite) GetEnabledMCPServers(ctx context.Context) ([]MCPServer, error) 
 		var srv MCPServer
 		var created int64
 		var enabled int
-		if err := rows.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.AuthHdr, &enabled, &created); err != nil {
+		if err := rows.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.AuthHdr, &srv.Transport, &srv.Command, &enabled, &created); err != nil {
 			return nil, err
 		}
 		srv.Enabled = true

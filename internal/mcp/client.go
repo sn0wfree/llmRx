@@ -7,20 +7,33 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sync"
 	"time"
 )
 
-type Client struct {
+// transport is the wire layer between the MCP client and a server.
+// httpTransport talks HTTP+SSE to a remote endpoint; stdioTransport
+// spawns a local sidecar process and exchanges JSON-RPC over
+// stdin/stdout.
+type transport interface {
+	rpc(ctx context.Context, method string, params map[string]any) (json.RawMessage, error)
+	Close() error
+}
+
+type httpTransport struct {
 	baseURL    string
 	authHdr    string
 	httpClient *http.Client
-	mu         sync.Mutex
-	sessionID  string
+}
+
+// Client is the MCP client facade used by the agentic loop. It
+// delegates the wire layer to a transport, so the same ListTools /
+// CallTool API works for HTTP and stdio servers.
+type Client struct {
+	tr transport
 }
 
 func NewClient(baseURL, authHdr string) *Client {
-	return &Client{
+	return &Client{tr: &httpTransport{
 		baseURL: baseURL,
 		authHdr: authHdr,
 		httpClient: &http.Client{
@@ -30,11 +43,17 @@ func NewClient(baseURL, authHdr string) *Client {
 				IdleConnTimeout: 60 * time.Second,
 			},
 		},
-	}
+	}}
+}
+
+// NewClientWithTransport builds a Client around a custom transport
+// (used by stdio and OAuth-aware HTTP transports).
+func NewClientWithTransport(tr transport) *Client {
+	return &Client{tr: tr}
 }
 
 func (c *Client) ListTools(ctx context.Context) ([]Tool, error) {
-	raw, err := c.rpc(ctx, "tools/list", nil)
+	raw, err := c.tr.rpc(ctx, "tools/list", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +68,7 @@ func (c *Client) ListTools(ctx context.Context) ([]Tool, error) {
 
 func (c *Client) CallTool(ctx context.Context, name string, args map[string]any) (*ToolResult, error) {
 	params := map[string]any{"name": name, "arguments": args}
-	raw, err := c.rpc(ctx, "tools/call", params)
+	raw, err := c.tr.rpc(ctx, "tools/call", params)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +79,16 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 	return &result, nil
 }
 
-func (c *Client) rpc(ctx context.Context, method string, params map[string]any) (json.RawMessage, error) {
+// Close releases the underlying transport.
+func (c *Client) Close() error {
+	if c.tr != nil {
+		return c.tr.Close()
+	}
+	return nil
+}
+
+// rpc sends one JSON-RPC request over HTTP and decodes the result.
+func (t *httpTransport) rpc(ctx context.Context, method string, params map[string]any) (json.RawMessage, error) {
 	req := &Request{
 		JSONRPC: Version,
 		ID:      1,
@@ -71,15 +99,15 @@ func (c *Client) rpc(ctx context.Context, method string, params map[string]any) 
 	if err != nil {
 		return nil, fmt.Errorf("mcp: marshal request: %w", err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("mcp: create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if c.authHdr != "" {
-		httpReq.Header.Set("Authorization", c.authHdr)
+	if t.authHdr != "" {
+		httpReq.Header.Set("Authorization", t.authHdr)
 	}
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := t.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: http do: %w", err)
 	}
@@ -91,6 +119,12 @@ func (c *Client) rpc(ctx context.Context, method string, params map[string]any) 
 	if httpResp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("mcp: http %d: %s", httpResp.StatusCode, string(respBody))
 	}
+	return decodeResponse(respBody)
+}
+
+// decodeResponse parses a JSON-RPC response payload, returning the
+// raw result or an error for JSON-RPC level errors.
+func decodeResponse(respBody []byte) (json.RawMessage, error) {
 	var resp Response
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return nil, fmt.Errorf("mcp: decode response: %w", err)
@@ -105,6 +139,7 @@ func (c *Client) rpc(ctx context.Context, method string, params map[string]any) 
 	return result, nil
 }
 
-func (c *Client) Close() {
-	c.httpClient.CloseIdleConnections()
+func (t *httpTransport) Close() error {
+	t.httpClient.CloseIdleConnections()
+	return nil
 }

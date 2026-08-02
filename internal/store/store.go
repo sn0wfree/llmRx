@@ -11,6 +11,11 @@ type MCPServer struct {
 	Name      string    `json:"name"`
 	URL       string    `json:"url"`
 	AuthHdr   string    `json:"auth_header"`
+	// Transport is the wire protocol: "http" (default) or "stdio".
+	Transport string    `json:"transport"`
+	// Command is the shell command for stdio servers
+	// (e.g. "npx @modelcontextprotocol/server-github").
+	Command   string    `json:"command"`
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
 }

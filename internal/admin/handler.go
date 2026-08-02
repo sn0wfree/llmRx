@@ -1563,6 +1563,8 @@ func (h *Handler) CreateMCPServer(w http.ResponseWriter, r *http.Request) {
 		Name      string `json:"name"`
 		URL       string `json:"url"`
 		AuthHdr   string `json:"auth_header"`
+		Transport string `json:"transport"`
+		Command   string `json:"command"`
 		Enabled   bool   `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -1573,7 +1575,10 @@ func (h *Handler) CreateMCPServer(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name and url are required")
 		return
 	}
-	srv := &store.MCPServer{Name: body.Name, URL: body.URL, AuthHdr: body.AuthHdr, Enabled: body.Enabled}
+	if body.Transport == "" {
+		body.Transport = "http"
+	}
+	srv := &store.MCPServer{Name: body.Name, URL: body.URL, AuthHdr: body.AuthHdr, Transport: body.Transport, Command: body.Command, Enabled: body.Enabled}
 	if err := h.store.CreateMCPServer(r.Context(), srv); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1593,10 +1598,12 @@ func (h *Handler) UpdateMCPServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name    *string `json:"name"`
-		URL     *string `json:"url"`
-		AuthHdr *string `json:"auth_header"`
-		Enabled *bool   `json:"enabled"`
+		Name      *string `json:"name"`
+		URL       *string `json:"url"`
+		AuthHdr   *string `json:"auth_header"`
+		Transport *string `json:"transport"`
+		Command   *string `json:"command"`
+		Enabled   *bool   `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
@@ -1610,6 +1617,12 @@ func (h *Handler) UpdateMCPServer(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.AuthHdr != nil {
 		existing.AuthHdr = *body.AuthHdr
+	}
+	if body.Transport != nil {
+		existing.Transport = *body.Transport
+	}
+	if body.Command != nil {
+		existing.Command = *body.Command
 	}
 	if body.Enabled != nil {
 		existing.Enabled = *body.Enabled
