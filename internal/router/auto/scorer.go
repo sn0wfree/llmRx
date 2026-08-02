@@ -7,11 +7,14 @@ import (
 	"math"
 	"regexp"
 	"strings"
+
+	"github.com/sn0wfree/llmRx/internal/model"
 )
 
 // Tier is a complexity tier that maps a request to a candidate
 // model table. Higher tiers allow more capable (and costlier)
-// models.
+// models. The canonical name set lives in model.AutoTiers so the
+// store can validate combo configs without importing this package.
 type Tier string
 
 // The four complexity tiers, ordered from cheapest to most
@@ -23,18 +26,18 @@ const (
 	TierAgentic  Tier = "agentic"
 )
 
-// AllTiers lists the tiers in ascending cost order.
-var AllTiers = []Tier{TierSimple, TierStandard, TierComplex, TierAgentic}
+// AllTiers lists the tiers in ascending cost order. Kept in sync
+// with model.AutoTiers (the source of truth for validation).
+var AllTiers = func() []Tier {
+	out := make([]Tier, 0, len(model.AutoTiers))
+	for _, t := range model.AutoTiers {
+		out = append(out, Tier(t))
+	}
+	return out
+}()
 
 // ValidTier reports whether t is one of the known tiers.
-func ValidTier(t string) bool {
-	for _, k := range AllTiers {
-		if string(k) == t {
-			return true
-		}
-	}
-	return false
-}
+func ValidTier(t string) bool { return model.ValidAutoTier(t) }
 
 // Thresholds maps a 0..1 complexity score to a tier. They are the
 // configurable defaults (global, runtime-adjustable in commit 3).

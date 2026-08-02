@@ -64,9 +64,36 @@ const (
 	// ComboModeSerial: try underlying models in order; first 2xx wins,
 	// others serve as fallback. Non-2xx responses trigger L2 breaker.
 	ComboModeSerial ComboMode = "serial"
+	// ComboModeAuto: classify the prompt into a complexity tier, pick
+	// a model for that tier via Thompson sampling over (tier, model)
+	// quality arms, fail over within the tier, then fall back to the
+	// Fallback list. Only meaningful for combos with a Tiers map.
+	ComboModeAuto ComboMode = "auto"
 	// (reserved) ComboModeParallel  ComboMode = "parallel"
 	// (reserved) ComboModeIntent    ComboMode = "intent"
 )
+
+// TierConfig declares the candidate models for one complexity
+// tier of a mode:auto combo. The Models order is the cost order:
+// the auto router tries cheaper models first and only escalates
+// when Thompson sampling or failover requires it.
+type TierConfig struct {
+	Models []string `json:"models"`
+}
+
+// AutoTiers are the canonical complexity tier names for
+// mode:auto combos, ordered from cheapest to most capable.
+var AutoTiers = []string{"simple", "standard", "complex", "agentic"}
+
+// ValidAutoTier reports whether t is one of the canonical tiers.
+func ValidAutoTier(t string) bool {
+	for _, k := range AutoTiers {
+		if k == t {
+			return true
+		}
+	}
+	return false
+}
 
 type CircuitBreakerConfig struct {
 	MaxFailures  int           `yaml:"max_failures" json:"max_failures"`
@@ -207,18 +234,25 @@ type ProviderDef struct {
 //
 // load_balance: expand Models into the L1 candidate set, run L1-L5.
 // serial:       try Models in order; first 2xx wins.
+// auto:         classify the prompt into a complexity tier (Tiers
+//               map), pick a model per tier via Thompson sampling,
+//               fail over within the tier, then Fallback.
 //
 // combo names are token-scoped (two tokens may both have "smart-1")
 // and must not collide with any channel.Models real model name.
 type TokenComboModel struct {
-	ID        int64        `json:"id"`
-	TokenID   int64        `json:"token_id"`
-	Name      string       `json:"name"`
-	Models    []string     `json:"models"`
-	Mode      ComboMode    `json:"mode"`
-	Strategy  CostStrategy `json:"strategy"` // "" = inherit global
-	Enabled   bool         `json:"enabled"`
-	IsDefault bool         `json:"is_default"`
-	CreatedAt time.Time    `json:"created_at"`
-	UpdatedAt time.Time    `json:"updated_at"`
+	ID       int64        `json:"id"`
+	TokenID  int64        `json:"token_id"`
+	Name     string       `json:"name"`
+	Models   []string     `json:"models"`
+	Mode     ComboMode    `json:"mode"`
+	Strategy CostStrategy `json:"strategy"` // "" = inherit global
+	// Tiers is the complexity-tier candidate table for mode:auto
+	// combos. Empty for load_balance/serial combos.
+	Tiers     map[string]TierConfig `json:"tiers,omitempty"`
+	Fallback  []string              `json:"fallback,omitempty"`
+	Enabled   bool                  `json:"enabled"`
+	IsDefault bool                  `json:"is_default"`
+	CreatedAt time.Time             `json:"created_at"`
+	UpdatedAt time.Time             `json:"updated_at"`
 }

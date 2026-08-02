@@ -30,6 +30,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/provider"
 	"github.com/sn0wfree/llmRx/internal/ratelimit"
 	"github.com/sn0wfree/llmRx/internal/router"
+	"github.com/sn0wfree/llmRx/internal/router/auto"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
 
@@ -120,6 +121,12 @@ type Handler struct {
 	// mcpLoop is the agentic tool dispatch loop. Set via SetMCPLoop;
 	// nil means MCP tool routing is disabled.
 	mcpLoop *mcp.AgenticLoop
+
+	// autoPool drives Thompson arm sampling for mode:auto combos;
+	// autoScorer classifies prompts into complexity tiers. Swap the
+	// scorer via SetAutoScorer (the LLM classifier lands in v1.5).
+	autoPool   *auto.Pool
+	autoScorer auto.ComplexityScorer
 }
 
 func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, ls *logstore.Manager, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Handler {
@@ -143,8 +150,19 @@ func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st 
 		guardrails: guardrail.New(st),
 		costCalc:   cc,
 		emitter:    NewLogEmitter(ls, lb, st, lim, cc),
+		autoPool:   auto.NewPool(eng.Thompson()),
+		autoScorer: auto.NewHeuristicScorer(auto.DefaultThresholds()),
 	}
 	return h
+}
+
+// SetAutoScorer replaces the complexity classifier used by
+// mode:auto combos. The default is the heuristic scorer; the
+// optional LLM classifier is swapped in via this setter.
+func (h *Handler) SetAutoScorer(s auto.ComplexityScorer) {
+	if s != nil {
+		h.autoScorer = s
+	}
 }
 
 // Limits exposes the rate limiter for the server to wire into the
@@ -654,7 +672,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 // handleCombo dispatches a combo-model request. Streaming and non-
 // streaming are both supported; load_balance uses the L1-L5 pipeline
-// to pick one channel, serial tries each underlying model in order.
+// to pick one channel, serial tries each underlying model in order,
+// auto classifies the prompt into a complexity tier and samples the
+// tier's (tier, model) quality arms.
 func (h *Handler) handleCombo(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, combo model.TokenComboModel, info middleware.TokenInfo) {
 	if req.Stream {
 		h.handleStreamCombo(w, r, req, combo)
@@ -663,6 +683,8 @@ func (h *Handler) handleCombo(w http.ResponseWriter, r *http.Request, req *provi
 	switch combo.Mode {
 	case model.ComboModeSerial:
 		h.handleSerialCombo(w, r, req, combo, info)
+	case model.ComboModeAuto:
+		h.handleAutoCombo(w, r, req, combo)
 	default:
 		h.handleLoadBalanceCombo(w, r, req, combo, info)
 	}
@@ -671,10 +693,16 @@ func (h *Handler) handleCombo(w http.ResponseWriter, r *http.Request, req *provi
 // handleStreamCombo routes a streaming combo-model request. For
 // load_balance it uses the L1-L5 pipeline with the combo's model pool;
 // for serial it tries each model in order, streaming from the first
-// that yields an upstream SSE channel.
+// that yields an upstream SSE channel; for auto it classifies the
+// prompt, samples a tier arm, and streams from the first candidate
+// that yields an SSE channel.
 func (h *Handler) handleStreamCombo(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, combo model.TokenComboModel) {
-	if combo.Mode == model.ComboModeSerial {
+	switch combo.Mode {
+	case model.ComboModeSerial:
 		h.handleStreamSerialCombo(w, r, req, combo)
+		return
+	case model.ComboModeAuto:
+		h.handleStreamAutoCombo(w, r, req, combo)
 		return
 	}
 	// load_balance: pick one channel via L1-L5 from the combo's model set,
@@ -876,6 +904,228 @@ func (h *Handler) handleSerialCombo(w http.ResponseWriter, r *http.Request, req 
 		writeError(w, http.StatusBadGateway, "all combo models failed: "+lastErr.Error(), "combo_all_failed")
 	} else {
 		writeError(w, http.StatusServiceUnavailable, "no channel matched for combo models", "no_channel")
+	}
+}
+
+// handleAutoCombo routes a mode:auto combo request. It classifies
+// the last user message into a complexity tier, samples the tier's
+// (tier, model) quality arms via Thompson sampling, then tries
+// models in order — the sampled arm first, the remaining tier
+// candidates in cost order, then the combo's Fallback list — until
+// a 2xx arrives. Every actual upstream call updates both the
+// channel-level L5 posterior and the (tier, model) arm, so the
+// router learns which model really succeeds per tier.
+func (h *Handler) handleAutoCombo(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, combo model.TokenComboModel) {
+	tokenID := lookupTokenID(r.Context(), h.store)
+	text := lastUserText(req.Messages)
+	sc := h.autoScorer.Classify(text)
+	tier := string(sc.Tier)
+
+	decision := &auto.Decision{Tier: tier, Score: sc.Score, Cause: sc.Cause}
+	order := h.autoAttemptOrder(combo, tier, &decision.Picked)
+	decision.Candidates = tierCandidates(combo, tier)
+
+	opts := router.RouteOptions{Text: text}
+	var lastErr error
+	for _, m := range order {
+		route, routeErr := h.router.RouteWith(context.Background(), m, opts)
+		if routeErr != nil {
+			lastErr = routeErr
+			continue
+		}
+		decision.Attempted = append(decision.Attempted, m)
+
+		prov := h.providerFor(route.Channel.Protocol, false)
+		start := time.Now()
+		resp, statusCode, err := prov.Chat(r.Context(), req, route.KeyValue, route.Channel.BaseURL)
+		duration := time.Since(start).Milliseconds()
+
+		if err != nil || statusCode >= 500 {
+			h.router.RecordFailure(route.Channel.ID)
+			if isTierCandidate(combo, tier, m) {
+				h.router.RecordArmFailure(auto.ArmKey(tier, m))
+			}
+			lastErr = fmt.Errorf("model %s: status=%d err=%w", m, statusCode, err)
+			logging.Debug("auto.attempt_failed",
+				logging.F("combo", combo.Name),
+				logging.F("tier", tier),
+				logging.F("model", m),
+				logging.F("channel", route.Channel.Name),
+				logging.F("status", statusCode),
+				logging.F("error", err),
+			)
+			h.emitLog(r.Context(), tokenID, m, route, nil, duration, statusCode, true, h.clientIP(r))
+			continue
+		}
+
+		h.router.RecordSuccess(route.Channel.ID)
+		if isTierCandidate(combo, tier, m) {
+			h.router.RecordArmSuccess(auto.ArmKey(tier, m))
+		}
+		decision.Routed = m
+		decision.Fallback = !isTierCandidate(combo, tier, m)
+		h.emitAutoDecision(r, decision)
+		h.setAutoHeaders(w, decision)
+		logging.Debug("auto.success",
+			logging.F("combo", combo.Name),
+			logging.F("tier", tier),
+			logging.F("model", m),
+			logging.F("channel", route.Channel.Name),
+			logging.F("status", statusCode),
+			logging.F("duration_ms", duration),
+		)
+		h.emitLog(r.Context(), tokenID, m, route, &resp.Usage, duration, statusCode, false, h.clientIP(r))
+		writeJSON(w, resp)
+		return
+	}
+
+	// Every candidate and fallback failed.
+	decision.Routed = ""
+	h.emitAutoDecision(r, decision)
+	h.setAutoHeaders(w, decision)
+	if lastErr != nil {
+		writeError(w, http.StatusBadGateway, "all auto combo models failed: "+lastErr.Error(), "combo_all_failed")
+	} else {
+		writeError(w, http.StatusServiceUnavailable, "no channel matched for auto combo models", "no_channel")
+	}
+}
+
+// handleStreamAutoCombo routes a streaming mode:auto combo request.
+// Classification and arm sampling are identical to the non-streaming
+// path; the first model that yields an upstream SSE channel streams
+// the response. Channel-level L5 updates happen inside
+// streamChatCompletions; arm-level updates for streaming land with
+// the execution-layer work.
+func (h *Handler) handleStreamAutoCombo(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, combo model.TokenComboModel) {
+	text := lastUserText(req.Messages)
+	sc := h.autoScorer.Classify(text)
+	tier := string(sc.Tier)
+
+	decision := &auto.Decision{Tier: tier, Score: sc.Score, Cause: sc.Cause}
+	order := h.autoAttemptOrder(combo, tier, &decision.Picked)
+	decision.Candidates = tierCandidates(combo, tier)
+
+	opts := router.RouteOptions{Text: text}
+	var lastErr error
+	for _, m := range order {
+		route, routeErr := h.router.RouteWith(r.Context(), m, opts)
+		if routeErr != nil {
+			lastErr = routeErr
+			continue
+		}
+		prov := h.providerFor(route.Channel.Protocol, true)
+		if _, ok := prov.(provider.StreamingProvider); !ok {
+			lastErr = fmt.Errorf("model %s: streaming not supported", m)
+			continue
+		}
+		decision.Attempted = append(decision.Attempted, m)
+		decision.Routed = m
+		decision.Fallback = !isTierCandidate(combo, tier, m)
+		h.emitAutoDecision(r, decision)
+		h.setAutoHeaders(w, decision)
+		logging.Debug("combo.stream_auto.success",
+			logging.F("combo", combo.Name),
+			logging.F("tier", tier),
+			logging.F("model", m),
+			logging.F("channel", route.Channel.Name),
+		)
+		original := req.Model
+		req.Model = m
+		h.streamChatCompletions(w, r, req)
+		req.Model = original
+		return
+	}
+
+	decision.Routed = ""
+	h.emitAutoDecision(r, decision)
+	h.setAutoHeaders(w, decision)
+	if lastErr != nil {
+		writeError(w, http.StatusBadGateway, "all auto combo models failed: "+lastErr.Error(), "combo_all_failed")
+	} else {
+		writeError(w, http.StatusServiceUnavailable, "no channel matched for auto combo models", "no_channel")
+	}
+}
+
+// autoAttemptOrder builds the attempt order for one auto request:
+// the sampled arm first (highest θ draw, or the cheapest candidate
+// while the cold-start gate is on), then the remaining tier
+// candidates in cost order, then the combo's Fallback list. A
+// fallback model already present in the tier candidates is not
+// retried a second time.
+func (h *Handler) autoAttemptOrder(combo model.TokenComboModel, tier string, picked *auto.ArmSample) []string {
+	candidates := tierCandidates(combo, tier)
+	*picked = h.autoPool.Select(tier, candidates)
+	order := make([]string, 0, len(candidates)+len(combo.Fallback))
+	if picked.Model != "" {
+		order = append(order, picked.Model)
+	}
+	for _, m := range candidates {
+		if m != picked.Model {
+			order = append(order, m)
+		}
+	}
+	for _, m := range combo.Fallback {
+		if !containsString(order, m) {
+			order = append(order, m)
+		}
+	}
+	return order
+}
+
+func containsString(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+// tierCandidates returns the tier's model list in cost order, or
+// nil when the combo has no entry for the tier (the fallback list
+// then takes over).
+func tierCandidates(combo model.TokenComboModel, tier string) []string {
+	cfg, ok := combo.Tiers[tier]
+	if !ok || len(cfg.Models) == 0 {
+		return nil
+	}
+	return append([]string(nil), cfg.Models...)
+}
+
+// isTierCandidate reports whether m belongs to the tier's candidate
+// list. Fallback models are not tier candidates and therefore do
+// not update (tier, model) quality arms.
+func isTierCandidate(combo model.TokenComboModel, tier, m string) bool {
+	for _, c := range tierCandidates(combo, tier) {
+		if c == m {
+			return true
+		}
+	}
+	return false
+}
+
+// emitAutoDecision writes the per-request decision line so every
+// auto-routed call is auditable:
+// auto_tier=complex cause=heuristic score=0.71 arm=complex:gpt-4o θ=0.62 routed=deepseek-chat fallback=false attempted=...
+func (h *Handler) emitAutoDecision(r *http.Request, d *auto.Decision) {
+	logging.Debug("auto.decision",
+		logging.F("auto_tier", d.Tier),
+		logging.F("cause", d.Cause),
+		logging.F("score", fmt.Sprintf("%.3f", d.Score)),
+		logging.F("arm", d.Picked.Key),
+		logging.F("theta", fmt.Sprintf("%.3f", d.Picked.Score)),
+		logging.F("routed", d.Routed),
+		logging.F("fallback", d.Fallback),
+		logging.F("attempted", strings.Join(d.Attempted, ",")),
+	)
+}
+
+// setAutoHeaders stamps the decision onto the response so callers
+// can see which tier and model served them.
+func (h *Handler) setAutoHeaders(w http.ResponseWriter, d *auto.Decision) {
+	w.Header().Set("X-llmRx-Auto-Tier", d.Tier)
+	if d.Routed != "" {
+		w.Header().Set("X-llmRx-Routed-Model", d.Routed)
 	}
 }
 

@@ -628,17 +628,45 @@ func testCombos(t *testing.T, st store.Store) {
 		t.Fatal("CreateComboModel: ID not assigned")
 	}
 
+	// mode:auto combo with a tier table must round-trip (SQLite and
+	// Postgres both persist the JSON tiers column).
+	auto := &model.TokenComboModel{TokenID: tk.ID, Name: "combo-auto", Mode: model.ComboModeAuto, Enabled: true, CreatedAt: now, UpdatedAt: now,
+		Tiers: map[string]model.TierConfig{
+			"simple":   {Models: []string{"deepseek-chat", "gpt-4o-mini"}},
+			"standard": {Models: []string{"deepseek-chat", "gpt-4o"}},
+			"complex":  {Models: []string{"gpt-4o", "claude-3.5"}},
+			"agentic":  {Models: []string{"claude-3.5"}},
+		},
+		Fallback: []string{"deepseek-chat"},
+	}
+	if err := st.CreateComboModel(auto); err != nil {
+		t.Fatalf("CreateComboModel(auto): %v", err)
+	}
+	autoGot, err := st.GetComboModel(auto.ID)
+	if err != nil {
+		t.Fatalf("GetComboModel(auto): %v", err)
+	}
+	if autoGot.Mode != model.ComboModeAuto || len(autoGot.Tiers) != 4 {
+		t.Fatalf("auto combo not round-tripped: %+v", autoGot)
+	}
+	if autoGot.Tiers["simple"].Models[0] != "deepseek-chat" || autoGot.Tiers["agentic"].Models[0] != "claude-3.5" {
+		t.Fatalf("auto tiers content wrong: %+v", autoGot.Tiers)
+	}
+	if len(autoGot.Fallback) != 1 || autoGot.Fallback[0] != "deepseek-chat" {
+		t.Fatalf("auto fallback wrong: %+v", autoGot.Fallback)
+	}
+
 	combos, err := st.GetComboModels(tk.ID)
-	if err != nil || len(combos) != 1 || len(combos[0].Models) != 2 {
+	if err != nil || len(combos) != 2 || len(combos[0].Models) != 2 {
 		t.Fatalf("GetComboModels: err=%v combos=%+v", err, combos)
 	}
 	if got, err := st.GetComboModel(c.ID); err != nil || got.Name != "combo-a" {
 		t.Fatalf("GetComboModel: err=%v", err)
 	}
-	if all, err := st.GetAllComboModels(); err != nil || len(all) != 1 {
+	if all, err := st.GetAllComboModels(); err != nil || len(all) != 2 {
 		t.Fatalf("GetAllComboModels: err=%v n=%d", err, len(all))
 	}
-	if all, err := st.ListAllComboModels(); err != nil || len(all) != 1 {
+	if all, err := st.ListAllComboModels(); err != nil || len(all) != 2 {
 		t.Fatalf("ListAllComboModels: err=%v n=%d", err, len(all))
 	}
 

@@ -276,6 +276,8 @@ func (s *dbStore) migrate() error {
 			models TEXT NOT NULL DEFAULT '[]',
 			mode TEXT NOT NULL DEFAULT 'load_balance',
 			strategy TEXT NOT NULL DEFAULT '',
+			tiers TEXT NOT NULL DEFAULT '',
+			fallback TEXT NOT NULL DEFAULT '[]',
 			enabled INTEGER NOT NULL DEFAULT 1,
 			is_default INTEGER NOT NULL DEFAULT 0,
 			created_at INTEGER NOT NULL,
@@ -382,6 +384,12 @@ func (s *dbStore) migrate() error {
 		return err
 	}
 	if err := s.addColumn("token_combo_models", "is_default", s.d.BoolColumn("INTEGER NOT NULL DEFAULT 0")); err != nil {
+		return err
+	}
+	if err := s.addColumn("token_combo_models", "tiers", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumn("token_combo_models", "fallback", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
 	}
 	if err := s.addColumn("mcp_servers", "transport", "TEXT NOT NULL DEFAULT 'http'"); err != nil {
@@ -541,6 +549,23 @@ func decodeCB(s string) model.CircuitBreakerConfig {
 	var cb model.CircuitBreakerConfig
 	_ = json.Unmarshal([]byte(s), &cb)
 	return cb
+}
+
+func encodeTiers(t map[string]model.TierConfig) string {
+	if t == nil {
+		return ""
+	}
+	b, _ := json.Marshal(t)
+	return string(b)
+}
+
+func decodeTiers(s string) map[string]model.TierConfig {
+	if s == "" {
+		return nil
+	}
+	var t map[string]model.TierConfig
+	_ = json.Unmarshal([]byte(s), &t)
+	return t
 }
 
 // ---------------- Channels ----------------
@@ -1745,10 +1770,10 @@ func (s *dbStore) DeleteProviderDef(id int64) error {
 
 func (s *dbStore) scanComboRow(r interface{ Scan(dest ...any) error }) (*model.TokenComboModel, error) {
 	var c model.TokenComboModel
-	var modelsJSON, mode, strategy string
+	var modelsJSON, mode, strategy, tiersJSON, fallbackJSON string
 	var enabled, isDefault any
 	var created, updated int64
-	if err := r.Scan(&c.ID, &c.TokenID, &c.Name, &modelsJSON, &mode, &strategy, &enabled, &isDefault, &created, &updated); err != nil {
+	if err := r.Scan(&c.ID, &c.TokenID, &c.Name, &modelsJSON, &mode, &strategy, &tiersJSON, &fallbackJSON, &enabled, &isDefault, &created, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -1757,6 +1782,8 @@ func (s *dbStore) scanComboRow(r interface{ Scan(dest ...any) error }) (*model.T
 	c.Models = decodeStrings(modelsJSON)
 	c.Mode = model.ComboMode(mode)
 	c.Strategy = model.CostStrategy(strategy)
+	c.Tiers = decodeTiers(tiersJSON)
+	c.Fallback = decodeStrings(fallbackJSON)
 	c.Enabled = s.d.ParseBool(enabled)
 	c.IsDefault = s.d.ParseBool(isDefault)
 	c.CreatedAt = fromUnix(created)
@@ -1764,8 +1791,10 @@ func (s *dbStore) scanComboRow(r interface{ Scan(dest ...any) error }) (*model.T
 	return &c, nil
 }
 
+const comboCols = `id, token_id, name, models, mode, strategy, tiers, fallback, enabled, is_default, created_at, updated_at`
+
 func (s *dbStore) GetComboModels(tokenID int64) ([]model.TokenComboModel, error) {
-	rows, err := s.query(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models WHERE token_id = ? ORDER BY id`, tokenID)
+	rows, err := s.query(`SELECT `+comboCols+` FROM token_combo_models WHERE token_id = ? ORDER BY id`, tokenID)
 	if err != nil {
 		return nil, err
 	}
@@ -1782,12 +1811,12 @@ func (s *dbStore) GetComboModels(tokenID int64) ([]model.TokenComboModel, error)
 }
 
 func (s *dbStore) GetComboModel(id int64) (*model.TokenComboModel, error) {
-	row := s.queryRow(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models WHERE id = ?`, id)
+	row := s.queryRow(`SELECT `+comboCols+` FROM token_combo_models WHERE id = ?`, id)
 	return s.scanComboRow(row)
 }
 
 func (s *dbStore) GetAllComboModels() ([]model.TokenComboModel, error) {
-	rows, err := s.query(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models WHERE enabled = ? ORDER BY token_id, id`, s.d.Bool(true))
+	rows, err := s.query(`SELECT `+comboCols+` FROM token_combo_models WHERE enabled = ? ORDER BY token_id, id`, s.d.Bool(true))
 	if err != nil {
 		return nil, err
 	}
@@ -1808,7 +1837,7 @@ func (s *dbStore) GetAllComboModels() ([]model.TokenComboModel, error) {
 // operator wants to see disabled entries too. Routing-time lookup
 // uses GetAllComboModels (enabled-only).
 func (s *dbStore) ListAllComboModels() ([]model.TokenComboModel, error) {
-	rows, err := s.query(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models ORDER BY token_id, id`)
+	rows, err := s.query(`SELECT ` + comboCols + ` FROM token_combo_models ORDER BY token_id, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1835,8 +1864,8 @@ func (s *dbStore) CreateComboModel(c *model.TokenComboModel) error {
 	}
 	now := time.Now().Unix()
 	comboID, err := dialect.InsertOne(s.d, s.db,
-		`INSERT INTO token_combo_models (token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.TokenID, c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), s.d.Bool(c.Enabled), s.d.Bool(c.IsDefault), now, now,
+		`INSERT INTO token_combo_models (token_id, name, models, mode, strategy, tiers, fallback, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.TokenID, c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), encodeTiers(c.Tiers), encodeStrings(c.Fallback), s.d.Bool(c.Enabled), s.d.Bool(c.IsDefault), now, now,
 	)
 	if err != nil {
 		return err
@@ -1852,12 +1881,16 @@ func (s *dbStore) validateCombo(c *model.TokenComboModel) error {
 	if !comboNameRe.MatchString(c.Name) {
 		return fmt.Errorf("combo name %q must match ^[a-zA-Z0-9_-]{1,64}$", c.Name)
 	}
-	// models: 1..100 items, each ^[a-zA-Z0-9._-]{1,128}$
-	if len(c.Models) == 0 {
-		return errors.New("combo models list must not be empty")
-	}
-	if len(c.Models) > 100 {
-		return fmt.Errorf("combo models list has %d items, max is 100", len(c.Models))
+	// models: 1..100 items, each ^[a-zA-Z0-9._-]{1,128}$.
+	// mode:auto combos may leave Models empty — the tier tables in
+	// Tiers define the candidates instead.
+	if c.Mode != model.ComboModeAuto {
+		if len(c.Models) == 0 {
+			return errors.New("combo models list must not be empty")
+		}
+		if len(c.Models) > 100 {
+			return fmt.Errorf("combo models list has %d items, max is 100", len(c.Models))
+		}
 	}
 	for _, m := range c.Models {
 		if !comboModelRe.MatchString(m) {
@@ -1868,8 +1901,12 @@ func (s *dbStore) validateCombo(c *model.TokenComboModel) error {
 	switch c.Mode {
 	case model.ComboModeLoadBalance, model.ComboModeSerial:
 		// ok
+	case model.ComboModeAuto:
+		if err := validateAutoCombo(c); err != nil {
+			return err
+		}
 	default:
-		return fmt.Errorf("combo mode %q must be load_balance or serial", c.Mode)
+		return fmt.Errorf("combo mode %q must be load_balance, serial, or auto", c.Mode)
 	}
 	// strategy must be valid
 	switch c.Strategy {
@@ -1898,6 +1935,41 @@ var (
 	comboModelRe = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,128}$`)
 )
 
+// validateAutoCombo checks the mode:auto specifics: every tier
+// must be a known tier with a non-empty, syntactically valid
+// model list; the fallback list (optional) must be syntactically
+// valid.
+func validateAutoCombo(c *model.TokenComboModel) error {
+	if len(c.Tiers) == 0 {
+		return errors.New("auto combo requires a non-empty tiers map")
+	}
+	if len(c.Tiers) > 16 {
+		return fmt.Errorf("auto combo has %d tiers, max is 16", len(c.Tiers))
+	}
+	for tier, cfg := range c.Tiers {
+		if !model.ValidAutoTier(tier) {
+			return fmt.Errorf("auto combo tier %q is not a known tier (valid: %v)", tier, model.AutoTiers)
+		}
+		if len(cfg.Models) == 0 {
+			return fmt.Errorf("auto combo tier %q models list must not be empty", tier)
+		}
+		if len(cfg.Models) > 100 {
+			return fmt.Errorf("auto combo tier %q has %d models, max is 100", tier, len(cfg.Models))
+		}
+		for _, m := range cfg.Models {
+			if !comboModelRe.MatchString(m) {
+				return fmt.Errorf("auto combo tier %q model %q must match ^[a-zA-Z0-9._-]{1,128}$", tier, m)
+			}
+		}
+	}
+	for _, m := range c.Fallback {
+		if !comboModelRe.MatchString(m) {
+			return fmt.Errorf("auto combo fallback model %q must match ^[a-zA-Z0-9._-]{1,128}$", m)
+		}
+	}
+	return nil
+}
+
 func (s *dbStore) UpdateComboModel(c *model.TokenComboModel) error {
 	if c.IsDefault {
 		if err := s.clearDefaultFlag(c.TokenID, c.ID); err != nil {
@@ -1906,8 +1978,8 @@ func (s *dbStore) UpdateComboModel(c *model.TokenComboModel) error {
 	}
 	now := time.Now().Unix()
 	_, err := s.exec(
-		`UPDATE token_combo_models SET name=?, models=?, mode=?, strategy=?, enabled=?, is_default=?, updated_at=? WHERE id=?`,
-		c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), s.d.Bool(c.Enabled), s.d.Bool(c.IsDefault), now, c.ID,
+		`UPDATE token_combo_models SET name=?, models=?, mode=?, strategy=?, tiers=?, fallback=?, enabled=?, is_default=?, updated_at=? WHERE id=?`,
+		c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), encodeTiers(c.Tiers), encodeStrings(c.Fallback), s.d.Bool(c.Enabled), s.d.Bool(c.IsDefault), now, c.ID,
 	)
 	if err != nil {
 		return err

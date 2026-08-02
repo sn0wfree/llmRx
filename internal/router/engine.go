@@ -199,6 +199,15 @@ func (e *RouterEngine) RecordFailure(channelID int64) {
 	}
 }
 
+// RecordArmSuccess updates the auto-router's (tier, model) quality
+// arm after a successful request. Arm keys are opaque strings
+// ("tier:model"); see the auto package's ArmKey helper.
+func (e *RouterEngine) RecordArmSuccess(key string) { e.thompson.RecordArmSuccess(key) }
+
+// RecordArmFailure updates the auto-router's (tier, model) quality
+// arm after a failed request.
+func (e *RouterEngine) RecordArmFailure(key string) { e.thompson.RecordArmFailure(key) }
+
 // Thompson returns the underlying sampler (for the admin API and
 // tests).
 func (e *RouterEngine) Thompson() *thompson.Sampler { return e.thompson }
