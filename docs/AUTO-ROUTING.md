@@ -148,6 +148,36 @@ model=auto → auto 分支
 | `b27ea14` | 执行层：失败分桶（401/404 hard-reject、429 5s、分钟窗口失败率）、`weighted_random` 策略、context 预算过滤、fallback 绕过熔断安全网 |
 | commit 5 | LLM 分类器（1.5s 超时回落 heuristic_fallback）、`auto.Stats` 决策计数、admin state 端点（只读 + /reload 重置）、webui 表单（auto 模式 + tiers JSON + fallback）、`auto_router` 配置、文档 |
 
+## 12. 设计符合性对照（v1 已核验）
+
+实现对照设计 §1-§6 逐项核验（2026-08-02，代码级）：
+
+| 设计项（§） | 实现位置 | 状态 |
+|---|---|---|
+| 启发式 7 维分类 → 0-1 分 → 4 档 tier（§1/§3.1） | `auto/scorer.go`（CJK 公平计量、短文本惩罚抑制，优于设计的 len/4 近似） | ✅ |
+| 可选 LLM 分类器，1.5s 超时/失败回落 `heuristic_fallback`（§3.1） | `auto/llm.go` | ✅ |
+| `mode:auto` combo + tiers JSON 入库（tiers/fallback 列 + 迁移）（§2/§3.2） | `model/types.go` + `store` | ✅ |
+| 全局阈值 + LLM 分类器配置（§2） | `config.go` `auto_router` 段（含测试） | ✅ |
+| 池选择：可用性硬过滤 + 成本序 + TS 臂采样（§3/§4） | `auto/pool.go` + thompson `SampleArms` | ✅ |
+| 模型级失败按成本序转移 + fallback 串行（去重、`SkipBreaker` 安全网）（§1/§5） | `api/router.go:963,1044,1091` | ✅ |
+| 学习闭环：(tier,model) 臂 α/β、纯成功失败 reward、冷启动门控、V1→V2 迁移、5 分钟快照（§4） | `thompson/thompson.go:118-186,380` | ✅ |
+| 失败分桶：429→5s、401/404 hard-reject、分钟窗口 >50% ≥10 样本冷却（§5） | `breaker.go:21-29,257` | ✅ |
+| `weighted_random` 策略（1/p²，9:4:1 分布测试）（§5） | `strategy.go:94` | ✅ |
+| context 预算过滤（`TokenEstimate`×1.2、绝不饿死）（§5） | `auto/pool.go:59` + `api/router.go:1091` | ✅ |
+| 决策日志 + `X-llmRx-Auto-Tier/Routed-Model` 头（普通+流式都发）（§6） | `api/router.go:1144,1164` | ✅ |
+| `GET /admin/api/v1/auto-router/state` 只读 + `/reload` 重置（§2/§6） | `admin/handler.go:130` | ✅ |
+| 决策统计 `auto.Stats`（tier_hits/cause_hits/fallbacks…）（§6） | `auto/stats.go` | ✅ |
+
+验收标准（§9）逐条核对：auto 链路端到端（mock provider 的 `TestAutoCombo_*`）✅；V2 读写 + V1 迁移 + 快照 ✅；决策日志全字段 + 响应头 ✅；分桶可测 + weighted-random 9:4:1 ✅；非 auto 零行为变化（`-race` 全量绿）✅；`-race` + PG DSN 复测全绿 ✅。
+
+**结论：满足设计要求，无功能缺失。** 与设计描述的 3 处小偏差均为实现更优或位置不同：
+
+- §3.2 设计写"`handleCombo` 加 auto 分支"，实际拆为独立的 `handleAutoCombo`/`handleStreamAutoCombo`——流式请求也支持了（设计未要求）
+- 设计写"`SelectFallback()` 在 pool.go"，实现把 fallback 逻辑放在 api 层（含去重 + 绕过 breaker 合并处理），功能等价
+- `RecordFailure(channelID, status)` 签名符合设计，但 arm 更新走独立的 `RecordArmSuccess/Failure`（成功路径无需 status，更干净）
+
+唯一环境性缺口：`data/config.yml` 为 gitignored 本地文件未入库，但示例已完整写进本文件 §2，不构成功能缺失。
+
 ## 9. 验收标准（v1）
 
 - `model=auto` 按复杂度落 tier → 臂采样选模型 → L1-L5 渠道；失败自动转移 + fallback 安全网
