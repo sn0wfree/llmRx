@@ -46,11 +46,11 @@ services:
       # root, which is harmless when ownership already matches.
       - ./data:/data
     environment:
-      LLMRX_DB: /data/llmrx.db
+      # The gateway reads its whole configuration from /data/config.yml
+      # (server port, SQLite DSN, log level, ...). Only secrets are
+      # injected via env:
       # Uncomment to inject a master key from .env (see .env.example):
       # LLMRX_KEY_MASTER: ${LLMRX_KEY_MASTER}
-      # Uncomment to allow plaintext channel keys (DEV ONLY):
-      # DEV_ALLOW_PLAINTEXT_KEYS: "true"
     # secrets:
     #   - llmrx_key_master
     healthcheck:

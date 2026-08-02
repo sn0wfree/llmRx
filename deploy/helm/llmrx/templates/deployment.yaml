@@ -38,10 +38,6 @@ spec:
               containerPort: {{ .Values.service.port }}
               protocol: TCP
           env:
-            - name: LLMRX_DB
-              value: "/data/llmrx.db"
-            - name: LLMRX_LISTEN
-              value: ":{{ .Values.service.port }}"
             - name: TZ
               value: "UTC"
             {{- if .Values.secrets.masterKey }}

@@ -33,7 +33,7 @@ make docker-build && make docker-run # 升级（代码变了就重新 build）
 | 内存 | 256 MB | 512 MB | 进程常驻 ~50 MB，留余量给 in-process cache + broker |
 | 磁盘 | 1 GB | 5 GB | SQLite db + 日志（默认保留 30 天，可调） |
 | Docker | 20.10+ | 24+ | buildx 推荐；daemon 镜像推荐 1.4+ |
-| Go | 1.22+（仅自己 build 时需要） | — | 不需要装 gcc/musl；只用 `CGO_ENABLED=1` 让默认 toolchain 处理 |
+| Go | 1.18+（仅自己 build 时需要；CI 用 1.22） | — | 不需要装 gcc/musl；只用 `CGO_ENABLED=1` 让默认 toolchain 处理 |
 | Node | 18+（仅改前端时需要） | — | 默认 build 用 committed `internal/webui/dist`，无需 Node |
 
 ### 1.2 网络与端口
@@ -151,14 +151,14 @@ IMAGE=ghcr.io/myorg/llmrx:v1.2.3 make docker-build
 docker push ghcr.io/myorg/llmrx:v1.2.3
 ```
 
-### 3.3 多架构构建（amd64 + arm64）
+### 3.3 多架构构建（当前仅 amd64）
 
 ```bash
 make docker-push IMAGE=ghcr.io/myorg/llmrx:v1.2.3
-# 内部：docker buildx build --platform linux/amd64,linux/arm64 --push -f Dockerfile .
+# 内部：docker buildx build --platform linux/amd64 --push -f Dockerfile .
 ```
 
-需要先 `docker login ghcr.io`。本地单架构 build 出来的镜像不能直接 push，buildx 会自动 push manifest list。
+需要先 `docker login ghcr.io`。注意：**目前只发布 `linux/amd64`**。`arm64` 需要的 cross gcc 编译 CGO sqlite3 暂未接入 CI；`docker.yml` 与 `scripts/build-docker.sh` 都只用 amd64。在 arm64 主机上可直接 `make docker-build` 本地构建（无需 cross 工具链）。
 
 ### 3.4 不带 Node 的快速 build
 
@@ -522,7 +522,7 @@ docker compose up -d
 curl http://localhost:8787/health
 ```
 
-⚠️ 跨架构迁移（amd64 ↔ arm64）也用同样的流程，二进制在镜像里，db 是 sqlite 不挑架构。
+迁移（换主机/换架构）也用同样的流程：二进制在镜像里，db 是 sqlite 不挑架构，直接把 `./data` 目录搬到新机器即可。注意镜像目前仅发布 `linux/amd64`（见 3.3），arm64 主机需本地构建。
 
 ---
 
@@ -924,14 +924,14 @@ POST /v1/embeddings                           OpenAI 兼容
 
 ## 附录 B：环境变量完整列表
 
+网关配置优先从 `config.yml` 读取（server.port、database.dsn、log_level 等）；env 仅用于注入机密与少量覆盖。已删除的历史变量 `LLMRX_DB`、`LLMRX_LISTEN`、`LLMRX_DATA_DIR`、`DEV_ALLOW_PLAINTEXT_KEYS` 不再生效——对应配置改在 `config.yml` 中设置。
+
 | 变量 | 用途 | 默认 |
 |---|---|---|
-| `LLMRX_DB` | SQLite DSN | `/data/llmrx.db` |
-| `LLMRX_LISTEN` | 监听地址 | `:8787` |
 | `TZ` | 时区 | `UTC` |
 | `LLMRX_KEY_MASTER` | master key（hex 64 chars） | 从 `/data/llmrx.key` 读或自动生成 |
-| `DEV_ALLOW_PLAINTEXT_KEYS` | DEV ONLY：跳过 master key 要求 | `false` |
-| `LLMRX_DATA_DIR` | 数据目录（仅裸金属/裸机） | `/var/lib/llmrx` |
+| `LLMRX_INTENT_REQUIRED` | 非空时强制意图探测（否则放宽） | 空 |
+| `LLMRX_INTENT_LIB` | 自定义意图词库路径 | 内置词库 |
 | `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | 上游代理（Go stdlib 自动识别） | — |
 | `GOGC` | Go GC 调优 | `100` |
 | `GOMAXPROCS` | 最大 OS 线程 | CPU 数 |

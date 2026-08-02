@@ -14,7 +14,7 @@
 #   scripts/build-docker.sh ghcr.io/me/x:dev
 #   SKIP_GO_BUILD=1 scripts/build-docker.sh   # reuse build/llmRx
 #
-# Requires:  go (1.22+).
+# Requires:  go (1.18+, matching go.mod).
 
 set -eu
 

@@ -12,13 +12,7 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-serviceAccount:
-  create: false
-  name: ""
-
 podAnnotations: {}
-podSecurityContext: {}
-securityContext: {}
 nodeSelector: {}
 tolerations: []
 affinity: {}
@@ -88,9 +82,12 @@ config:
     cost_strategy: cheapest
   secrets:
     dev_allow_plaintext_keys: false
-  tokens: []
-  channels: []
-  providers: []
+
+# NOTE: channels / tokens / providers are NOT rendered from this
+# chart's configmap — they carry secrets and are best managed with
+# the native /api/v1 admin endpoints (or by patching the ConfigMap
+# after install). The default gateway config.yml seeds a demo token
+# + channel on first boot; see config.yml at the repo root.
 
 # Secrets (LLMRX_KEY_MASTER + provider API keys)
 secrets:

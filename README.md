@@ -361,11 +361,11 @@ go test -v ./internal/admin ./internal/api
 |---|---|---|
 | P0 | ✅ | Go 骨架 + Provider 适配 + L1-L3 + `/v1/chat/completions` |
 | P1 | ✅ | SQLite 持久化 + Token/Plan/User + Management API |
-| P2 | ✅ | WebUI（React + Tailwind，go:embed） |
+| P2 | ✅ | WebUI（Go html/template + HTMX，无前端构建步骤） |
 | P3 | ✅ | Session TTL + 日志过滤 UI + Analytics 时序/Top-N + L3 策略运行时切换 + 自动 web-sync |
 | P4 | ✅ | L4 Intent Classifier（Rust ONNX 模块，cdylib） |
 | P5 | ✅ | L5 Thompson Sampling 自适应权重 |
-| P6 | ✅ | bcrypt 密码 hash 升级 + 改密 UI + 告警子系统 + SSE 实时日志 + Settings 4 Tab + 运行时 markup + 日志保留 + distroless Dockerfile + Docker CI |
+| P6 | ✅ | bcrypt 密码 hash 升级 + 改密 UI + 告警子系统 + SSE 实时日志 + Settings 4 Tab + 运行时 markup + 日志保留 + scratch Dockerfile + Docker CI |
 | P7+ | ✅ | 多协议 provider / SSE 流式响应 / argon2id 升级 + broker cap + streaming caps |
 | Passthrough A | ✅ | OpenAI 完整规范透传（tools / tool_choice / response_format / 多模态 / 全套 knobs） |
 | Passthrough B | ✅ | cache_control 翻译 + cached_tokens 计费折扣 |

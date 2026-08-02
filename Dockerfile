@@ -45,9 +45,7 @@ WORKDIR /data
 EXPOSE 8787
 VOLUME ["/data"]
 
-ENV LLMRX_DB=/data/llmrx.db \
-    LLMRX_LISTEN=:8787 \
-    TZ=UTC
+ENV TZ=UTC
 
 # Liveness via the gateway's GET /health. The binary itself
 # implements the probe (raw TCP + HTTP/1.0 read), so we don't

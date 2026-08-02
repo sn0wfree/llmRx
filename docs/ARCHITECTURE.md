@@ -391,10 +391,10 @@ Thompson Sampling（多臂老虎机）：
 ### 8.2 技术选型
 
 ```
-Go (go:embed) ──→ React SPA
-                    ├ Tailwind CSS (界面)
-                    ├ Recharts (图表)
-                    └ 单二进制部署
+Go html/template + HTMX（无 npm / 前端构建）
+                    ├ 单二进制（模板 go:embed 进二进制）
+                    ├ SSE 实时日志 + hx-boost 局部刷新
+                    └ 管理 API 同进程内调用
 ```
 
 ### 8.3 组件树
