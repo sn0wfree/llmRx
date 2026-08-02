@@ -67,9 +67,14 @@ func (h *Handler) Routes() http.Handler {
 	r.Get("/login", h.LoginPage)
 	r.Post("/login", h.LoginSubmit)
 
-	// Authenticated
+	// Authenticated — every route below manages gateway resources
+	// (channels, upstream keys, tokens, MCP servers, alerts). A
+	// logged-in RoleUser must not reach them, so the whole group
+	// requires RoleAdmin. /users and /config (root-only) are in
+	// their own groups below.
 	r.Group(func(r chi.Router) {
 		r.Use(SessionMiddleware(h.store))
+		r.Use(RequireRole(model.RoleAdmin))
 
 		r.Get("/", func(w http.ResponseWriter, req *http.Request) {
 			http.Redirect(w, req, "/admin/dashboard", http.StatusSeeOther)

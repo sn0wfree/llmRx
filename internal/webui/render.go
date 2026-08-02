@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +16,12 @@ import (
 
 //go:embed templates
 var templateFS embed.FS
+
+// jstr escapes s as a double-quoted JS string literal so it can be
+// interpolated into hx-confirm (or any JS-eval'd) attribute safely.
+func jstr(s string) string {
+	return strconv.Quote(s)
+}
 
 // Renderer loads all html templates and provides Render/RenderPartial.
 type Renderer struct {
@@ -86,6 +93,14 @@ func NewRenderer() (*Renderer, error) {
 			}
 			return false
 		},
+		// jstr escapes a value as a double-quoted JS string literal
+		// (strconv.Quote). hx-confirm values are eval'd by htmx as
+		// JS expressions, so unescaped user names (channel/token/
+		// plan/alert/username) in the confirm text were a stored XSS
+		// vector. html/template escapes the attribute, then jstr
+		// makes the interpolated fragment a plain string literal —
+		// the pair turns the expression into inert data.
+		"jstr": jstr,
 		"maskKey": func(s string) string {
 			if len(s) <= 8 {
 				return "***"

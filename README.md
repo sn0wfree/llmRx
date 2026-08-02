@@ -14,7 +14,7 @@ P0 → P7+ 全部完成，所有 L1-L5 路由层齐全，多协议 provider，�
 - YAML 配置驱动 → 启动时 seed 进 DB（首次启动）
 - Dockerfile（`FROM scratch` + 静态链接 CGO 二进制，镜像 ≈ 13 MB；启动 / 健康检查 / bootstrap / privilege drop 全部在 Go 二进制内完成，无 shell / busybox / entrypoint）
 - docker-compose 示例
-- CI：test.yml（vet + race + 60% 覆盖门槛 + build）+ docker.yml（buildx 多架构 amd64+arm64 → ghcr.io）
+- CI：test.yml（vet + race + 60% 覆盖门槛 + build）+ docker.yml（buildx 构建 amd64 → ghcr.io；Go 编译在 workflow 内完成）
 
 #### 管理控制台 + API
 - `/admin/`（Dashboard / Channels / Tokens / Logs / Analytics / Config / Effective）

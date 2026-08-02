@@ -30,7 +30,7 @@
           <button hx-delete="/admin/alerts/{{.ID}}"
                   hx-target="#alert-row-{{.ID}}"
                   hx-swap="outerHTML"
-                  hx-confirm="确定删除告警规则 {{.Name}}？"
+                  hx-confirm="确定删除告警规则 {{jstr .Name}}？"
                   class="text-red-600 hover:text-red-900">删除</button>
         </td>
       </tr>

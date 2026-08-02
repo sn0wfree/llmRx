@@ -191,8 +191,11 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	s.engine.With(authmw.WithLimitsAndOptions(s.tokens.Lookup, handler.Limits(), s.byokHook)).
 		Mount("/v1", handler.Routes())
 
-	// MCP server endpoint: expose llmRx's own tools.
-	s.engine.Post("/mcp/llmrx", func(w http.ResponseWriter, r *http.Request) {
+	// MCP server endpoint: expose llmRx's own tools. Same token
+	// chain as /v1 — the endpoint can spend the gateway's upstream
+	// keys via channel_invoke, so it must not be unauthenticated.
+	s.engine.With(authmw.WithLimitsAndOptions(s.tokens.Lookup, handler.Limits(), s.byokHook)).
+		Post("/mcp/llmrx", func(w http.ResponseWriter, r *http.Request) {
 		body, err := readBody(r)
 		if err != nil {
 			http.Error(w, `{"jsonrpc":"2.0","error":{"code":-32700,"message":"invalid body"}}`, http.StatusBadRequest)

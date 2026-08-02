@@ -167,9 +167,11 @@ type SecretsConfig struct {
 }
 
 // BYOKConfig is the (Phase 1.5 reserved) BYOK configuration. The
-// feature is not yet implemented; keep Enabled=false. When the
-// feature ships, WhitelistIPs and WhitelistEmails will gate which
-// callers may present their own upstream key.
+// feature is NOT implemented: the gateway refuses to start when
+// Enabled=true (fail-closed — see cmd/gateway/main.go). Keep
+// Enabled=false and create channels with the admin UI instead.
+// When the feature ships, WhitelistIPs and WhitelistEmails will
+// gate which callers may present their own upstream key.
 //
 // UpstreamProbes and ProviderPrefixes are not loaded from YAML
 // — they're wired programmatically by main.go because the

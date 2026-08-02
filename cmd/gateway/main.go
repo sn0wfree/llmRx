@@ -14,7 +14,6 @@ import (
 	"github.com/sn0wfree/llmRx/internal/alert/channels"
 	"github.com/sn0wfree/llmRx/internal/auth"
 	"github.com/sn0wfree/llmRx/internal/broker"
-	"github.com/sn0wfree/llmRx/internal/byok"
 	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/dialect"
 	"github.com/sn0wfree/llmRx/internal/logging"
@@ -332,38 +331,15 @@ func main() {
 	go logStore.RunRetention(ctx, func() int { return int(rt.LogRetentionDays()) })
 	go alertMgr.Start(ctx)
 
-	// Wire the BYOK manager so unknown sk- bearers get probed
-	// upstream and auto-registered. The hook must be supplied
-	// at server.New time because the middleware chain is
-	// registered before New returns; a setter would silently
-	// never be wired.
+	// BYOK (bring-your-own-key) is not implemented: the previous
+	// wiring probed unknown sk- bearers with a no-op stub, silently
+	// "registered" them, and then returned an empty 200 without ever
+	// forwarding the request. Rather than keep that fail-open stub,
+	// refuse to start when the feature is enabled so the operator
+	// gets an explicit error instead of a silently broken feature.
 	var byokHook authmw.UnknownTokenHook
 	if cfg.BYOK.Enabled {
-		var byokSec *secrets.Manager
-		if !cfg.Secrets.DevAllowPlaintext {
-			byokSec, _ = secrets.FromEnv(cfg.Secrets.KeyMasterEnv)
-		}
-		// Wire a placeholder upstream probe so the hook reaches
-		// the "probe returned error" branch instead of failing at
-		// "no verifier configured". A production deployment
-		// should inject a real verifier that hits the upstream's
-		// test endpoint; for now a no-op stub is enough to
-		// exercise the BYOK bookkeeping path.
-		byokCfg := byok.Config{
-			Enabled:         cfg.BYOK.Enabled,
-			WhitelistIPs:    cfg.BYOK.WhitelistIPs,
-			WhitelistEmails: cfg.BYOK.WhitelistEmails,
-			MaxKeysPerIP:    cfg.BYOK.MaxKeysPerIP,
-			TTLDays:         cfg.BYOK.TTLDays,
-			UpstreamProbes: map[string]byok.ProbeFunc{
-				"openai": func(_ context.Context, _, _ string) error {
-					return nil
-				},
-			},
-		}
-		byokMgr := byok.New(byokCfg, st, byokSec)
-		byokHook = byokMgr.Hook()
-		logging.Info("byok hook enabled", logging.F("prefixes", byokCfg.ProviderPrefixes))
+		fatalf("byok.enabled is set but BYOK is not implemented — set byok.enabled: false and create channels with the admin UI instead")
 	}
 
 	// P12 M2: cluster mode. With a Postgres store, the rate limiter

@@ -2,6 +2,10 @@ server:
   # host: 0.0.0.0  # 可选，默认 0.0.0.0（所有接口）
   port: 8787
   log_level: info
+  # Fresh installs seed a default admin/admin account. Change the
+  # password immediately via /admin/users or set admin_password to
+  # disable the default. Keep this true only in trusted networks.
+  allow_default_admin_password: true
 
 database:
   driver: sqlite

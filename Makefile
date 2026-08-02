@@ -111,10 +111,16 @@ docker-stop:
 	docker compose down
 
 docker-push:
+	# amd64 only for now — the CGO sqlite3 build needs a cross gcc
+	# for arm64, and CI builds the binary with GOARCH=amd64 before
+	# docker build (see .github/workflows/docker.yml).
 	docker buildx build \
-		--platform linux/amd64,linux/arm64 \
+		--platform linux/amd64 \
 		--tag $(IMAGE) \
 		--push -f Dockerfile .
+	# NOTE: builds the image from a prebuilt build/llmRx (same as
+	# scripts/build-docker.sh); run that script first, or CI's Go
+	# step, so the binary exists in the build context.
 
 # ----- L4 intent (Rust cdylib) -----
 #

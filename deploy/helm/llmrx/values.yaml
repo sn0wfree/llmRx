@@ -73,7 +73,7 @@ config:
     log_level: info
     trust_proxy_headers: true
     trusted_proxy_cidrs: []
-    allow_default_admin_password: false
+    allow_default_admin_password: true
     cors_allowed_origins: []
     markup_ratio: 0
     breaker_max_failures: 5

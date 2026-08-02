@@ -33,7 +33,7 @@
           <button hx-delete="/admin/plans/{{.ID}}"
                   hx-target="#plan-row-{{.ID}}"
                   hx-swap="outerHTML"
-                  hx-confirm="确定删除计划 {{.Name}}？将解绑所有关联 Token。"
+                  hx-confirm="确定删除计划 {{jstr .Name}}？将解绑所有关联 Token。"
                   class="text-red-600 hover:text-red-900">删除</button>
         </td>
       </tr>
