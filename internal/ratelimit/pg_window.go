@@ -197,4 +197,3 @@ func (b *PGWindowBackend) TrackedKeys() int {
 	}
 	return n
 }
-
