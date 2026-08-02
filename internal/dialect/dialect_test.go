@@ -4,6 +4,29 @@ import (
 	"testing"
 )
 
+func TestPostgresRewriteDDL(t *testing.T) {
+	in := `CREATE TABLE IF NOT EXISTS alerts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			status INTEGER NOT NULL DEFAULT 1,
+			last_fired_at INTEGER NOT NULL DEFAULT 0
+		)`
+	want := `CREATE TABLE IF NOT EXISTS alerts (
+			id BIGSERIAL PRIMARY KEY,
+			name TEXT NOT NULL,
+			enabled BOOLEAN NOT NULL DEFAULT true,
+			status INTEGER NOT NULL DEFAULT 1,
+			last_fired_at INTEGER NOT NULL DEFAULT 0
+		)`
+	if got := (Postgres{}).RewriteDDL(in); got != want {
+		t.Fatalf("RewriteDDL:\n got: %s\nwant: %s", got, want)
+	}
+	if got := (SQLite{}).RewriteDDL(in); got != in {
+		t.Fatalf("SQLite RewriteDDL should be identity")
+	}
+}
+
 func TestSQLiteRewriteQuery(t *testing.T) {
 	q := `INSERT INTO channels(name, provider) VALUES (?, ?)`
 	if got := (SQLite{}).RewriteQuery(q); got != q {

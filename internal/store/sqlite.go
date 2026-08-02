@@ -336,50 +336,50 @@ func (s *SQLite) migrate() error {
 		)`,
 	}
 	for _, q := range stmts {
-		if _, err := s.exec(q); err != nil {
+		if _, err := s.exec(s.d.RewriteDDL(q)); err != nil {
 			return fmt.Errorf("exec %q: %w", q, err)
 		}
 	}
-	if err := s.addColumnIfMissing("users", "session_exp", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+	if err := s.addColumn("users", "session_exp", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	if err := s.addColumnIfMissing("users", "permissions", "TEXT NOT NULL DEFAULT ''"); err != nil {
+	if err := s.addColumn("users", "permissions", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := s.addColumnIfMissing("channels", "protocol", "TEXT NOT NULL DEFAULT 'openai'"); err != nil {
+	if err := s.addColumn("channels", "protocol", "TEXT NOT NULL DEFAULT 'openai'"); err != nil {
 		return err
 	}
-	if err := s.addColumnIfMissing("channels", "intents", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+	if err := s.addColumn("channels", "intents", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
 	}
-	if err := s.addColumnIfMissing("channels", "cached_input_discount", "REAL NOT NULL DEFAULT 0.1"); err != nil {
+	if err := s.addColumn("channels", "cached_input_discount", "REAL NOT NULL DEFAULT 0.1"); err != nil {
 		return err
 	}
-	if err := s.addColumnIfMissing("tokens", "used_usd", "REAL NOT NULL DEFAULT 0"); err != nil {
+	if err := s.addColumn("tokens", "used_usd", "REAL NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	if err := s.addColumnIfMissing("keys", "key_ciphertext", "TEXT NOT NULL DEFAULT ''"); err != nil {
+	if err := s.addColumn("keys", "key_ciphertext", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := s.addColumnIfMissing("tokens", "key_ciphertext", "TEXT NOT NULL DEFAULT ''"); err != nil {
+	if err := s.addColumn("tokens", "key_ciphertext", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := s.addColumnIfMissing("alerts", "disabled_reason", "TEXT NOT NULL DEFAULT ''"); err != nil {
+	if err := s.addColumn("alerts", "disabled_reason", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := s.addColumnIfMissing("token_combo_models", "is_default", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+	if err := s.addColumn("token_combo_models", "is_default", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	if err := s.addColumnIfMissing("mcp_servers", "transport", "TEXT NOT NULL DEFAULT 'http'"); err != nil {
+	if err := s.addColumn("mcp_servers", "transport", "TEXT NOT NULL DEFAULT 'http'"); err != nil {
 		return err
 	}
-	if err := s.addColumnIfMissing("mcp_servers", "command", "TEXT NOT NULL DEFAULT ''"); err != nil {
+	if err := s.addColumn("mcp_servers", "command", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := s.addColumnIfMissing("mcp_servers", "oauth_config_json", "TEXT NOT NULL DEFAULT ''"); err != nil {
+	if err := s.addColumn("mcp_servers", "oauth_config_json", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := s.addColumnIfMissing("mcp_servers", "token_json", "TEXT NOT NULL DEFAULT ''"); err != nil {
+	if err := s.addColumn("mcp_servers", "token_json", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	s.migrateAutoCombos()
@@ -459,6 +459,17 @@ func (s *SQLite) migrateAutoCombos() {
 	if created > 0 {
 		logging.Info("migrate auto combos", logging.F("created", created))
 	}
+}
+
+// addColumn ensures the column exists. Dialects with a native
+// idempotent form (Postgres: ADD COLUMN IF NOT EXISTS) run it
+// directly; SQLite falls back to a PRAGMA-guarded ALTER.
+func (s *SQLite) addColumn(table, column, decl string) error {
+	if stmt := s.d.AddColumnIfMissing(table, column, decl); stmt != "" {
+		_, err := s.exec(stmt)
+		return err
+	}
+	return s.addColumnIfMissing(table, column, decl)
 }
 
 func (s *SQLite) addColumnIfMissing(table, column, decl string) error {

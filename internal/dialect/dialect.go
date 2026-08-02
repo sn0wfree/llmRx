@@ -33,6 +33,12 @@ type Dialect interface {
 	// skips single-quoted string literals so 'a?b' is untouched.
 	RewriteQuery(q string) string
 
+	// RewriteDDL translates CREATE TABLE statements written in
+	// SQLite form into the dialect's DDL conventions: the id
+	// column (AutoIncrement) and pure boolean columns
+	// (BoolColumn). SQLite is the identity.
+	RewriteDDL(q string) string
+
 	// AutoIncrement declares the id column type in CREATE TABLE.
 	// SQLite: "INTEGER PRIMARY KEY AUTOINCREMENT",
 	// Postgres: "BIGSERIAL PRIMARY KEY".
@@ -129,6 +135,9 @@ func (SQLite) Placeholder(int) string { return "?" }
 // are written in SQLite's own '?' syntax.
 func (SQLite) RewriteQuery(q string) string { return q }
 
+// RewriteDDL is the identity for SQLite.
+func (SQLite) RewriteDDL(q string) string { return q }
+
 func (SQLite) AutoIncrement() string { return "INTEGER PRIMARY KEY AUTOINCREMENT" }
 
 func (SQLite) ReturningClause() string { return "" }
@@ -202,6 +211,34 @@ func (Postgres) BoolColumn(decl string) string {
 
 func (Postgres) AddColumnIfMissing(table, column, decl string) string {
 	return fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s", table, column, decl)
+}
+
+// boolColumns are the pure boolean columns whose SQLite INTEGER
+// declaration is rewritten to BOOLEAN on Postgres. Multi-value enum
+// columns (users.role, channels.status, keys.status, plans.status,
+// tokens.status, byok_channels.status, mcp_servers...) stay INTEGER.
+var boolColumns = []string{
+	"alerts.enabled",
+	"alert_events.delivered_webhook",
+	"alert_events.acknowledged",
+	"token_combo_models.enabled",
+	"token_combo_models.is_default",
+	"guardrails.enabled",
+	"guardrail_events.verdict",
+}
+
+// RewriteDDL translates SQLite-form CREATE TABLE statements:
+//   - id INTEGER PRIMARY KEY AUTOINCREMENT -> id BIGSERIAL PRIMARY KEY
+//   - <boolcol> INTEGER NOT NULL DEFAULT 1|0 -> <boolcol> BOOLEAN NOT
+//     NULL DEFAULT true|false (per boolColumns)
+func (Postgres) RewriteDDL(q string) string {
+	q = strings.Replace(q, "id INTEGER PRIMARY KEY AUTOINCREMENT", "id BIGSERIAL PRIMARY KEY", 1)
+	for _, col := range boolColumns {
+		cn := col[strings.IndexByte(col, '.')+1:]
+		q = strings.Replace(q, cn+" INTEGER NOT NULL DEFAULT 1", cn+" BOOLEAN NOT NULL DEFAULT true", 1)
+		q = strings.Replace(q, cn+" INTEGER NOT NULL DEFAULT 0", cn+" BOOLEAN NOT NULL DEFAULT false", 1)
+	}
+	return q
 }
 
 // ParseBool is the reader-side counterpart of Bool. Both
