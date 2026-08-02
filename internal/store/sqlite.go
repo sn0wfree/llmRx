@@ -1392,12 +1392,12 @@ func (s *SQLite) GetAlerts() ([]model.Alert, error) {
 	var out []model.Alert
 	for rows.Next() {
 		var a model.Alert
-		var enabled int
+		var enabled any
 		var created int64
 		if err := rows.Scan(&a.ID, &a.Name, &a.Type, &a.Threshold, &a.WindowSec, &a.CooldownSec, &a.WebhookURL, &enabled, &a.LastFiredAt, &a.DisabledReason, &created); err != nil {
 			return nil, err
 		}
-		a.Enabled = enabled != 0
+		a.Enabled = s.d.ParseBool(enabled)
 		a.CreatedAt = fromUnix(created)
 		out = append(out, a)
 	}
@@ -1407,7 +1407,7 @@ func (s *SQLite) GetAlerts() ([]model.Alert, error) {
 func (s *SQLite) GetAlert(id int64) (*model.Alert, error) {
 	row := s.queryRow(`SELECT id, name, type, threshold, window_sec, cooldown_sec, webhook_url, enabled, last_fired_at, disabled_reason, created_at FROM alerts WHERE id=?`, id)
 	var a model.Alert
-	var enabled int
+	var enabled any
 	var created int64
 	if err := row.Scan(&a.ID, &a.Name, &a.Type, &a.Threshold, &a.WindowSec, &a.CooldownSec, &a.WebhookURL, &enabled, &a.LastFiredAt, &a.DisabledReason, &created); err != nil {
 		if err == sql.ErrNoRows {
@@ -1415,21 +1415,17 @@ func (s *SQLite) GetAlert(id int64) (*model.Alert, error) {
 		}
 		return nil, err
 	}
-	a.Enabled = enabled != 0
+	a.Enabled = s.d.ParseBool(enabled)
 	a.CreatedAt = fromUnix(created)
 	return &a, nil
 }
 
 func (s *SQLite) CreateAlert(a *model.Alert) error {
-	enabled := 0
-	if a.Enabled {
-		enabled = 1
-	}
 	if a.CreatedAt.IsZero() {
 		a.CreatedAt = time.Now()
 	}
 	id, err := dialect.InsertOne(s.d, s.db, `INSERT INTO alerts(name, type, threshold, window_sec, cooldown_sec, webhook_url, enabled, last_fired_at, created_at) VALUES(?,?,?,?,?,?,?,?,?)`,
-		a.Name, string(a.Type), a.Threshold, a.WindowSec, a.CooldownSec, a.WebhookURL, enabled, a.LastFiredAt, a.CreatedAt.Unix())
+		a.Name, string(a.Type), a.Threshold, a.WindowSec, a.CooldownSec, a.WebhookURL, s.d.Bool(a.Enabled), a.LastFiredAt, a.CreatedAt.Unix())
 	if err != nil {
 		return err
 	}
@@ -1462,8 +1458,8 @@ func (s *SQLite) RecordAlertFired(id int64, atUnix int64) error {
 // the rule was auto-disabled. Idempotent.
 func (s *SQLite) DisableAlert(id int64, reason string) error {
 	res, err := s.exec(
-		`UPDATE alerts SET enabled=0, disabled_reason=? WHERE id=?`,
-		reason, id,
+		`UPDATE alerts SET enabled=?, disabled_reason=? WHERE id=?`,
+		s.d.Bool(false), reason, id,
 	)
 	if err != nil {
 		return err
@@ -1478,16 +1474,8 @@ func (s *SQLite) CreateAlertEvent(e *model.AlertEvent) error {
 	if e.FiredAt.IsZero() {
 		e.FiredAt = time.Now()
 	}
-	delivered := 0
-	if e.DeliveredWebhook {
-		delivered = 1
-	}
-	ack := 0
-	if e.Acknowledged {
-		ack = 1
-	}
 	id, err := dialect.InsertOne(s.d, s.db, `INSERT INTO alert_events(alert_id, alert_name, alert_type, fired_at, payload, delivered_webhook, acknowledged) VALUES(?,?,?,?,?,?,?)`,
-		e.AlertID, e.AlertName, string(e.AlertType), e.FiredAt.Unix(), e.Payload, delivered, ack)
+		e.AlertID, e.AlertName, string(e.AlertType), e.FiredAt.Unix(), e.Payload, s.d.Bool(e.DeliveredWebhook), s.d.Bool(e.Acknowledged))
 	if err != nil {
 		return err
 	}
@@ -1507,21 +1495,21 @@ func (s *SQLite) GetAlertEvents(limit int) ([]model.AlertEvent, error) {
 	var out []model.AlertEvent
 	for rows.Next() {
 		var e model.AlertEvent
-		var del, ack int
+		var del, ack any
 		var fired int64
 		if err := rows.Scan(&e.ID, &e.AlertID, &e.AlertName, &e.AlertType, &fired, &e.Payload, &del, &ack); err != nil {
 			return nil, err
 		}
 		e.FiredAt = time.Unix(fired, 0)
-		e.DeliveredWebhook = del != 0
-		e.Acknowledged = ack != 0
+		e.DeliveredWebhook = s.d.ParseBool(del)
+		e.Acknowledged = s.d.ParseBool(ack)
 		out = append(out, e)
 	}
 	return out, rows.Err()
 }
 
 func (s *SQLite) AckAlertEvent(id int64) error {
-	_, err := s.exec(`UPDATE alert_events SET acknowledged=1 WHERE id=?`, id)
+	_, err := s.exec(`UPDATE alert_events SET acknowledged=? WHERE id=?`, s.d.Bool(true), id)
 	return err
 }
 
@@ -1730,7 +1718,7 @@ func (s *SQLite) DeleteProviderDef(id int64) error {
 func (s *SQLite) scanComboRow(r interface{ Scan(dest ...any) error }) (*model.TokenComboModel, error) {
 	var c model.TokenComboModel
 	var modelsJSON, mode, strategy string
-	var enabled, isDefault int
+	var enabled, isDefault any
 	var created, updated int64
 	if err := r.Scan(&c.ID, &c.TokenID, &c.Name, &modelsJSON, &mode, &strategy, &enabled, &isDefault, &created, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1741,8 +1729,8 @@ func (s *SQLite) scanComboRow(r interface{ Scan(dest ...any) error }) (*model.To
 	c.Models = decodeStrings(modelsJSON)
 	c.Mode = model.ComboMode(mode)
 	c.Strategy = model.CostStrategy(strategy)
-	c.Enabled = enabled == 1
-	c.IsDefault = isDefault == 1
+	c.Enabled = s.d.ParseBool(enabled)
+	c.IsDefault = s.d.ParseBool(isDefault)
 	c.CreatedAt = fromUnix(created)
 	c.UpdatedAt = fromUnix(updated)
 	return &c, nil
@@ -1820,7 +1808,7 @@ func (s *SQLite) CreateComboModel(c *model.TokenComboModel) error {
 	now := time.Now().Unix()
 	comboID, err := dialect.InsertOne(s.d, s.db,
 		`INSERT INTO token_combo_models (token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.TokenID, c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), boolToInt(c.Enabled), boolToInt(c.IsDefault), now, now,
+		c.TokenID, c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), s.d.Bool(c.Enabled), s.d.Bool(c.IsDefault), now, now,
 	)
 	if err != nil {
 		return err
@@ -1891,7 +1879,7 @@ func (s *SQLite) UpdateComboModel(c *model.TokenComboModel) error {
 	now := time.Now().Unix()
 	_, err := s.exec(
 		`UPDATE token_combo_models SET name=?, models=?, mode=?, strategy=?, enabled=?, is_default=?, updated_at=? WHERE id=?`,
-		c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), boolToInt(c.Enabled), boolToInt(c.IsDefault), now, c.ID,
+		c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), s.d.Bool(c.Enabled), s.d.Bool(c.IsDefault), now, c.ID,
 	)
 	if err != nil {
 		return err
@@ -1943,19 +1931,12 @@ func (s *SQLite) clearDefaultFlag(tokenID, excludeID int64) error {
 	return err
 }
 
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
-}
-
 // ---------- Guardrails ----------
 
 func (s *SQLite) scanGuardrailRow(r interface{ Scan(dest ...any) error }) (*model.GuardrailRule, error) {
 	var g model.GuardrailRule
 	var hook, onFailure, config string
-	var enabled int
+	var enabled any
 	var created, updated int64
 	if err := r.Scan(&g.ID, &g.Name, &g.Description, &g.Type, &hook, &onFailure, &config, &g.Priority, &enabled, &created, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1966,7 +1947,7 @@ func (s *SQLite) scanGuardrailRow(r interface{ Scan(dest ...any) error }) (*mode
 	g.Hook = model.GuardrailHook(hook)
 	g.OnFailure = model.GuardrailAction(onFailure)
 	g.Config = config
-	g.Enabled = enabled == 1
+	g.Enabled = s.d.ParseBool(enabled)
 	g.CreatedAt = fromUnix(created)
 	g.UpdatedAt = fromUnix(updated)
 	return &g, nil
@@ -2015,7 +1996,7 @@ func (s *SQLite) CreateGuardrailRule(r *model.GuardrailRule) error {
 	now := time.Now().Unix()
 	ruleID, err := dialect.InsertOne(s.d, s.db,
 		`INSERT INTO guardrails (name, description, type, hook, on_failure, config, priority, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.Name, r.Description, string(r.Type), string(r.Hook), string(r.OnFailure), r.Config, r.Priority, boolToInt(r.Enabled), now, now,
+		r.Name, r.Description, string(r.Type), string(r.Hook), string(r.OnFailure), r.Config, r.Priority, s.d.Bool(r.Enabled), now, now,
 	)
 	if err != nil {
 		return err
@@ -2030,7 +2011,7 @@ func (s *SQLite) UpdateGuardrailRule(r *model.GuardrailRule) error {
 	now := time.Now().Unix()
 	_, err := s.exec(
 		`UPDATE guardrails SET name=?, description=?, type=?, hook=?, on_failure=?, config=?, priority=?, enabled=?, updated_at=? WHERE id=?`,
-		r.Name, r.Description, string(r.Type), string(r.Hook), string(r.OnFailure), r.Config, r.Priority, boolToInt(r.Enabled), now, r.ID,
+		r.Name, r.Description, string(r.Type), string(r.Hook), string(r.OnFailure), r.Config, r.Priority, s.d.Bool(r.Enabled), now, r.ID,
 	)
 	if err != nil {
 		return err
@@ -2048,7 +2029,7 @@ func (s *SQLite) CreateGuardrailEvent(e *model.GuardrailEvent) error {
 	now := time.Now().Unix()
 	evID, err := dialect.InsertOne(s.d, s.db,
 		`INSERT INTO guardrail_events (token_id, rule_id, rule_name, rule_type, hook, verdict, action, detail, request_ip, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.TokenID, e.RuleID, e.RuleName, e.RuleType, e.Hook, boolToInt(e.Verdict), e.Action, e.Detail, e.RequestIP, now,
+		e.TokenID, e.RuleID, e.RuleName, e.RuleType, e.Hook, s.d.Bool(e.Verdict), e.Action, e.Detail, e.RequestIP, now,
 	)
 	if err != nil {
 		return err
@@ -2070,12 +2051,12 @@ func (s *SQLite) GetGuardrailEvents(tokenID int64, limit int) ([]model.Guardrail
 	var out []model.GuardrailEvent
 	for rows.Next() {
 		var e model.GuardrailEvent
-		var verdict int
+		var verdict any
 		var created int64
 		if err := rows.Scan(&e.ID, &e.TokenID, &e.RuleID, &e.RuleName, &e.RuleType, &e.Hook, &verdict, &e.Action, &e.Detail, &e.RequestIP, &created); err != nil {
 			return nil, err
 		}
-		e.Verdict = verdict == 1
+		e.Verdict = s.d.ParseBool(verdict)
 		e.CreatedAt = fromUnix(created)
 		out = append(out, e)
 	}
@@ -2092,11 +2073,11 @@ func (s *SQLite) GetMCPServers(ctx context.Context) ([]MCPServer, error) {
 	for rows.Next() {
 		var srv MCPServer
 		var created int64
-		var enabled int
+		var enabled any
 		if err := rows.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.AuthHdr, &srv.Transport, &srv.Command, &srv.OAuthConfigJSON, &srv.TokenJSON, &enabled, &created); err != nil {
 			return nil, err
 		}
-		srv.Enabled = enabled == 1
+		srv.Enabled = s.d.ParseBool(enabled)
 		srv.CreatedAt = fromUnix(created)
 		out = append(out, srv)
 	}
@@ -2107,30 +2088,26 @@ func (s *SQLite) GetMCPServer(ctx context.Context, id int64) (*MCPServer, error)
 	row := s.queryRowContext(ctx, `SELECT id, name, url, auth_header, transport, command, oauth_config_json, token_json, enabled, created_at FROM mcp_servers WHERE id = ?`, id)
 	var srv MCPServer
 	var created int64
-	var enabled int
+	var enabled any
 	if err := row.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.AuthHdr, &srv.Transport, &srv.Command, &srv.OAuthConfigJSON, &srv.TokenJSON, &enabled, &created); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	srv.Enabled = enabled == 1
+	srv.Enabled = s.d.ParseBool(enabled)
 	srv.CreatedAt = fromUnix(created)
 	return &srv, nil
 }
 
 func (s *SQLite) CreateMCPServer(ctx context.Context, srv *MCPServer) error {
 	now := time.Now().Unix()
-	enabled := 0
-	if srv.Enabled {
-		enabled = 1
-	}
 	if srv.Transport == "" {
 		srv.Transport = "http"
 	}
 	srvID, err := dialect.InsertOneContext(s.d, s.db, ctx,
 		`INSERT INTO mcp_servers (name, url, auth_header, transport, command, oauth_config_json, token_json, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		srv.Name, srv.URL, srv.AuthHdr, srv.Transport, srv.Command, srv.OAuthConfigJSON, srv.TokenJSON, enabled, now,
+		srv.Name, srv.URL, srv.AuthHdr, srv.Transport, srv.Command, srv.OAuthConfigJSON, srv.TokenJSON, s.d.Bool(srv.Enabled), now,
 	)
 	if err != nil {
 		return err
@@ -2141,16 +2118,12 @@ func (s *SQLite) CreateMCPServer(ctx context.Context, srv *MCPServer) error {
 }
 
 func (s *SQLite) UpdateMCPServer(ctx context.Context, srv *MCPServer) error {
-	enabled := 0
-	if srv.Enabled {
-		enabled = 1
-	}
 	if srv.Transport == "" {
 		srv.Transport = "http"
 	}
 	_, err := s.execContext(ctx,
 		`UPDATE mcp_servers SET name=?, url=?, auth_header=?, transport=?, command=?, oauth_config_json=?, token_json=?, enabled=? WHERE id=?`,
-		srv.Name, srv.URL, srv.AuthHdr, srv.Transport, srv.Command, srv.OAuthConfigJSON, srv.TokenJSON, enabled, srv.ID,
+		srv.Name, srv.URL, srv.AuthHdr, srv.Transport, srv.Command, srv.OAuthConfigJSON, srv.TokenJSON, s.d.Bool(srv.Enabled), srv.ID,
 	)
 	return err
 }
@@ -2256,7 +2229,7 @@ func (s *SQLite) GetEnabledMCPServers(ctx context.Context) ([]MCPServer, error) 
 	for rows.Next() {
 		var srv MCPServer
 		var created int64
-		var enabled int
+		var enabled any
 		if err := rows.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.AuthHdr, &srv.Transport, &srv.Command, &srv.OAuthConfigJSON, &srv.TokenJSON, &enabled, &created); err != nil {
 			return nil, err
 		}
