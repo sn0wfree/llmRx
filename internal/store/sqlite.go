@@ -14,6 +14,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
+	"github.com/sn0wfree/llmRx/internal/dialect"
 	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/secrets"
@@ -36,6 +37,7 @@ var (
 
 type SQLite struct {
 	db      *sql.DB
+	d       dialect.Dialect
 	Secrets *secrets.Manager // nil ⇒ plaintext only (legacy mode); set by SetSecrets
 }
 
@@ -84,7 +86,7 @@ func OpenSQLite(dsn string) (*SQLite, error) {
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(0)
-	s := &SQLite{db: db}
+	s := &SQLite{db: db, d: dialect.SQLite{}}
 	if err := s.applyPragmas(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("pragma: %w", err)
@@ -107,7 +109,7 @@ func (s *SQLite) applyPragmas() error {
 		"PRAGMA wal_autocheckpoint=2000", // 2000-page WAL threshold
 	}
 	for _, p := range pragmas {
-		if _, err := s.db.Exec(p); err != nil {
+		if _, err := s.exec(p); err != nil {
 			return fmt.Errorf("%s: %w", p, err)
 		}
 	}
@@ -115,6 +117,34 @@ func (s *SQLite) applyPragmas() error {
 }
 
 func (s *SQLite) Close() error { return s.db.Close() }
+
+// exec/query/queryRow route every store statement through
+// s.d.RewriteQuery so the SQL text can stay in '?' syntax while
+// non-SQLite backends translate to their native bind markers
+// (e.g. Postgres $N). SQLite's dialect is the identity.
+func (s *SQLite) exec(q string, args ...any) (sql.Result, error) {
+	return s.db.Exec(s.d.RewriteQuery(q), args...)
+}
+
+func (s *SQLite) query(q string, args ...any) (*sql.Rows, error) {
+	return s.db.Query(s.d.RewriteQuery(q), args...)
+}
+
+func (s *SQLite) queryRow(q string, args ...any) *sql.Row {
+	return s.db.QueryRow(s.d.RewriteQuery(q), args...)
+}
+
+func (s *SQLite) execContext(ctx context.Context, q string, args ...any) (sql.Result, error) {
+	return s.db.ExecContext(ctx, s.d.RewriteQuery(q), args...)
+}
+
+func (s *SQLite) queryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error) {
+	return s.db.QueryContext(ctx, s.d.RewriteQuery(q), args...)
+}
+
+func (s *SQLite) queryRowContext(ctx context.Context, q string, args ...any) *sql.Row {
+	return s.db.QueryRowContext(ctx, s.d.RewriteQuery(q), args...)
+}
 
 func (s *SQLite) migrate() error {
 	stmts := []string{
@@ -306,7 +336,7 @@ func (s *SQLite) migrate() error {
 		)`,
 	}
 	for _, q := range stmts {
-		if _, err := s.db.Exec(q); err != nil {
+		if _, err := s.exec(q); err != nil {
 			return fmt.Errorf("exec %q: %w", q, err)
 		}
 	}
@@ -362,7 +392,7 @@ func (s *SQLite) migrate() error {
 // is consistent with the new explicit default-flag semantics. Best
 // effort, errors are logged but never block startup.
 func (s *SQLite) migrateDefaultFlag() {
-	res, err := s.db.Exec(`UPDATE token_combo_models SET is_default = 1 WHERE name = 'auto' AND is_default = 0`)
+	res, err := s.exec(`UPDATE token_combo_models SET is_default = 1 WHERE name = 'auto' AND is_default = 0`)
 	if err != nil {
 		logging.Debug("migrate default flag: skipped", logging.F("err", err.Error()))
 		return
@@ -432,7 +462,7 @@ func (s *SQLite) migrateAutoCombos() {
 }
 
 func (s *SQLite) addColumnIfMissing(table, column, decl string) error {
-	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
+	rows, err := s.query(`PRAGMA table_info(` + table + `)`)
 	if err != nil {
 		return err
 	}
@@ -450,7 +480,7 @@ func (s *SQLite) addColumnIfMissing(table, column, decl string) error {
 			return nil
 		}
 	}
-	_, err = s.db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + decl)
+	_, err = s.exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + decl)
 	return err
 }
 
@@ -491,7 +521,7 @@ func decodeCB(s string) model.CircuitBreakerConfig {
 // ---------------- Channels ----------------
 
 func (s *SQLite) GetChannels() ([]model.Channel, error) {
-	rows, err := s.db.Query(`SELECT id, name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, created_at, updated_at FROM channels ORDER BY id`)
+	rows, err := s.query(`SELECT id, name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, created_at, updated_at FROM channels ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -508,7 +538,7 @@ func (s *SQLite) GetChannels() ([]model.Channel, error) {
 }
 
 func (s *SQLite) GetChannel(id int64) (*model.Channel, error) {
-	row := s.db.QueryRow(`SELECT id, name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, created_at, updated_at FROM channels WHERE id = ?`, id)
+	row := s.queryRow(`SELECT id, name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, created_at, updated_at FROM channels WHERE id = ?`, id)
 	return scanChannel(row)
 }
 
@@ -522,7 +552,7 @@ func (s *SQLite) CreateChannel(ch *model.Channel) error {
 	if ch.CachedInputDiscount == 0 {
 		ch.CachedInputDiscount = 0.1
 	}
-	res, err := s.db.Exec(
+	id, err := dialect.InsertOne(s.d, s.db,
 		`INSERT INTO channels(name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ch.Name, ch.Provider, ch.Protocol, ch.BaseURL,
@@ -533,7 +563,6 @@ func (s *SQLite) CreateChannel(ch *model.Channel) error {
 	if err != nil {
 		return err
 	}
-	id, _ := res.LastInsertId()
 	ch.ID = id
 	return nil
 }
@@ -543,7 +572,7 @@ func (s *SQLite) UpdateChannel(ch *model.Channel) error {
 	if ch.Protocol == "" {
 		ch.Protocol = "openai"
 	}
-	_, err := s.db.Exec(
+	_, err := s.exec(
 		`UPDATE channels SET name=?, provider=?, protocol=?, base_url=?, models=?, intents=?, priority=?, input_price=?, output_price=?, cached_input_discount=?, circuit_breaker=?, status=?, updated_at=? WHERE id=?`,
 		ch.Name, ch.Provider, ch.Protocol, ch.BaseURL,
 		encodeStrings(ch.Models), encodeStrings(ch.Intents),
@@ -554,12 +583,12 @@ func (s *SQLite) UpdateChannel(ch *model.Channel) error {
 }
 
 func (s *SQLite) DeleteChannel(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM channels WHERE id = ?`, id)
+	_, err := s.exec(`DELETE FROM channels WHERE id = ?`, id)
 	return err
 }
 
 func (s *SQLite) GetDrainedChannels() ([]DrainedChannel, error) {
-	rows, err := s.db.Query(`SELECT c.id, c.name FROM channels c WHERE c.status = 1 AND NOT EXISTS (SELECT 1 FROM keys k WHERE k.channel_id = c.id AND k.status = 0)`)
+	rows, err := s.query(`SELECT c.id, c.name FROM channels c WHERE c.status = 1 AND NOT EXISTS (SELECT 1 FROM keys k WHERE k.channel_id = c.id AND k.status = 0)`)
 	if err != nil {
 		return nil, err
 	}
@@ -605,7 +634,7 @@ func scanChannel(r interface {
 // ---------------- Keys ----------------
 
 func (s *SQLite) GetKeys(channelID int64) ([]model.Key, error) {
-	rows, err := s.db.Query(`SELECT id, channel_id, key, key_ciphertext, key_masked, status, last_used_at, created_at FROM keys WHERE channel_id = ? ORDER BY id`, channelID)
+	rows, err := s.query(`SELECT id, channel_id, key, key_ciphertext, key_masked, status, last_used_at, created_at FROM keys WHERE channel_id = ? ORDER BY id`, channelID)
 	if err != nil {
 		return nil, err
 	}
@@ -650,9 +679,9 @@ func (s *SQLite) GetKeys(channelID int64) ([]model.Key, error) {
 					// here would take the whole gateway down and
 					// block the recovery path (no admin UI access).
 					logging.Warn("key decrypt failed, marking disabled",
-					logging.F("key_id", rr.k.ID),
-					logging.F("error", derr.Error()),
-				)
+						logging.F("key_id", rr.k.ID),
+						logging.F("error", derr.Error()),
+					)
 					rr.k.Status = model.KeyDisabled
 					rr.k.Key = ""
 					badKeyIDs = append(badKeyIDs, rr.k.ID)
@@ -666,7 +695,7 @@ func (s *SQLite) GetKeys(channelID int64) ([]model.Key, error) {
 				// Best-effort background migration to ciphertext.
 				// Failures are retried on the next read.
 				if ct, eerr := s.Secrets.Encrypt([]byte(rr.plain)); eerr == nil {
-					_, _ = s.db.Exec(`UPDATE keys SET key='', key_ciphertext=? WHERE id=?`, ct, rr.k.ID)
+					_, _ = s.exec(`UPDATE keys SET key='', key_ciphertext=? WHERE id=?`, ct, rr.k.ID)
 				}
 			}
 		} else {
@@ -689,8 +718,8 @@ func (s *SQLite) GetKeys(channelID int64) ([]model.Key, error) {
 	}
 	if len(badKeyIDs) > 0 {
 		logging.Warn("keys failed decrypt, action required",
-					logging.F("bad_count", len(badKeyIDs)),
-				)
+			logging.F("bad_count", len(badKeyIDs)),
+		)
 	}
 	return out, nil
 }
@@ -711,14 +740,13 @@ func (s *SQLite) CreateKey(k *model.Key) error {
 		cipher = ct
 		storedPlain = "" // never store plaintext when a manager is attached
 	}
-	res, err := s.db.Exec(
+	id, err := dialect.InsertOne(s.d, s.db,
 		`INSERT INTO keys(channel_id, key, key_ciphertext, key_masked, status, last_used_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		k.ChannelID, storedPlain, cipher, k.KeyMasked, int(k.Status), toUnix(k.LastUsedAt), toUnix(k.CreatedAt),
 	)
 	if err != nil {
 		return err
 	}
-	id, _ := res.LastInsertId()
 	k.ID = id
 	// Leave k.Key populated in-memory so callers (e.g. admin
 	// response, pool seeding) get the plaintext immediately.
@@ -726,7 +754,7 @@ func (s *SQLite) CreateKey(k *model.Key) error {
 }
 
 func (s *SQLite) DeleteKey(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM keys WHERE id = ?`, id)
+	_, err := s.exec(`DELETE FROM keys WHERE id = ?`, id)
 	return err
 }
 
@@ -738,7 +766,7 @@ func (s *SQLite) DeleteKey(id int64) error {
 // `-wipe-keys` recovery command after a master-key rotation
 // renders existing ciphertext undecryptable.
 func (s *SQLite) WipeKeys() (int64, error) {
-	res, err := s.db.Exec(`UPDATE keys SET key='', key_ciphertext='' WHERE key != '' OR key_ciphertext != ''`)
+	res, err := s.exec(`UPDATE keys SET key='', key_ciphertext='' WHERE key != '' OR key_ciphertext != ''`)
 	if err != nil {
 		return 0, err
 	}
@@ -746,7 +774,7 @@ func (s *SQLite) WipeKeys() (int64, error) {
 }
 
 func (s *SQLite) ReencryptAllKeys(oldMgr, newMgr *secrets.Manager) (int, error) {
-	rows, err := s.db.Query(`SELECT id, key_ciphertext FROM keys WHERE key_ciphertext != ''`)
+	rows, err := s.query(`SELECT id, key_ciphertext FROM keys WHERE key_ciphertext != ''`)
 	if err != nil {
 		return 0, err
 	}
@@ -777,7 +805,7 @@ func (s *SQLite) ReencryptAllKeys(oldMgr, newMgr *secrets.Manager) (int, error) 
 		if err != nil {
 			return 0, fmt.Errorf("encrypt key %d: %w", r.id, err)
 		}
-		if _, err := s.db.Exec(`UPDATE keys SET key_ciphertext = ? WHERE id = ?`, newCT, r.id); err != nil {
+		if _, err := s.exec(`UPDATE keys SET key_ciphertext = ? WHERE id = ?`, newCT, r.id); err != nil {
 			return 0, fmt.Errorf("update key %d: %w", r.id, err)
 		}
 	}
@@ -802,9 +830,9 @@ func (s *SQLite) RotateMasterKey(newKeyHex string) (int, error) {
 	}
 	s.Secrets = m
 	logging.Info("secrets rotated master key",
-					logging.F("channel_keys", n),
-					logging.F("tokens", tn),
-				)
+		logging.F("channel_keys", n),
+		logging.F("tokens", tn),
+	)
 	return n + tn, nil
 }
 
@@ -812,7 +840,7 @@ func (s *SQLite) RotateMasterKey(newKeyHex string) (int, error) {
 // from oldMgr to newMgr. Returns the count of tokens rotated.
 // Mirror of ReencryptAllKeys but on the tokens table.
 func (s *SQLite) reencryptAllTokens(oldMgr, newMgr *secrets.Manager) (int, error) {
-	rows, err := s.db.Query(`SELECT id, key_ciphertext FROM tokens WHERE key_ciphertext != ''`)
+	rows, err := s.query(`SELECT id, key_ciphertext FROM tokens WHERE key_ciphertext != ''`)
 	if err != nil {
 		return 0, err
 	}
@@ -839,7 +867,7 @@ func (s *SQLite) reencryptAllTokens(oldMgr, newMgr *secrets.Manager) (int, error
 		if err != nil {
 			return 0, fmt.Errorf("encrypt token %d: %w", r.id, err)
 		}
-		if _, err := s.db.Exec(`UPDATE tokens SET key_ciphertext=? WHERE id=?`, newCT, r.id); err != nil {
+		if _, err := s.exec(`UPDATE tokens SET key_ciphertext=? WHERE id=?`, newCT, r.id); err != nil {
 			return 0, fmt.Errorf("update token %d: %w", r.id, err)
 		}
 	}
@@ -854,7 +882,7 @@ func (s *SQLite) GetToken(key string) (*model.Token, error) {
 	// all rows and comparing in plaintext — production callers
 	// go through tokencache (in-memory), so this path is for
 	// tests / recovery tools only.
-	rows, err := s.db.Query(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens`)
+	rows, err := s.query(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens`)
 	if err != nil {
 		return nil, err
 	}
@@ -872,12 +900,12 @@ func (s *SQLite) GetToken(key string) (*model.Token, error) {
 }
 
 func (s *SQLite) GetTokenByID(id int64) (*model.Token, error) {
-	row := s.db.QueryRow(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens WHERE id = ?`, id)
+	row := s.queryRow(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens WHERE id = ?`, id)
 	return scanTokenRow(s, row)
 }
 
 func (s *SQLite) GetTokens() ([]model.Token, error) {
-	rows, err := s.db.Query(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens ORDER BY id`)
+	rows, err := s.query(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -918,7 +946,7 @@ func (s *SQLite) CreateToken(t *model.Token) error {
 		// untouched and continue to dedup on the real key.
 		storedPlain = "__enc_pending__"
 	}
-	res, err := s.db.Exec(
+	id, err := dialect.InsertOne(s.d, s.db,
 		`INSERT INTO tokens(plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.PlanID, storedPlain, cipher, t.Name, int(t.Status), t.RPM, t.TPM, t.UsedUSD,
@@ -928,7 +956,6 @@ func (s *SQLite) CreateToken(t *model.Token) error {
 	if err != nil {
 		return err
 	}
-	id, _ := res.LastInsertId()
 	t.ID = id
 	if s.Secrets != nil {
 		// Replace the sentinel with "__enc_<id>" so it stays unique
@@ -936,7 +963,7 @@ func (s *SQLite) CreateToken(t *model.Token) error {
 		// the row from its key column. scanTokenRow never reads the
 		// key column when ciphertext is present, so this is purely a
 		// UNIQUE-constraint workaround.
-		_, _ = s.db.Exec(`UPDATE tokens SET key=? WHERE id=?`, fmt.Sprintf("__enc_%d", id), id)
+		_, _ = s.exec(`UPDATE tokens SET key=? WHERE id=?`, fmt.Sprintf("__enc_%d", id), id)
 	}
 	return nil
 }
@@ -959,7 +986,7 @@ func (s *SQLite) UpdateToken(t *model.Token) error {
 		// unchanged and continue to dedup on the real key.
 		storedPlain = fmt.Sprintf("__enc_%d", t.ID)
 	}
-	res, err := s.db.Exec(
+	res, err := s.exec(
 		`UPDATE tokens SET plan_id=?, key=?, key_ciphertext=?, name=?, status=?, rpm=?, tpm=?, used_usd=?, models_whitelist=?, ip_whitelist=?, expires_at=? WHERE id=?`,
 		t.PlanID, storedPlain, cipher, t.Name, int(t.Status), t.RPM, t.TPM, t.UsedUSD,
 		encodeStrings(t.ModelsWhitelist), encodeStrings(t.IPWhitelist),
@@ -979,7 +1006,7 @@ func (s *SQLite) IncrementTokenSpend(tokenID int64, amount float64) error {
 	if amount == 0 {
 		return nil
 	}
-	res, err := s.db.Exec(
+	res, err := s.exec(
 		`UPDATE tokens SET used_usd = used_usd + ? WHERE id = ?`, amount, tokenID,
 	)
 	if err != nil {
@@ -1007,7 +1034,7 @@ func (s *SQLite) IncrementPlanSpend(planID int64, amount float64) error {
 	if amount == 0 || planID == 0 {
 		return nil
 	}
-	res, err := s.db.Exec(
+	res, err := s.exec(
 		`UPDATE plans
 		   SET used_usd = used_usd + ?
 		 WHERE id = ?
@@ -1021,7 +1048,7 @@ func (s *SQLite) IncrementPlanSpend(planID int64, amount float64) error {
 	if n == 0 {
 		// Distinguish "no such plan" from "budget would overflow".
 		var exists int64
-		if err := s.db.QueryRow(`SELECT 1 FROM plans WHERE id = ?`, planID).Scan(&exists); err != nil {
+		if err := s.queryRow(`SELECT 1 FROM plans WHERE id = ?`, planID).Scan(&exists); err != nil {
 			if err == sql.ErrNoRows {
 				return ErrNotFound
 			}
@@ -1082,7 +1109,7 @@ func (s *SQLite) RecordRequestSpend(tokenID, planID int64, amount float64) error
 		if n, _ := res.RowsAffected(); n == 0 {
 			// Distinguish "no such plan" from "budget would overflow".
 			var exists int64
-			if qerr := tx.QueryRow(`SELECT 1 FROM plans WHERE id = ?`, planID).Scan(&exists); qerr != nil {
+			if qerr := tx.QueryRow(s.d.RewriteQuery(`SELECT 1 FROM plans WHERE id = ?`), planID).Scan(&exists); qerr != nil {
 				if qerr == sql.ErrNoRows {
 					return ErrNotFound
 				}
@@ -1102,7 +1129,7 @@ func (s *SQLite) RecordRequestSpend(tokenID, planID int64, amount float64) error
 // request still holding the bearer will be rejected by the
 // Expiry check in middleware. Idempotent.
 func (s *SQLite) MarkTokenExpired(tokenID int64) error {
-	_, err := s.db.Exec(
+	_, err := s.exec(
 		`UPDATE tokens SET status = ? WHERE id = ? AND status = ?`,
 		int(model.TokenExpired), tokenID, int(model.TokenActive),
 	)
@@ -1110,7 +1137,7 @@ func (s *SQLite) MarkTokenExpired(tokenID int64) error {
 }
 
 func (s *SQLite) DeleteToken(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM tokens WHERE id = ?`, id)
+	_, err := s.exec(`DELETE FROM tokens WHERE id = ?`, id)
 	return err
 }
 
@@ -1147,9 +1174,9 @@ func scanTokenRow(s *SQLite, r interface {
 			// Master-key mismatch or tampered ciphertext: leave
 			// the token empty and let cache reload skip it.
 			logging.Warn("token decrypt failed",
-					logging.F("token_id", t.ID),
-					logging.F("error", derr.Error()),
-				)
+				logging.F("token_id", t.ID),
+				logging.F("error", derr.Error()),
+			)
 			t.Key = ""
 		} else {
 			t.Key = string(pt)
@@ -1157,7 +1184,7 @@ func scanTokenRow(s *SQLite, r interface {
 	case s.Secrets != nil && plain != "":
 		t.Key = plain
 		if ct, eerr := s.Secrets.Encrypt([]byte(plain)); eerr == nil {
-			_, _ = s.db.Exec(`UPDATE tokens SET key='', key_ciphertext=? WHERE id=?`, ct, t.ID)
+			_, _ = s.exec(`UPDATE tokens SET key='', key_ciphertext=? WHERE id=?`, ct, t.ID)
 		}
 	default:
 		t.Key = plain
@@ -1168,7 +1195,7 @@ func scanTokenRow(s *SQLite, r interface {
 // ---------------- Plans ----------------
 
 func (s *SQLite) GetPlans() ([]model.Plan, error) {
-	rows, err := s.db.Query(`SELECT id, name, budget_usd, used_usd, markup_ratio, status, created_at, updated_at FROM plans ORDER BY id`)
+	rows, err := s.query(`SELECT id, name, budget_usd, used_usd, markup_ratio, status, created_at, updated_at FROM plans ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1189,7 +1216,7 @@ func (s *SQLite) GetPlans() ([]model.Plan, error) {
 }
 
 func (s *SQLite) GetPlan(id int64) (*model.Plan, error) {
-	row := s.db.QueryRow(`SELECT id, name, budget_usd, used_usd, markup_ratio, status, created_at, updated_at FROM plans WHERE id = ?`, id)
+	row := s.queryRow(`SELECT id, name, budget_usd, used_usd, markup_ratio, status, created_at, updated_at FROM plans WHERE id = ?`, id)
 	var p model.Plan
 	var status, created, updated int64
 	if err := row.Scan(&p.ID, &p.Name, &p.BudgetUSD, &p.UsedUSD, &p.MarkupRatio, &status, &created, &updated); err != nil {
@@ -1208,21 +1235,20 @@ func (s *SQLite) CreatePlan(p *model.Plan) error {
 	now := time.Now().UTC()
 	p.CreatedAt = now
 	p.UpdatedAt = now
-	res, err := s.db.Exec(
+	id, err := dialect.InsertOne(s.d, s.db,
 		`INSERT INTO plans(name, budget_usd, used_usd, markup_ratio, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		p.Name, p.BudgetUSD, p.UsedUSD, p.MarkupRatio, p.Status, toUnix(p.CreatedAt), toUnix(p.UpdatedAt),
 	)
 	if err != nil {
 		return err
 	}
-	id, _ := res.LastInsertId()
 	p.ID = id
 	return nil
 }
 
 func (s *SQLite) UpdatePlan(p *model.Plan) error {
 	p.UpdatedAt = time.Now().UTC()
-	_, err := s.db.Exec(
+	_, err := s.exec(
 		`UPDATE plans SET name=?, budget_usd=?, used_usd=?, markup_ratio=?, status=?, updated_at=? WHERE id=?`,
 		p.Name, p.BudgetUSD, p.UsedUSD, p.MarkupRatio, p.Status, toUnix(p.UpdatedAt), p.ID,
 	)
@@ -1235,14 +1261,14 @@ func (s *SQLite) UpdatePlan(p *model.Plan) error {
 // (admin handler) are expected to null out tokens.plan_id FIRST
 // when an explicit unlink is desired.
 func (s *SQLite) DeletePlan(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM plans WHERE id=?`, id)
+	_, err := s.exec(`DELETE FROM plans WHERE id=?`, id)
 	return err
 }
 
 // ---------------- Users ----------------
 
 func (s *SQLite) GetUsers() ([]model.User, error) {
-	rows, err := s.db.Query(`SELECT id, username, password_hash, role, status, session_token, session_exp, created_at FROM users ORDER BY id`)
+	rows, err := s.query(`SELECT id, username, password_hash, role, status, session_token, session_exp, created_at FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1259,12 +1285,12 @@ func (s *SQLite) GetUsers() ([]model.User, error) {
 }
 
 func (s *SQLite) GetUser(id int64) (*model.User, error) {
-	row := s.db.QueryRow(`SELECT id, username, password_hash, role, status, session_token, session_exp, created_at FROM users WHERE id = ?`, id)
+	row := s.queryRow(`SELECT id, username, password_hash, role, status, session_token, session_exp, created_at FROM users WHERE id = ?`, id)
 	return scanUser(row)
 }
 
 func (s *SQLite) GetUserByUsername(username string) (*model.User, error) {
-	row := s.db.QueryRow(`SELECT id, username, password_hash, role, status, session_token, session_exp, created_at FROM users WHERE username = ?`, username)
+	row := s.queryRow(`SELECT id, username, password_hash, role, status, session_token, session_exp, created_at FROM users WHERE username = ?`, username)
 	return scanUser(row)
 }
 
@@ -1273,7 +1299,7 @@ func (s *SQLite) GetUserBySession(token string) (*model.User, error) {
 		return nil, ErrNotFound
 	}
 	now := time.Now().UTC().UnixMilli()
-	row := s.db.QueryRow(
+	row := s.queryRow(
 		`SELECT id, username, password_hash, role, status, session_token, session_exp, created_at FROM users
 		 WHERE session_token = ? AND status = 1 AND (session_exp = 0 OR session_exp > ?)`,
 		token, now,
@@ -1283,20 +1309,19 @@ func (s *SQLite) GetUserBySession(token string) (*model.User, error) {
 
 func (s *SQLite) CreateUser(u *model.User) error {
 	u.CreatedAt = time.Now().UTC()
-	res, err := s.db.Exec(
+	id, err := dialect.InsertOne(s.d, s.db,
 		`INSERT INTO users(username, password_hash, role, status, session_token, session_exp, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		u.Username, u.PasswordHash, int(u.Role), u.Status, u.SessionToken, sessionExpUnix(u.SessionExp), toUnix(u.CreatedAt),
 	)
 	if err != nil {
 		return err
 	}
-	id, _ := res.LastInsertId()
 	u.ID = id
 	return nil
 }
 
 func (s *SQLite) UpdateUser(u *model.User) error {
-	_, err := s.db.Exec(
+	_, err := s.exec(
 		`UPDATE users SET password_hash=?, role=?, status=?, session_token=?, session_exp=? WHERE id=?`,
 		u.PasswordHash, int(u.Role), u.Status, u.SessionToken, sessionExpUnix(u.SessionExp), u.ID,
 	)
@@ -1307,7 +1332,7 @@ func (s *SQLite) UpdateUser(u *model.User) error {
 // session_exp is set and in the past. Returns rows affected.
 func (s *SQLite) CleanupExpiredSessions() (int64, error) {
 	now := time.Now().UTC().UnixMilli()
-	res, err := s.db.Exec(
+	res, err := s.exec(
 		`UPDATE users SET session_token = '' WHERE session_exp > 0 AND session_exp <= ?`,
 		now,
 	)
@@ -1348,7 +1373,7 @@ func scanUser(r interface {
 // ---------------- alerts ----------------
 
 func (s *SQLite) GetAlerts() ([]model.Alert, error) {
-	rows, err := s.db.Query(`SELECT id, name, type, threshold, window_sec, cooldown_sec, webhook_url, enabled, last_fired_at, disabled_reason, created_at FROM alerts ORDER BY id`)
+	rows, err := s.query(`SELECT id, name, type, threshold, window_sec, cooldown_sec, webhook_url, enabled, last_fired_at, disabled_reason, created_at FROM alerts ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1369,7 +1394,7 @@ func (s *SQLite) GetAlerts() ([]model.Alert, error) {
 }
 
 func (s *SQLite) GetAlert(id int64) (*model.Alert, error) {
-	row := s.db.QueryRow(`SELECT id, name, type, threshold, window_sec, cooldown_sec, webhook_url, enabled, last_fired_at, disabled_reason, created_at FROM alerts WHERE id=?`, id)
+	row := s.queryRow(`SELECT id, name, type, threshold, window_sec, cooldown_sec, webhook_url, enabled, last_fired_at, disabled_reason, created_at FROM alerts WHERE id=?`, id)
 	var a model.Alert
 	var enabled int
 	var created int64
@@ -1392,12 +1417,11 @@ func (s *SQLite) CreateAlert(a *model.Alert) error {
 	if a.CreatedAt.IsZero() {
 		a.CreatedAt = time.Now()
 	}
-	res, err := s.db.Exec(`INSERT INTO alerts(name, type, threshold, window_sec, cooldown_sec, webhook_url, enabled, last_fired_at, created_at) VALUES(?,?,?,?,?,?,?,?,?)`,
+	id, err := dialect.InsertOne(s.d, s.db, `INSERT INTO alerts(name, type, threshold, window_sec, cooldown_sec, webhook_url, enabled, last_fired_at, created_at) VALUES(?,?,?,?,?,?,?,?,?)`,
 		a.Name, string(a.Type), a.Threshold, a.WindowSec, a.CooldownSec, a.WebhookURL, enabled, a.LastFiredAt, a.CreatedAt.Unix())
 	if err != nil {
 		return err
 	}
-	id, _ := res.LastInsertId()
 	a.ID = id
 	return nil
 }
@@ -1407,18 +1431,18 @@ func (s *SQLite) UpdateAlert(a *model.Alert) error {
 	if a.Enabled {
 		enabled = 1
 	}
-	_, err := s.db.Exec(`UPDATE alerts SET name=?, type=?, threshold=?, window_sec=?, cooldown_sec=?, webhook_url=?, enabled=?, last_fired_at=? WHERE id=?`,
+	_, err := s.exec(`UPDATE alerts SET name=?, type=?, threshold=?, window_sec=?, cooldown_sec=?, webhook_url=?, enabled=?, last_fired_at=? WHERE id=?`,
 		a.Name, string(a.Type), a.Threshold, a.WindowSec, a.CooldownSec, a.WebhookURL, enabled, a.LastFiredAt, a.ID)
 	return err
 }
 
 func (s *SQLite) DeleteAlert(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM alerts WHERE id=?`, id)
+	_, err := s.exec(`DELETE FROM alerts WHERE id=?`, id)
 	return err
 }
 
 func (s *SQLite) RecordAlertFired(id int64, atUnix int64) error {
-	_, err := s.db.Exec(`UPDATE alerts SET last_fired_at=? WHERE id=?`, atUnix, id)
+	_, err := s.exec(`UPDATE alerts SET last_fired_at=? WHERE id=?`, atUnix, id)
 	return err
 }
 
@@ -1426,7 +1450,7 @@ func (s *SQLite) RecordAlertFired(id int64, atUnix int64) error {
 // the reason so the admin UI / /alerts listing can surface why
 // the rule was auto-disabled. Idempotent.
 func (s *SQLite) DisableAlert(id int64, reason string) error {
-	res, err := s.db.Exec(
+	res, err := s.exec(
 		`UPDATE alerts SET enabled=0, disabled_reason=? WHERE id=?`,
 		reason, id,
 	)
@@ -1451,12 +1475,11 @@ func (s *SQLite) CreateAlertEvent(e *model.AlertEvent) error {
 	if e.Acknowledged {
 		ack = 1
 	}
-	res, err := s.db.Exec(`INSERT INTO alert_events(alert_id, alert_name, alert_type, fired_at, payload, delivered_webhook, acknowledged) VALUES(?,?,?,?,?,?,?)`,
+	id, err := dialect.InsertOne(s.d, s.db, `INSERT INTO alert_events(alert_id, alert_name, alert_type, fired_at, payload, delivered_webhook, acknowledged) VALUES(?,?,?,?,?,?,?)`,
 		e.AlertID, e.AlertName, string(e.AlertType), e.FiredAt.Unix(), e.Payload, delivered, ack)
 	if err != nil {
 		return err
 	}
-	id, _ := res.LastInsertId()
 	e.ID = id
 	return nil
 }
@@ -1465,7 +1488,7 @@ func (s *SQLite) GetAlertEvents(limit int) ([]model.AlertEvent, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := s.db.Query(`SELECT id, alert_id, alert_name, alert_type, fired_at, payload, delivered_webhook, acknowledged FROM alert_events ORDER BY fired_at DESC LIMIT ?`, limit)
+	rows, err := s.query(`SELECT id, alert_id, alert_name, alert_type, fired_at, payload, delivered_webhook, acknowledged FROM alert_events ORDER BY fired_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1487,18 +1510,18 @@ func (s *SQLite) GetAlertEvents(limit int) ([]model.AlertEvent, error) {
 }
 
 func (s *SQLite) AckAlertEvent(id int64) error {
-	_, err := s.db.Exec(`UPDATE alert_events SET acknowledged=1 WHERE id=?`, id)
+	_, err := s.exec(`UPDATE alert_events SET acknowledged=1 WHERE id=?`, id)
 	return err
 }
 
 // ---------------- raw access ----------------
 
 func (s *SQLite) RawQueryRow(query string, args ...any) *sql.Row {
-	return s.db.QueryRow(query, args...)
+	return s.queryRow(query, args...)
 }
 
 func (s *SQLite) RawQuery(query string, args ...any) (*sql.Rows, error) {
-	return s.db.Query(query, args...)
+	return s.query(query, args...)
 }
 
 func (s *SQLite) RawDB() *sql.DB { return s.db }
@@ -1509,7 +1532,7 @@ func (s *SQLite) RawDB() *sql.DB { return s.db }
 // SetRuntimeSettings, or (nil, nil) when no row exists yet.
 func (s *SQLite) GetRuntimeSettings() ([]byte, error) {
 	var raw []byte
-	err := s.db.QueryRow(`SELECT settings_json FROM runtime_settings WHERE id = 1`).Scan(&raw)
+	err := s.queryRow(`SELECT settings_json FROM runtime_settings WHERE id = 1`).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -1523,7 +1546,7 @@ func (s *SQLite) GetRuntimeSettings() ([]byte, error) {
 // JSON; callers should validate before persisting.
 func (s *SQLite) SetRuntimeSettings(payload []byte) error {
 	now := time.Now().Unix()
-	_, err := s.db.Exec(`
+	_, err := s.exec(`
 		INSERT INTO runtime_settings(id, settings_json, updated_at) VALUES (1, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET settings_json = excluded.settings_json, updated_at = excluded.updated_at
 	`, string(payload), now)
@@ -1546,7 +1569,7 @@ func (s *SQLite) CreateBYOKChannel(ctx context.Context, ch *model.BYOKChannel) (
 		return 0, errors.New("key is required")
 	}
 	now := time.Now().Unix()
-	res, err := s.db.ExecContext(ctx, `
+	id, err := dialect.InsertOneContext(s.d, s.db, ctx, `
 		INSERT INTO byok_channels
 		  (provider, key_ciphertext, key_masked, owner_ip, owner_email,
 		   status, last_used_at, use_count, expires_at, created_at)
@@ -1556,12 +1579,11 @@ func (s *SQLite) CreateBYOKChannel(ctx context.Context, ch *model.BYOKChannel) (
 	if err != nil {
 		return 0, fmt.Errorf("insert byok channel: %w", err)
 	}
-	id, _ := res.LastInsertId()
 	return id, nil
 }
 
 func (s *SQLite) ListBYOKChannels(ctx context.Context) ([]*model.BYOKChannel, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.queryContext(ctx, `
 		SELECT id, provider, key_ciphertext, key_masked, owner_ip, owner_email,
 		       status, last_used_at, use_count, expires_at, created_at
 		FROM byok_channels
@@ -1582,7 +1604,7 @@ func (s *SQLite) ListBYOKChannels(ctx context.Context) ([]*model.BYOKChannel, er
 }
 
 func (s *SQLite) GetBYOKChannel(ctx context.Context, id int64) (*model.BYOKChannel, error) {
-	row := s.db.QueryRowContext(ctx, `
+	row := s.queryRowContext(ctx, `
 		SELECT id, provider, key_ciphertext, key_masked, owner_ip, owner_email,
 		       status, last_used_at, use_count, expires_at, created_at
 		FROM byok_channels WHERE id = ?`, id)
@@ -1596,7 +1618,7 @@ func (s *SQLite) GetBYOKChannel(ctx context.Context, id int64) (*model.BYOKChann
 // GetBYOKChannelByIP looks up an active BYOK row by client IP. Used
 // by the UnknownTokenHook to find a previously registered consumer key.
 func (s *SQLite) GetBYOKChannelByIP(ctx context.Context, ownerIP string) (*model.BYOKChannel, error) {
-	row := s.db.QueryRowContext(ctx, `
+	row := s.queryRowContext(ctx, `
 		SELECT id, provider, key_ciphertext, key_masked, owner_ip, owner_email,
 		       status, last_used_at, use_count, expires_at, created_at
 		FROM byok_channels
@@ -1611,7 +1633,7 @@ func (s *SQLite) GetBYOKChannelByIP(ctx context.Context, ownerIP string) (*model
 
 // TouchBYOKChannel increments use_count and updates last_used_at.
 func (s *SQLite) TouchBYOKChannel(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.execContext(ctx, `
 		UPDATE byok_channels
 		   SET use_count = use_count + 1, last_used_at = ?
 		 WHERE id = ?`, time.Now().Unix(), id)
@@ -1619,7 +1641,7 @@ func (s *SQLite) TouchBYOKChannel(ctx context.Context, id int64) error {
 }
 
 func (s *SQLite) DeleteBYOKChannel(ctx context.Context, id int64) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM byok_channels WHERE id = ?`, id)
+	res, err := s.execContext(ctx, `DELETE FROM byok_channels WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete byok channel: %w", err)
 	}
@@ -1655,7 +1677,7 @@ func scanBYOKRow(r interface {
 // ---------- ProviderDefs ----------
 
 func (s *SQLite) GetProviderDefs() ([]model.ProviderDef, error) {
-	rows, err := s.db.Query(`SELECT id, name, display_name, protocol, base_url, created_at, updated_at FROM providers ORDER BY id`)
+	rows, err := s.query(`SELECT id, name, display_name, protocol, base_url, created_at, updated_at FROM providers ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1676,19 +1698,19 @@ func (s *SQLite) GetProviderDefs() ([]model.ProviderDef, error) {
 
 func (s *SQLite) CreateProviderDef(p *model.ProviderDef) error {
 	now := time.Now().Unix()
-	res, err := s.db.Exec(`INSERT INTO providers (name, display_name, protocol, base_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+	pid, err := dialect.InsertOne(s.d, s.db, `INSERT INTO providers (name, display_name, protocol, base_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
 		p.Name, p.DisplayName, p.Protocol, p.BaseURL, now, now)
 	if err != nil {
 		return err
 	}
-	p.ID, _ = res.LastInsertId()
+	p.ID = pid
 	p.CreatedAt = time.Unix(now, 0)
 	p.UpdatedAt = time.Unix(now, 0)
 	return nil
 }
 
 func (s *SQLite) DeleteProviderDef(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM providers WHERE id = ?`, id)
+	_, err := s.exec(`DELETE FROM providers WHERE id = ?`, id)
 	return err
 }
 
@@ -1716,7 +1738,7 @@ func (s *SQLite) scanComboRow(r interface{ Scan(dest ...any) error }) (*model.To
 }
 
 func (s *SQLite) GetComboModels(tokenID int64) ([]model.TokenComboModel, error) {
-	rows, err := s.db.Query(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models WHERE token_id = ? ORDER BY id`, tokenID)
+	rows, err := s.query(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models WHERE token_id = ? ORDER BY id`, tokenID)
 	if err != nil {
 		return nil, err
 	}
@@ -1733,12 +1755,12 @@ func (s *SQLite) GetComboModels(tokenID int64) ([]model.TokenComboModel, error) 
 }
 
 func (s *SQLite) GetComboModel(id int64) (*model.TokenComboModel, error) {
-	row := s.db.QueryRow(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models WHERE id = ?`, id)
+	row := s.queryRow(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models WHERE id = ?`, id)
 	return s.scanComboRow(row)
 }
 
 func (s *SQLite) GetAllComboModels() ([]model.TokenComboModel, error) {
-	rows, err := s.db.Query(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models WHERE enabled = 1 ORDER BY token_id, id`)
+	rows, err := s.query(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models WHERE enabled = 1 ORDER BY token_id, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1759,7 +1781,7 @@ func (s *SQLite) GetAllComboModels() ([]model.TokenComboModel, error) {
 // operator wants to see disabled entries too. Routing-time lookup
 // uses GetAllComboModels (enabled-only).
 func (s *SQLite) ListAllComboModels() ([]model.TokenComboModel, error) {
-	rows, err := s.db.Query(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models ORDER BY token_id, id`)
+	rows, err := s.query(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models ORDER BY token_id, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1785,14 +1807,14 @@ func (s *SQLite) CreateComboModel(c *model.TokenComboModel) error {
 		}
 	}
 	now := time.Now().Unix()
-	res, err := s.db.Exec(
+	comboID, err := dialect.InsertOne(s.d, s.db,
 		`INSERT INTO token_combo_models (token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.TokenID, c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), boolToInt(c.Enabled), boolToInt(c.IsDefault), now, now,
 	)
 	if err != nil {
 		return err
 	}
-	c.ID, _ = res.LastInsertId()
+	c.ID = comboID
 	c.CreatedAt = fromUnix(now)
 	c.UpdatedAt = fromUnix(now)
 	return nil
@@ -1856,7 +1878,7 @@ func (s *SQLite) UpdateComboModel(c *model.TokenComboModel) error {
 		}
 	}
 	now := time.Now().Unix()
-	_, err := s.db.Exec(
+	_, err := s.exec(
 		`UPDATE token_combo_models SET name=?, models=?, mode=?, strategy=?, enabled=?, is_default=?, updated_at=? WHERE id=?`,
 		c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), boolToInt(c.Enabled), boolToInt(c.IsDefault), now, c.ID,
 	)
@@ -1868,7 +1890,7 @@ func (s *SQLite) UpdateComboModel(c *model.TokenComboModel) error {
 }
 
 func (s *SQLite) DeleteComboModel(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM token_combo_models WHERE id = ?`, id)
+	_, err := s.exec(`DELETE FROM token_combo_models WHERE id = ?`, id)
 	return err
 }
 
@@ -1882,12 +1904,12 @@ func (s *SQLite) SetDefaultModelSet(tokenID, comboID int64) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`UPDATE token_combo_models SET is_default = 0, updated_at = ? WHERE token_id = ? AND is_default = 1`,
+	if _, err := tx.Exec(s.d.RewriteQuery(`UPDATE token_combo_models SET is_default = 0, updated_at = ? WHERE token_id = ? AND is_default = 1`),
 		time.Now().Unix(), tokenID); err != nil {
 		return err
 	}
 	if comboID != 0 {
-		if _, err := tx.Exec(`UPDATE token_combo_models SET is_default = 1, updated_at = ? WHERE id = ? AND token_id = ?`,
+		if _, err := tx.Exec(s.d.RewriteQuery(`UPDATE token_combo_models SET is_default = 1, updated_at = ? WHERE id = ? AND token_id = ?`),
 			time.Now().Unix(), comboID, tokenID); err != nil {
 			return err
 		}
@@ -1901,11 +1923,11 @@ func (s *SQLite) SetDefaultModelSet(tokenID, comboID int64) error {
 // 0 means "no exclusion".
 func (s *SQLite) clearDefaultFlag(tokenID, excludeID int64) error {
 	if excludeID == 0 {
-		_, err := s.db.Exec(`UPDATE token_combo_models SET is_default = 0, updated_at = ? WHERE token_id = ?`,
+		_, err := s.exec(`UPDATE token_combo_models SET is_default = 0, updated_at = ? WHERE token_id = ?`,
 			time.Now().Unix(), tokenID)
 		return err
 	}
-	_, err := s.db.Exec(`UPDATE token_combo_models SET is_default = 0, updated_at = ? WHERE token_id = ? AND id != ?`,
+	_, err := s.exec(`UPDATE token_combo_models SET is_default = 0, updated_at = ? WHERE token_id = ? AND id != ?`,
 		time.Now().Unix(), tokenID, excludeID)
 	return err
 }
@@ -1940,7 +1962,7 @@ func (s *SQLite) scanGuardrailRow(r interface{ Scan(dest ...any) error }) (*mode
 }
 
 func (s *SQLite) GetEnabledGuardrailRules() ([]model.GuardrailRule, error) {
-	rows, err := s.db.Query(`SELECT id, name, description, type, hook, on_failure, config, priority, enabled, created_at, updated_at FROM guardrails WHERE enabled = 1 ORDER BY priority, id`)
+	rows, err := s.query(`SELECT id, name, description, type, hook, on_failure, config, priority, enabled, created_at, updated_at FROM guardrails WHERE enabled = 1 ORDER BY priority, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1957,7 +1979,7 @@ func (s *SQLite) GetEnabledGuardrailRules() ([]model.GuardrailRule, error) {
 }
 
 func (s *SQLite) GetGuardrailRules() ([]model.GuardrailRule, error) {
-	rows, err := s.db.Query(`SELECT id, name, description, type, hook, on_failure, config, priority, enabled, created_at, updated_at FROM guardrails ORDER BY priority, id`)
+	rows, err := s.query(`SELECT id, name, description, type, hook, on_failure, config, priority, enabled, created_at, updated_at FROM guardrails ORDER BY priority, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1974,20 +1996,20 @@ func (s *SQLite) GetGuardrailRules() ([]model.GuardrailRule, error) {
 }
 
 func (s *SQLite) GetGuardrailRule(id int64) (*model.GuardrailRule, error) {
-	row := s.db.QueryRow(`SELECT id, name, description, type, hook, on_failure, config, priority, enabled, created_at, updated_at FROM guardrails WHERE id = ?`, id)
+	row := s.queryRow(`SELECT id, name, description, type, hook, on_failure, config, priority, enabled, created_at, updated_at FROM guardrails WHERE id = ?`, id)
 	return s.scanGuardrailRow(row)
 }
 
 func (s *SQLite) CreateGuardrailRule(r *model.GuardrailRule) error {
 	now := time.Now().Unix()
-	res, err := s.db.Exec(
+	ruleID, err := dialect.InsertOne(s.d, s.db,
 		`INSERT INTO guardrails (name, description, type, hook, on_failure, config, priority, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.Name, r.Description, string(r.Type), string(r.Hook), string(r.OnFailure), r.Config, r.Priority, boolToInt(r.Enabled), now, now,
 	)
 	if err != nil {
 		return err
 	}
-	r.ID, _ = res.LastInsertId()
+	r.ID = ruleID
 	r.CreatedAt = fromUnix(now)
 	r.UpdatedAt = fromUnix(now)
 	return nil
@@ -1995,7 +2017,7 @@ func (s *SQLite) CreateGuardrailRule(r *model.GuardrailRule) error {
 
 func (s *SQLite) UpdateGuardrailRule(r *model.GuardrailRule) error {
 	now := time.Now().Unix()
-	_, err := s.db.Exec(
+	_, err := s.exec(
 		`UPDATE guardrails SET name=?, description=?, type=?, hook=?, on_failure=?, config=?, priority=?, enabled=?, updated_at=? WHERE id=?`,
 		r.Name, r.Description, string(r.Type), string(r.Hook), string(r.OnFailure), r.Config, r.Priority, boolToInt(r.Enabled), now, r.ID,
 	)
@@ -2007,20 +2029,20 @@ func (s *SQLite) UpdateGuardrailRule(r *model.GuardrailRule) error {
 }
 
 func (s *SQLite) DeleteGuardrailRule(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM guardrails WHERE id = ?`, id)
+	_, err := s.exec(`DELETE FROM guardrails WHERE id = ?`, id)
 	return err
 }
 
 func (s *SQLite) CreateGuardrailEvent(e *model.GuardrailEvent) error {
 	now := time.Now().Unix()
-	res, err := s.db.Exec(
+	evID, err := dialect.InsertOne(s.d, s.db,
 		`INSERT INTO guardrail_events (token_id, rule_id, rule_name, rule_type, hook, verdict, action, detail, request_ip, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.TokenID, e.RuleID, e.RuleName, e.RuleType, e.Hook, boolToInt(e.Verdict), e.Action, e.Detail, e.RequestIP, now,
 	)
 	if err != nil {
 		return err
 	}
-	e.ID, _ = res.LastInsertId()
+	e.ID = evID
 	e.CreatedAt = fromUnix(now)
 	return nil
 }
@@ -2029,7 +2051,7 @@ func (s *SQLite) GetGuardrailEvents(tokenID int64, limit int) ([]model.Guardrail
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := s.db.Query(`SELECT id, token_id, rule_id, rule_name, rule_type, hook, verdict, action, detail, request_ip, created_at FROM guardrail_events WHERE token_id = ? ORDER BY created_at DESC LIMIT ?`, tokenID, limit)
+	rows, err := s.query(`SELECT id, token_id, rule_id, rule_name, rule_type, hook, verdict, action, detail, request_ip, created_at FROM guardrail_events WHERE token_id = ? ORDER BY created_at DESC LIMIT ?`, tokenID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -2050,7 +2072,7 @@ func (s *SQLite) GetGuardrailEvents(tokenID int64, limit int) ([]model.Guardrail
 }
 
 func (s *SQLite) GetMCPServers(ctx context.Context) ([]MCPServer, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, url, auth_header, transport, command, oauth_config_json, token_json, enabled, created_at FROM mcp_servers ORDER BY id`)
+	rows, err := s.queryContext(ctx, `SELECT id, name, url, auth_header, transport, command, oauth_config_json, token_json, enabled, created_at FROM mcp_servers ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -2071,7 +2093,7 @@ func (s *SQLite) GetMCPServers(ctx context.Context) ([]MCPServer, error) {
 }
 
 func (s *SQLite) GetMCPServer(ctx context.Context, id int64) (*MCPServer, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, name, url, auth_header, transport, command, oauth_config_json, token_json, enabled, created_at FROM mcp_servers WHERE id = ?`, id)
+	row := s.queryRowContext(ctx, `SELECT id, name, url, auth_header, transport, command, oauth_config_json, token_json, enabled, created_at FROM mcp_servers WHERE id = ?`, id)
 	var srv MCPServer
 	var created int64
 	var enabled int
@@ -2095,14 +2117,14 @@ func (s *SQLite) CreateMCPServer(ctx context.Context, srv *MCPServer) error {
 	if srv.Transport == "" {
 		srv.Transport = "http"
 	}
-	res, err := s.db.ExecContext(ctx,
+	srvID, err := dialect.InsertOneContext(s.d, s.db, ctx,
 		`INSERT INTO mcp_servers (name, url, auth_header, transport, command, oauth_config_json, token_json, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		srv.Name, srv.URL, srv.AuthHdr, srv.Transport, srv.Command, srv.OAuthConfigJSON, srv.TokenJSON, enabled, now,
 	)
 	if err != nil {
 		return err
 	}
-	srv.ID, _ = res.LastInsertId()
+	srv.ID = srvID
 	srv.CreatedAt = fromUnix(now)
 	return nil
 }
@@ -2115,7 +2137,7 @@ func (s *SQLite) UpdateMCPServer(ctx context.Context, srv *MCPServer) error {
 	if srv.Transport == "" {
 		srv.Transport = "http"
 	}
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.execContext(ctx,
 		`UPDATE mcp_servers SET name=?, url=?, auth_header=?, transport=?, command=?, oauth_config_json=?, token_json=?, enabled=? WHERE id=?`,
 		srv.Name, srv.URL, srv.AuthHdr, srv.Transport, srv.Command, srv.OAuthConfigJSON, srv.TokenJSON, enabled, srv.ID,
 	)
@@ -2123,12 +2145,12 @@ func (s *SQLite) UpdateMCPServer(ctx context.Context, srv *MCPServer) error {
 }
 
 func (s *SQLite) DeleteMCPServer(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM mcp_servers WHERE id = ?`, id)
+	_, err := s.execContext(ctx, `DELETE FROM mcp_servers WHERE id = ?`, id)
 	return err
 }
 
 func (s *SQLite) GetMCPTools(ctx context.Context, serverID int64) ([]MCPTool, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.queryContext(ctx,
 		`SELECT id, server_id, name, description, input_schema_json FROM mcp_tools WHERE server_id = ? ORDER BY name`,
 		serverID,
 	)
@@ -2153,7 +2175,7 @@ func (s *SQLite) SetMCPTools(ctx context.Context, serverID int64, tools []MCPToo
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM mcp_tools WHERE server_id = ?`, serverID); err != nil {
+	if _, err := tx.Exec(s.d.RewriteQuery(`DELETE FROM mcp_tools WHERE server_id = ?`), serverID); err != nil {
 		return err
 	}
 	for _, t := range tools {
@@ -2170,7 +2192,7 @@ func (s *SQLite) SetMCPTools(ctx context.Context, serverID int64, tools []MCPToo
 }
 
 func (s *SQLite) GetMCPToolPricing(ctx context.Context, toolID int64) (*MCPToolPricing, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT mcp_tool_id, price_per_call_usd FROM mcp_tool_pricing WHERE mcp_tool_id = ?`, toolID)
+	row := s.queryRowContext(ctx, `SELECT mcp_tool_id, price_per_call_usd FROM mcp_tool_pricing WHERE mcp_tool_id = ?`, toolID)
 	var p MCPToolPricing
 	if err := row.Scan(&p.MCPToolID, &p.PricePerCallUSD); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -2182,7 +2204,7 @@ func (s *SQLite) GetMCPToolPricing(ctx context.Context, toolID int64) (*MCPToolP
 }
 
 func (s *SQLite) SetMCPToolPricing(ctx context.Context, p *MCPToolPricing) error {
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.execContext(ctx,
 		`INSERT INTO mcp_tool_pricing (mcp_tool_id, price_per_call_usd) VALUES (?, ?)
 		 ON CONFLICT(mcp_tool_id) DO UPDATE SET price_per_call_usd = excluded.price_per_call_usd`,
 		p.MCPToolID, p.PricePerCallUSD,
@@ -2191,7 +2213,7 @@ func (s *SQLite) SetMCPToolPricing(ctx context.Context, p *MCPToolPricing) error
 }
 
 func (s *SQLite) GetAllMCPTools(ctx context.Context) ([]MCPTool, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.queryContext(ctx,
 		`SELECT t.id, t.server_id, t.name, t.description, t.input_schema_json
 		 FROM mcp_tools t
 		 JOIN mcp_servers s ON s.id = t.server_id
@@ -2214,7 +2236,7 @@ func (s *SQLite) GetAllMCPTools(ctx context.Context) ([]MCPTool, error) {
 }
 
 func (s *SQLite) GetEnabledMCPServers(ctx context.Context) ([]MCPServer, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, url, auth_header, transport, command, oauth_config_json, token_json, enabled, created_at FROM mcp_servers WHERE enabled = 1 ORDER BY id`)
+	rows, err := s.queryContext(ctx, `SELECT id, name, url, auth_header, transport, command, oauth_config_json, token_json, enabled, created_at FROM mcp_servers WHERE enabled = 1 ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}

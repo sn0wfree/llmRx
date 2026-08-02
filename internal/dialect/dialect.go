@@ -10,6 +10,7 @@
 package dialect
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strconv"
@@ -86,8 +87,10 @@ func Placeholders(d Dialect, n int) string {
 // InsertOne executes an INSERT and returns the generated id. When
 // the dialect has a ReturningClause the query is appended with it
 // and the id is scanned from the returned row; otherwise the id is
-// read via LastInsertId.
+// read via LastInsertId. The query is passed through
+// d.RewriteQuery first so callers keep '?' syntax.
 func InsertOne(d Dialect, db *sql.DB, query string, args ...any) (int64, error) {
+	query = d.RewriteQuery(query)
 	if rc := d.ReturningClause(); rc != "" {
 		var id int64
 		if err := db.QueryRow(query+rc, args...).Scan(&id); err != nil {
@@ -96,6 +99,24 @@ func InsertOne(d Dialect, db *sql.DB, query string, args ...any) (int64, error) 
 		return id, nil
 	}
 	res, err := db.Exec(query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// InsertOneContext is InsertOne with an explicit context. It also
+// runs the query through d.RewriteQuery.
+func InsertOneContext(d Dialect, db *sql.DB, ctx context.Context, query string, args ...any) (int64, error) {
+	query = d.RewriteQuery(query)
+	if rc := d.ReturningClause(); rc != "" {
+		var id int64
+		if err := db.QueryRowContext(ctx, query+rc, args...).Scan(&id); err != nil {
+			return 0, err
+		}
+		return id, nil
+	}
+	res, err := db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, err
 	}
