@@ -439,8 +439,10 @@ func (s *Server) ReloadConfig() {
 	if s.router != nil {
 		s.router.ReloadAllChannels()
 	}
-	if err := s.pool.LoadFromStore(s.store); err != nil {
-		logging.Warn("config reload: pool", logging.F("error", err.Error()))
+	if s.pool != nil {
+		if err := s.pool.LoadFromStore(s.store); err != nil {
+			logging.Warn("config reload: pool", logging.F("error", err.Error()))
+		}
 	}
 }
 

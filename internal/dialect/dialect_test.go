@@ -53,10 +53,38 @@ func TestPostgresRewriteQuery(t *testing.T) {
 		{`SELECT id FROM guardrails WHERE config = 'it''s ? here' AND priority > ?`,
 			`SELECT id FROM guardrails WHERE config = 'it''s ? here' AND priority > $1`},
 		{`SELECT 1`, `SELECT 1`},
+		// Many placeholders in one query.
+		{`INSERT INTO t(a, b, c, d) VALUES (?, ?, ?, ?)`,
+			`INSERT INTO t(a, b, c, d) VALUES ($1, $2, $3, $4)`},
+		// Placeholder used twice must get distinct markers.
+		{`SELECT * FROM t WHERE x = ? OR y = ? AND x = ?`,
+			`SELECT * FROM t WHERE x = $1 OR y = $2 AND x = $3`},
+		// Adjacent placeholders (IN list).
+		{`SELECT * FROM t WHERE id IN (?, ?)`,
+			`SELECT * FROM t WHERE id IN ($1, $2)`},
+		// Multiple literals with ? between them.
+		{`SELECT '?', ?, 'x?y', ?`,
+			`SELECT '?', $1, 'x?y', $2`},
+		// Escaped quote at end of literal.
+		{`SELECT 'it''s' , ?`,
+			`SELECT 'it''s' , $1`},
 	}
 	for _, c := range cases {
 		if got := (Postgres{}).RewriteQuery(c.in); got != c.want {
 			t.Fatalf("RewriteQuery(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestRewriteQuery_EmptyInput: empty and whitespace queries pass
+// through untouched on both dialects.
+func TestRewriteQuery_EmptyInput(t *testing.T) {
+	for _, q := range []string{"", "   ", "\n"} {
+		if got := (Postgres{}).RewriteQuery(q); got != q {
+			t.Fatalf("Postgres RewriteQuery(%q) = %q", q, got)
+		}
+		if got := (SQLite{}).RewriteQuery(q); got != q {
+			t.Fatalf("SQLite RewriteQuery(%q) = %q", q, got)
 		}
 	}
 }

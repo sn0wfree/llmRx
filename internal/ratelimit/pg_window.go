@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"database/sql"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/dialect"
@@ -39,6 +40,7 @@ type PGWindowBackend struct {
 	degradeTries int
 
 	stopClean chan struct{}
+	closeOnce sync.Once
 }
 
 // recoverProbeCalls is how many fallback calls happen before the
@@ -75,8 +77,10 @@ func NewPGWindowBackend(db *sql.DB, d dialect.Dialect) (*PGWindowBackend, error)
 	return b, nil
 }
 
-// Close stops the background cleaner.
-func (b *PGWindowBackend) Close() { close(b.stopClean) }
+// Close stops the background cleaner. Idempotent.
+func (b *PGWindowBackend) Close() {
+	b.closeOnce.Do(func() { close(b.stopClean) })
+}
 
 func (b *PGWindowBackend) cleanupLoop() {
 	t := time.NewTicker(5 * time.Minute)
