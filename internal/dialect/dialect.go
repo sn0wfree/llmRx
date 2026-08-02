@@ -231,7 +231,7 @@ var boolColumns = []string{
 // (INTEGER would overflow in 2038). SQLite's INTEGER is 64-bit.
 var timeColumns = []string{
 	"created_at", "updated_at", "last_used_at", "last_fired_at",
-	"fired_at", "expires_at", "session_exp",
+	"fired_at", "expires_at", "session_exp", "stored_at",
 }
 
 // RewriteDDL translates SQLite-form CREATE TABLE statements:
@@ -244,6 +244,8 @@ func (Postgres) RewriteDDL(q string) string {
 	// SQLite REAL is 64-bit; Postgres REAL is float32 — use
 	// DOUBLE PRECISION so money/prices roundtrip exactly.
 	q = strings.Replace(q, " REAL", " DOUBLE PRECISION", -1)
+	// SQLite BLOB maps to Postgres BYTEA.
+	q = strings.Replace(q, " BLOB", " BYTEA", -1)
 	for _, col := range timeColumns {
 		q = strings.Replace(q, col+" INTEGER", col+" BIGINT", 1)
 	}

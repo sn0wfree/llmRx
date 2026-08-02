@@ -11,24 +11,41 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sn0wfree/llmRx/internal/dialect"
 	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/provider"
 )
 
-type SQLiteCache struct {
+// DBCache stores response entries in the store's own database
+// (SQLite response_cache table, or the same table on Postgres in
+// P12 cluster mode — one shared table across replicas gives a
+// cluster-wide hit rate instead of N independent caches).
+//
+// All SQL goes through the dialect: '?' bind markers, INSERT OR
+// REPLACE vs ON CONFLICT, BLOB vs BYTEA.
+type DBCache struct {
 	db     *sql.DB
+	d      dialect.Dialect
 	hits   int64
 	misses int64
 }
 
-func NewSQLiteCache(db *sql.DB) (*SQLiteCache, error) {
-	if err := migrateResponseCache(db); err != nil {
-		return nil, fmt.Errorf("cache sqlite migrate: %w", err)
+// NewDBCache creates a DBCache on the given connection using the
+// dialect matching the backend (dialect.SQLite or dialect.Postgres).
+func NewDBCache(db *sql.DB, d dialect.Dialect) (*DBCache, error) {
+	if err := migrateResponseCache(db, d); err != nil {
+		return nil, fmt.Errorf("cache migrate: %w", err)
 	}
-	return &SQLiteCache{db: db}, nil
+	return &DBCache{db: db, d: d}, nil
 }
 
-func migrateResponseCache(db *sql.DB) error {
+// NewSQLiteCache is a convenience wrapper for the SQLite backend
+// (kept for compatibility; server code passes the dialect explicitly).
+func NewSQLiteCache(db *sql.DB) (*DBCache, error) {
+	return NewDBCache(db, dialect.SQLite{})
+}
+
+func migrateResponseCache(db *sql.DB, d dialect.Dialect) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS response_cache (
 			key         TEXT PRIMARY KEY,
@@ -45,18 +62,17 @@ func migrateResponseCache(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_response_cache_expires ON response_cache(expires_at)`,
 	}
 	for _, q := range stmts {
-		if _, err := db.Exec(q); err != nil {
+		if _, err := db.Exec(d.RewriteDDL(q)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *SQLiteCache) Get(_ context.Context, key string) (*Entry, bool, error) {
-	row := s.db.QueryRow(
+func (s *DBCache) Get(_ context.Context, key string) (*Entry, bool, error) {
+	row := s.db.QueryRow(s.d.RewriteQuery(
 		`SELECT status_code, headers, body, usage_json, cost_usd, channel_id, stored_at, hit_count, expires_at
-		 FROM response_cache WHERE key = ?`, key,
-	)
+		 FROM response_cache WHERE key = ?`), key)
 
 	var (
 		statusCode int
@@ -75,20 +91,20 @@ func (s *SQLiteCache) Get(_ context.Context, key string) (*Entry, bool, error) {
 			return nil, false, nil
 		}
 		atomic.AddInt64(&s.misses, 1)
-		logging.Warn("cache sqlite get scan", logging.F("key", key), logging.F("error", err.Error()))
+		logging.Warn("cache db get scan", logging.F("key", key), logging.F("error", err.Error()))
 		return nil, false, nil
 	}
 
 	if expiresAt > 0 && time.Now().Unix() > expiresAt {
-		_, _ = s.db.Exec("DELETE FROM response_cache WHERE key = ?", key)
+		_, _ = s.db.Exec(s.d.RewriteQuery("DELETE FROM response_cache WHERE key = ?"), key)
 		atomic.AddInt64(&s.misses, 1)
 		return nil, false, nil
 	}
 
 	body, err := gunzip(bodyBytes)
 	if err != nil {
-		logging.Warn("cache sqlite gunzip", logging.F("key", key), logging.F("error", err.Error()))
-		_, _ = s.db.Exec("DELETE FROM response_cache WHERE key = ?", key)
+		logging.Warn("cache db gunzip", logging.F("key", key), logging.F("error", err.Error()))
+		_, _ = s.db.Exec(s.d.RewriteQuery("DELETE FROM response_cache WHERE key = ?"), key)
 		atomic.AddInt64(&s.misses, 1)
 		return nil, false, nil
 	}
@@ -106,7 +122,7 @@ func (s *SQLiteCache) Get(_ context.Context, key string) (*Entry, bool, error) {
 		}
 	}
 
-	_, _ = s.db.Exec("UPDATE response_cache SET hit_count = hit_count + 1 WHERE key = ?", key)
+	_, _ = s.db.Exec(s.d.RewriteQuery("UPDATE response_cache SET hit_count = hit_count + 1 WHERE key = ?"), key)
 	hitCount++
 	atomic.AddInt64(&s.hits, 1)
 
@@ -124,7 +140,7 @@ func (s *SQLiteCache) Get(_ context.Context, key string) (*Entry, bool, error) {
 	return entry, true, nil
 }
 
-func (s *SQLiteCache) Set(_ context.Context, e *Entry, ttl time.Duration) error {
+func (s *DBCache) Set(_ context.Context, e *Entry, ttl time.Duration) error {
 	expiresAt := int64(0)
 	if ttl > 0 {
 		expiresAt = time.Now().Add(ttl).Unix()
@@ -144,10 +160,29 @@ func (s *SQLiteCache) Set(_ context.Context, e *Entry, ttl time.Duration) error 
 		usageJSON = &s
 	}
 
-	_, err = s.db.Exec(
-		`INSERT OR REPLACE INTO response_cache
+	var q string
+	if s.d.ReturningClause() != "" {
+		// Postgres: upsert via ON CONFLICT.
+		q = `INSERT INTO response_cache
 		 (key, status_code, headers, body, usage_json, cost_usd, channel_id, stored_at, expires_at, hit_count)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT (key) DO UPDATE SET
+		   status_code = EXCLUDED.status_code,
+		   headers = EXCLUDED.headers,
+		   body = EXCLUDED.body,
+		   usage_json = EXCLUDED.usage_json,
+		   cost_usd = EXCLUDED.cost_usd,
+		   channel_id = EXCLUDED.channel_id,
+		   stored_at = EXCLUDED.stored_at,
+		   expires_at = EXCLUDED.expires_at,
+		   hit_count = EXCLUDED.hit_count`
+	} else {
+		q = `INSERT OR REPLACE INTO response_cache
+		 (key, status_code, headers, body, usage_json, cost_usd, channel_id, stored_at, expires_at, hit_count)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	}
+
+	_, err = s.db.Exec(s.d.RewriteQuery(q),
 		e.Key, e.StatusCode, string(headersJSON), bodyGZ, usageJSON, e.CostUSD, e.ChannelID,
 		time.Now().Unix(), expiresAt, e.HitCount,
 	)
@@ -157,19 +192,19 @@ func (s *SQLiteCache) Set(_ context.Context, e *Entry, ttl time.Duration) error 
 	return nil
 }
 
-func (s *SQLiteCache) Delete(_ context.Context, key string) error {
-	_, err := s.db.Exec("DELETE FROM response_cache WHERE key = ?", key)
+func (s *DBCache) Delete(_ context.Context, key string) error {
+	_, err := s.db.Exec(s.d.RewriteQuery("DELETE FROM response_cache WHERE key = ?"), key)
 	return err
 }
 
-func (s *SQLiteCache) Purge(_ context.Context) error {
-	_, err := s.db.Exec("DELETE FROM response_cache")
+func (s *DBCache) Purge(_ context.Context) error {
+	_, err := s.db.Exec(s.d.RewriteQuery("DELETE FROM response_cache"))
 	return err
 }
 
-func (s *SQLiteCache) Stats(_ context.Context) (Stats, error) {
+func (s *DBCache) Stats(_ context.Context) (Stats, error) {
 	var size int64
-	_ = s.db.QueryRow("SELECT COUNT(*) FROM response_cache").Scan(&size)
+	_ = s.db.QueryRow(s.d.RewriteQuery("SELECT COUNT(*) FROM response_cache")).Scan(&size)
 
 	hits := atomic.LoadInt64(&s.hits)
 	misses := atomic.LoadInt64(&s.misses)
@@ -185,7 +220,7 @@ func (s *SQLiteCache) Stats(_ context.Context) (Stats, error) {
 	}, nil
 }
 
-func (s *SQLiteCache) Close() error {
+func (s *DBCache) Close() error {
 	return s.db.Close()
 }
 

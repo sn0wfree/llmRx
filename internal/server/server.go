@@ -19,6 +19,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/cache"
 	"github.com/sn0wfree/llmRx/internal/config"
+	"github.com/sn0wfree/llmRx/internal/dialect"
 	"github.com/sn0wfree/llmRx/internal/guardrail"
 	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/logstore"
@@ -245,12 +246,21 @@ func (s *Server) initResponseCache() cache.Cache {
 	case "sqlite":
 		rawDB := s.store.RawDB()
 		if rawDB == nil {
-			logging.Warn("cache: sqlite backend requested but store has no RawDB")
+			logging.Warn("cache: db backend requested but store has no RawDB")
 			return nil
 		}
-		c, err := cache.NewSQLiteCache(rawDB)
+		// P12 M3: the response cache lives in the store's own
+		// database — with a Postgres store, replicas share one
+		// response_cache table (cluster-wide hit rate). The
+		// dialect follows the store driver automatically, so no
+		// SQLite-on-Postgres mismatch is possible.
+		d := dialect.Dialect(dialect.SQLite{})
+		if s.cfg.Database.Driver == "postgres" {
+			d = dialect.Postgres{}
+		}
+		c, err := cache.NewDBCache(rawDB, d)
 		if err != nil {
-			logging.Warn("cache: sqlite backend init failed", logging.F("error", err.Error()))
+			logging.Warn("cache: db backend init failed", logging.F("error", err.Error()))
 			return nil
 		}
 		return c

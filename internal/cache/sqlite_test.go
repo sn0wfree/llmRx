@@ -13,7 +13,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/provider"
 )
 
-func openSQLiteCache(t testing.TB) *SQLiteCache {
+func openSQLiteCache(t testing.TB) *DBCache {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "cache-sqlite-test-*")
 	if err != nil {
