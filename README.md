@@ -353,6 +353,8 @@ go test -v ./internal/admin ./internal/api
 | [docs/P9-MULTIMODAL.md](docs/P9-MULTIMODAL.md) | P9 Image / Rerank / Audio 端点设计 |
 | [docs/P10-OBSERVABILITY.md](docs/P10-OBSERVABILITY.md) | P10 OpenTelemetry + Prometheus 设计 |
 | [docs/P11-MCP.md](docs/P11-MCP.md) | P11 MCP gateway 设计 |
+| [docs/RESEARCH-ROUTING.md](docs/RESEARCH-ROUTING.md) | 自动模型路由调研（现状盘点 + 业界方案） |
+| [docs/AUTO-ROUTING.md](docs/AUTO-ROUTING.md) | 智能路由 + 自我进化学习三阶段规划（v1 定稿） |
 | [CHANGELOG.md](CHANGELOG.md) | 各 Phase 变更记录 |
 
 ## 路线图
