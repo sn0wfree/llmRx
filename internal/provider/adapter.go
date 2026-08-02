@@ -573,7 +573,10 @@ func (p *OpenAIProvider) StreamChat(ctx context.Context, req *ChatRequest, apiKe
 				}
 				select {
 				case <-ctx.Done():
-					out <- StreamEvent{Err: ctx.Err()}
+					// The consumer (api/router.go) returns on ctx
+					// cancellation without draining out, so sending
+					// here would block forever and leak this
+					// goroutine + the upstream connection.
 					return
 				case out <- StreamEvent{Chunk: chunk}:
 				}
@@ -586,7 +589,11 @@ func (p *OpenAIProvider) StreamChat(ctx context.Context, req *ChatRequest, apiKe
 			// ignored — we only care about the data payload.
 		}
 		if err := scanner.Err(); err != nil {
-			out <- StreamEvent{Err: err}
+			select {
+			case <-ctx.Done():
+				return
+			case out <- StreamEvent{Err: err}:
+			}
 		}
 	}()
 	return out, nil

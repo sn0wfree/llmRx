@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -10,6 +11,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/sse"
 
 	"github.com/sn0wfree/llmRx/internal/logstore"
 )
@@ -60,45 +64,47 @@ func (h *Handler) LogsPage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// LogsStream proxies the SSE stream from the Go log broker.
-// Falls back to a no-op 200 if the broker is unavailable.
+// LogsStream serves the live SSE log stream: sse.Writer + broker
+// subscribe + heartbeat, mirroring the legacy admin handler's
+// StreamLogs. The page connects with EventSource and renders "log"
+// events. Returns 503 when no broker is wired (no live logs).
 func (h *Handler) LogsStream(w http.ResponseWriter, r *http.Request) {
-	if h.adminH == nil {
-		http.Error(w, "stream not configured", http.StatusServiceUnavailable)
+	if h.adminH == nil || h.adminH.logBroker == nil {
+		http.Error(w, "log streaming not configured", http.StatusServiceUnavailable)
 		return
 	}
-	// For now, the simpler approach: hand off to the legacy admin
-	// handler which manages the SSE. We construct a sub-request
-	// that the admin handler will serve. Since we can't easily
-	// forward SSE through a Go function call, we instead re-stream
-	// using the same pattern: open SSE, subscribe, copy events.
-	h.proxyLogStream(w, r)
-}
-
-// proxyLogStream opens an SSE connection and forwards events from
-// the admin handler's log broker. We re-use the admin handler's
-// store/broker via a direct call.
-func (h *Handler) proxyLogStream(w http.ResponseWriter, r *http.Request) {
-	// Delegate to a long-running endpoint that bridges the broker.
-	// For simplicity in the migration, we render a stub event and
-	// keep the connection open so the SSE handshake is established.
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+	w2, err := sse.New(w)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Send hello comment
-	_, _ = w.Write([]byte(": connected\n\n"))
-	flusher.Flush()
+	if err := w2.Comment("hello llmRx logs"); err != nil {
+		return
+	}
+	ch, unsub, err := h.adminH.logBroker.Subscribe()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	defer unsub()
 
-	// The actual broker is in the admin handler (via webAPIBridge
-	// store). For now keep the connection alive with periodic
-	// heartbeats so the UI can detect the SSE pipe.
-	<-r.Context().Done()
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	go w2.Heartbeat(ctx, 15*time.Second)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case entry, ok := <-ch:
+			if !ok {
+				return
+			}
+			if err := w2.EventJSON("log", entry); err != nil {
+				return
+			}
+		}
+	}
 }
 
 // AlertsPage renders the alerts list + events.
@@ -175,6 +181,11 @@ func (h *Handler) AlertAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
+	// hx-delete sends a real DELETE with no form body.
+	if r.Method == http.MethodDelete {
+		h.alertDelete(w, r, id)
+		return
+	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -207,8 +218,68 @@ func (h *Handler) alertDelete(w http.ResponseWriter, r *http.Request, id int64) 
 }
 
 func (h *Handler) alertSave(w http.ResponseWriter, r *http.Request, existing interface{}) {
-	// Stub - direct DB write would need proper model.Alert decoding.
-	http.Error(w, "alert save not yet wired", http.StatusNotImplemented)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	a := &model.Alert{
+		Name:        strings.TrimSpace(r.FormValue("name")),
+		Type:        model.AlertType(r.FormValue("type")),
+		Threshold:   parseFloatForm(r.FormValue("threshold")),
+		WindowSec:   parseIntForm(r.FormValue("window_sec")),
+		CooldownSec: parseIntForm(r.FormValue("cooldown_sec")),
+		WebhookURL:  strings.TrimSpace(r.FormValue("webhook_url")),
+		Enabled:     r.FormValue("enabled") == "1",
+	}
+	if a.Name == "" {
+		http.Error(w, "name required", http.StatusBadRequest)
+		return
+	}
+	switch a.Type {
+	case model.AlertErrorRate, model.AlertP95Latency, model.AlertCostSpike, model.AlertKeyExhausted:
+	default:
+		http.Error(w, "invalid alert type", http.StatusBadRequest)
+		return
+	}
+
+	var err error
+	if cur, ok := existing.(*model.Alert); ok && cur != nil {
+		a.ID = cur.ID
+		a.LastFiredAt = cur.LastFiredAt
+		a.CreatedAt = cur.CreatedAt
+		err = h.store.UpdateAlert(a)
+	} else {
+		err = h.store.CreateAlert(a)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/admin/alerts", http.StatusSeeOther)
+}
+
+// alertAck marks an alert event as acknowledged.
+func (h *Handler) alertAck(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	if err := h.store.AckAlertEvent(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func parseFloatForm(s string) float64 {
+	f, _ := strconv.ParseFloat(s, 64)
+	return f
+}
+
+func parseIntForm(s string) int64 {
+	n, _ := strconv.ParseInt(s, 10, 64)
+	return n
 }
 
 // AnalyticsPage renders the analytics dashboard with time range

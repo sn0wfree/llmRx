@@ -235,14 +235,14 @@ function renderTokenCatalog() {
     if (hasAudio) badges.push('<span title="音频">🎙️</span>');
 
     html += '<label class="flex items-start gap-2 p-1.5 rounded hover:bg-white cursor-pointer text-sm">';
-    html += '<input type="checkbox" value="' + escapeHtml(m.id) + '" class="mt-0.5 token-cb"' + (checked ? ' checked' : '') + '>';
+    html += '<input type="checkbox" value="' + tokenEscapeHtml(m.id) + '" class="mt-0.5 token-cb"' + (checked ? ' checked' : '') + '>';
     html += '<div class="flex-1 min-w-0">';
     html += '<div class="flex items-center gap-2">';
-    html += '<span class="font-mono text-gray-900">' + escapeHtml(m.id) + '</span>';
+    html += '<span class="font-mono text-gray-900">' + tokenEscapeHtml(m.id) + '</span>';
     html += '<span class="flex items-center gap-1 flex-shrink-0">' + badges.join('') + '</span>';
     html += '</div>';
     if (m.name && m.name !== m.id) {
-      html += '<div class="text-xs text-gray-500">' + escapeHtml(m.name) + '</div>';
+      html += '<div class="text-xs text-gray-500">' + tokenEscapeHtml(m.name) + '</div>';
     }
     html += '</div></label>';
   });

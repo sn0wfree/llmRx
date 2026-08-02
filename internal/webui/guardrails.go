@@ -2,6 +2,7 @@ package webui
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/sn0wfree/llmRx/internal/model"
 )
@@ -70,11 +71,10 @@ func (h *Handler) GuardrailRuleDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing id", http.StatusBadRequest)
 		return
 	}
-	var id int64
-	for _, c := range idStr {
-		if c >= '0' && c <= '9' {
-			id = id*10 + int64(c-'0')
-		}
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
 	}
 	if err := h.store.DeleteGuardrailRule(id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

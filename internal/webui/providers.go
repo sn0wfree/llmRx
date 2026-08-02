@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
@@ -95,11 +96,10 @@ func (h *Handler) ProviderDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing id", http.StatusBadRequest)
 		return
 	}
-	var pid int64
-	for _, c := range id {
-		if c >= '0' && c <= '9' {
-			pid = pid*10 + int64(c-'0')
-		}
+	pid, err := strconv.ParseInt(id, 10, 64)
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
 	}
 	if err := h.store.DeleteProviderDef(pid); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

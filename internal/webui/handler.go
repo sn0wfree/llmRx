@@ -161,6 +161,8 @@ func (h *Handler) Routes() http.Handler {
 		r.Get("/alerts/{id}/edit", h.AlertEditForm)
 		r.Post("/alerts", h.AlertCreate)
 		r.Post("/alerts/{id}", h.AlertAction)
+		r.Delete("/alerts/{id}", h.AlertAction)
+		r.Post("/alerts/events/{id}/ack", h.alertAck)
 
 		r.Get("/analytics", h.AnalyticsPage)
 		r.Get("/health", h.ChannelHealthPage)

@@ -334,7 +334,11 @@ func (p *AnthropicProvider) StreamChat(ctx context.Context, req *ChatRequest, ap
 			}
 			if err != nil {
 				if err != io.EOF {
-					out <- StreamEvent{Err: err}
+					select {
+					case <-ctx.Done():
+						return
+					case out <- StreamEvent{Err: err}:
+					}
 				}
 				return
 			}

@@ -214,6 +214,7 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	// Phase 0: html/template admin UI. Legacy JSON API still
 	// available under /admin/api/v1 for backwards compatibility.
 	webAPIBridge := webui.NewWebAPIBridge(s.store)
+	webAPIBridge.SetLogBroker(lb)
 	webAPIBridge.SetReloader(func() error {
 		if err := s.tokens.Reload(); err != nil {
 			return err

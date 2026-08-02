@@ -266,14 +266,21 @@ func TestAlertAction_Update(t *testing.T) {
 	a := &model.Alert{Name: "a", Type: "cost_spike", Threshold: 10, WindowSec: 300, CooldownSec: 300, Enabled: true}
 	st.CreateAlert(a)
 
-	body := "_method=PUT"
+	body := "_method=PUT&name=updated&type=cost_spike&threshold=20&window_sec=300&cooldown_sec=300&enabled=1"
 	req := httptest.NewRequest(http.MethodPost, "/alerts/"+itoa(a.ID), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: tok})
 	rec := httptest.NewRecorder()
 	h.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("code=%d want 501 (stub)", rec.Code)
+	if rec.Code < 300 || rec.Code >= 400 {
+		t.Fatalf("code=%d want 3xx redirect (alert save wired)", rec.Code)
+	}
+	updated, err := st.GetAlert(a.ID)
+	if err != nil {
+		t.Fatalf("GetAlert: %v", err)
+	}
+	if updated.Name != "updated" || updated.Threshold != 20 {
+		t.Fatalf("alert not updated: %+v", updated)
 	}
 }
 

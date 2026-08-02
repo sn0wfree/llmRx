@@ -3,8 +3,10 @@ package webui
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/model"
 )
 
@@ -26,6 +28,8 @@ func TestLogsStream_NoBridge(t *testing.T) {
 func TestLogsStream_WithBridge(t *testing.T) {
 	h, st := newTestWebUI(t)
 	bridge := NewWebAPIBridge(st)
+	lb := broker.New[*model.Log](4)
+	bridge.SetLogBroker(lb)
 	h.adminH = bridge
 	admin, _ := st.GetUserByUsername("admin")
 	tok := sessionCookieFor(t, st, admin)
@@ -44,6 +48,9 @@ func TestLogsStream_WithBridge(t *testing.T) {
 	}
 	if ct := rec.Header().Get("Content-Type"); ct != "text/event-stream" {
 		t.Errorf("content-type=%q want text/event-stream", ct)
+	}
+	if !strings.Contains(rec.Body.String(), "hello llmRx logs") {
+		t.Errorf("stream must start with the hello comment:\n%s", rec.Body.String())
 	}
 }
 

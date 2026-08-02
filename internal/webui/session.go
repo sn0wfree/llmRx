@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/store"
 )
@@ -134,7 +135,7 @@ func escapeHTML(s string) string {
 type webAPIBridge struct {
 	store     store.Store
 	reloader  func() error
-	logBroker func() interface{} // not used yet
+	logBroker *broker.Broker[*model.Log]
 }
 
 // WebAPIBridge is the exported alias used by server.go to construct
@@ -143,6 +144,11 @@ type WebAPIBridge = webAPIBridge
 
 // NewWebAPIBridge builds a bridge backed by the given store.
 func NewWebAPIBridge(st store.Store) *WebAPIBridge { return &WebAPIBridge{store: st} }
+
+// SetLogBroker installs the live log broker so /logs/stream can
+// push real entries (server.go wires it from the admin handler's
+// broker).
+func (b *WebAPIBridge) SetLogBroker(lb *broker.Broker[*model.Log]) { b.logBroker = lb }
 
 // SetReloader installs a callback that rebuilds in-memory state
 // (tokencache, pool, breaker) after writes. Called by server.go

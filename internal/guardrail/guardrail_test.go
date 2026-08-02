@@ -437,3 +437,50 @@ func BenchmarkCheckInput(b *testing.B) {
 		e.CheckInput(ctx, msgs, 1)
 	}
 }
+
+// TestEvalCachedRule_BlockedWords_CaseSensitive: a word containing
+// uppercase letters must actually match when case_sensitive is true
+// (regression: the lowercased word list was matched against the
+// original text, so uppercase words could never hit).
+func TestEvalCachedRule_BlockedWords_CaseSensitive(t *testing.T) {
+	cr := &cachedRule{rule: model.GuardrailRule{
+		Type:   model.GuardrailBlockedWords,
+		Config: `{"words":["BadWord"],"case_sensitive":true}`,
+	}}
+	cr.parse()
+	if evalCachedRule(cr, "this has BadWord in it") {
+		t.Fatal("exact-case word must block")
+	}
+	if !evalCachedRule(cr, "this has BADWORD in it") {
+		t.Fatal("different case must pass when case_sensitive")
+	}
+}
+
+// TestEvalCachedRule_BlockedWords_CaseInsensitive: lowercasing both
+// sides still matches mixed-case text.
+func TestEvalCachedRule_BlockedWords_CaseInsensitive(t *testing.T) {
+	cr := &cachedRule{rule: model.GuardrailRule{
+		Type:   model.GuardrailBlockedWords,
+		Config: `{"words":["badword"],"case_sensitive":false}`,
+	}}
+	cr.parse()
+	if evalCachedRule(cr, "this has BaDwOrD in it") {
+		t.Fatal("mixed-case text must block when insensitive")
+	}
+	if !evalCachedRule(cr, "clean text") {
+		t.Fatal("clean text must pass")
+	}
+}
+
+// TestEvalCachedRule_BlockedWords_BadConfig: unparseable config
+// fails open (matches evalCachedRule's existing behavior).
+func TestEvalCachedRule_BlockedWords_BadConfig(t *testing.T) {
+	cr := &cachedRule{rule: model.GuardrailRule{
+		Type:   model.GuardrailBlockedWords,
+		Config: `not json`,
+	}}
+	cr.parse()
+	if !evalCachedRule(cr, "anything") {
+		t.Fatal("bad config should fail open")
+	}
+}

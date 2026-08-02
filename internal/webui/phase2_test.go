@@ -72,20 +72,27 @@ func TestAlertEditForm_BadID(t *testing.T) {
 	}
 }
 
-func TestAlertCreate_StubNotImplemented(t *testing.T) {
+func TestAlertCreate_Saved(t *testing.T) {
 	h, st := newTestWebUI(t)
 	admin, _ := st.GetUserByUsername("admin")
 	tok := sessionCookieFor(t, st, admin)
 
-	body := "name=a&type=cost&threshold=10"
+	body := "name=a&type=error_rate&threshold=10&window_sec=60&cooldown_sec=300&enabled=1"
 	req := httptest.NewRequest(http.MethodPost, "/alerts", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: tok})
 	rec := httptest.NewRecorder()
 	h.Routes().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("code=%d want 501", rec.Code)
+	if rec.Code < 300 || rec.Code >= 400 {
+		t.Fatalf("code=%d want 3xx redirect (alert save wired)", rec.Code)
+	}
+	alerts, err := st.GetAlerts()
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	if len(alerts) != 1 || alerts[0].Name != "a" {
+		t.Fatalf("alert not created: %+v", alerts)
 	}
 }
 

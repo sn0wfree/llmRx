@@ -181,6 +181,12 @@ func (n *native) Classify(text string) Intent {
 	if written < 0 {
 		return Intent{Kind: "unknown"}
 	}
+	// Clamp to the buffer size: the Rust side writes at most
+	// n.cap bytes but a buggy/mismatched library could report
+	// more, which would panic on out[:written].
+	if int(written) > n.cap {
+		written = int32(n.cap)
+	}
 	raw := out[:written]
 	var res struct {
 		Label string  `json:"label"`

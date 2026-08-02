@@ -36,7 +36,8 @@ type cachedRule struct {
 	rule      model.GuardrailRule
 	config    interface{}      // parsed config (type depends on rule type)
 	compiled  []*regexp.Regexp // pre-compiled regex patterns
-	caseLower []string         // lowercased blocked words
+	words     []string         // blocked words as configured (case-sensitive matching)
+	caseLower []string         // lowercased blocked words (case-insensitive matching)
 	minChars  int
 	maxChars  int
 }
@@ -78,7 +79,15 @@ func (g *GuardrailEngine) ensureLoaded() {
 	loaded := len(g.rules) > 0 || g.store == nil
 	g.rulesMu.RUnlock()
 	if !loaded {
-		_ = g.Reload()
+		if err := g.Reload(); err != nil {
+			// Deliberately fail open: the rule cache is empty and
+			// every request would otherwise hard-fail. The DB
+			// failure is loud (ERROR level) and Reload is retried
+			// on the next ensureLoaded call, so a transient outage
+			// heals itself while the operator sees the log.
+			logging.Error("guardrail first load failed — rules disabled until reload succeeds",
+				logging.F("error", err.Error()))
+		}
 	}
 }
 
@@ -202,6 +211,7 @@ func (cr *cachedRule) parse() {
 			return
 		}
 		cr.config = cfg
+		cr.words = append([]string(nil), cfg.Words...)
 		cr.caseLower = make([]string, 0, len(cfg.Words))
 		for _, w := range cfg.Words {
 			cr.caseLower = append(cr.caseLower, strings.ToLower(w))
@@ -240,17 +250,17 @@ func evalCachedRule(cr *cachedRule, text string) bool {
 			return true
 		}
 		compare := text
+		words := cr.caseLower
 		if !cfg.CaseSensitive {
 			compare = strings.ToLower(text)
+		} else {
+			// Case-sensitive: match the original words against the
+			// original text. (Previously the lowercased word list
+			// was used here too, so words containing uppercase
+			// letters could never match.)
+			words = cr.words
 		}
-		for _, w := range cr.caseLower {
-			word := w
-			if cfg.CaseSensitive {
-				// For case-sensitive, use original word (not lowercased)
-				// but we need to re-fetch from the original config.
-				// Since we lowercased all words, we just use the lowercase version.
-				word = w
-			}
+		for _, word := range words {
 			if strings.Contains(compare, word) {
 				return false
 			}

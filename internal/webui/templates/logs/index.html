@@ -81,17 +81,57 @@
   </table>
 </div>
 
-<div class="mt-4 text-sm text-gray-500">
-  <a href="/admin/logs/stream" class="text-blue-600 hover:underline">实时流</a> — SSE 实时推送最新日志
+<div class="mt-4 text-sm text-gray-500 flex items-center gap-3">
+  <button id="sse-toggle" onclick="toggleLogStream()"
+          class="px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 font-medium">开始实时流</button>
+  <span id="sse-status" class="px-2 py-1 text-xs rounded bg-gray-200 text-gray-700">未连接</span>
+  <span>实时推送最新请求日志</span>
 </div>
 <div id="flash"></div>
 <script>
-document.body.addEventListener('htmx:sseOpen', function() {
-  document.getElementById('sse-status').textContent = '已连接';
-  document.getElementById('sse-status').className = 'px-3 py-1 text-xs rounded bg-green-100 text-green-800';
-});
-document.body.addEventListener('htmx:sseError', function() {
-  document.getElementById('sse-status').textContent = '已断开';
-  document.getElementById('sse-status').className = 'px-3 py-1 text-xs rounded bg-red-100 text-red-800';
-});
+var logES = null;
+function toggleLogStream() {
+  if (logES) { logES.close(); logES = null; setSseStatus('已断开', 'bg-gray-200 text-gray-700'); }
+  else { openLogStream(); }
+  document.getElementById('sse-toggle').textContent = logES ? '停止实时流' : '开始实时流';
+}
+function setSseStatus(text, cls) {
+  var el = document.getElementById('sse-status');
+  el.textContent = text;
+  el.className = 'px-2 py-1 text-xs rounded ' + cls;
+}
+function openLogStream() {
+  logES = new EventSource('/admin/logs/stream');
+  logES.onopen = function() { setSseStatus('已连接', 'bg-green-100 text-green-800'); };
+  logES.onerror = function() {
+    setSseStatus('重连中…', 'bg-yellow-100 text-yellow-800');
+  };
+  logES.addEventListener('log', function(e) {
+    var entry;
+    try { entry = JSON.parse(e.data); } catch (err) { return; }
+    var tbody = document.getElementById('logs-tbody');
+    if (!tbody) return;
+    var empty = tbody.querySelector('td[colspan]');
+    if (empty) tbody.innerHTML = '';
+    var tr = document.createElement('tr');
+    var cells = [
+      entry.created_at ? new Date(entry.created_at).toLocaleString() : '—',
+      '#' + (entry.token_id || 0),
+      '#' + (entry.channel_id || 0),
+      entry.model || '—',
+      (entry.prompt_tokens || 0) + '/' + (entry.completion_tokens || 0),
+      '$' + (entry.real_cost_usd || 0).toFixed(4),
+      String(entry.status_code || 0)
+    ];
+    for (var i = 0; i < cells.length; i++) {
+      var td = document.createElement('td');
+      td.className = 'px-4 py-2 text-gray-700';
+      if (i === 6) td.className = 'px-4 py-2 text-right';
+      td.textContent = cells[i];
+      tr.appendChild(td);
+    }
+    tbody.insertBefore(tr, tbody.firstChild);
+    while (tbody.children.length > 200) tbody.removeChild(tbody.lastChild);
+  });
+}
 </script>{{end}}

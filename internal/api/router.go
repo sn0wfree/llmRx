@@ -1604,6 +1604,10 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 				h.router.RecordFailure(route.Channel.ID)
 				h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
 					time.Since(start).Milliseconds(), http.StatusRequestEntityTooLarge, true, h.clientIP(r))
+				// Stop the upstream pump (same shape as the
+				// w.Write-error branch below); without this the
+				// sender blocks on the buffered-out channel.
+				cancel()
 				return
 			}
 			// Flush every 4 chunks or on the final one to keep latency
@@ -1737,6 +1741,7 @@ done:
 					h.router.RecordFailure(route.Channel.ID)
 					h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
 						time.Since(start).Milliseconds(), http.StatusRequestEntityTooLarge, true, h.clientIP(r))
+					cancel()
 					return
 				}
 				flushed++
@@ -1755,6 +1760,8 @@ final:
 			flusher.Flush()
 			h.emitLog(r.Context(), tokenID, req.Model, route, usage,
 				time.Since(start).Milliseconds(), http.StatusOK, true, h.clientIP(r))
+			// Upstream pump must stop too, or it blocks on out.
+			cancel()
 			return
 		}
 	}

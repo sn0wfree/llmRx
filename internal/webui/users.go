@@ -136,14 +136,12 @@ func (h *Handler) UserPasswordForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := map[string]any{
-		"Body":   "users_form_body",
+		"Body":   "users_password_body",
 		"Title":  "修改密码 - " + u.Username,
 		"User":   userToView(caller),
 		"Active": "users",
 		"User2":  u,
 	}
-	// Re-render with password form block by overriding Body
-	data["FormMode"] = "password"
 	if err := h.renderer.Render(w, "users_password_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -220,13 +218,12 @@ func (h *Handler) renderUserFormError(w http.ResponseWriter, r *http.Request, u 
 
 func (h *Handler) renderUserPasswordError(w http.ResponseWriter, r *http.Request, u *model.User, msg string) {
 	data := map[string]any{
-		"Body":      "users_form_body",
+		"Body":      "users_password_body",
 		"Title":     "修改密码 - " + u.Username,
 		"User":      userToView(getUser(r)),
 		"Active":    "users",
 		"User2":     u,
 		"FormError": msg,
-		"FormMode":  "password",
 	}
 	if err := h.renderer.Render(w, "users_password_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

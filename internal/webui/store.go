@@ -57,8 +57,11 @@ type WebuiStore interface {
 	// Alerts
 	GetAlerts() ([]model.Alert, error)
 	GetAlert(id int64) (*model.Alert, error)
+	CreateAlert(a *model.Alert) error
+	UpdateAlert(a *model.Alert) error
 	DeleteAlert(id int64) error
 	GetAlertEvents(limit int) ([]model.AlertEvent, error)
+	AckAlertEvent(id int64) error
 
 	// Runtime
 	GetRuntimeSettings() ([]byte, error)
