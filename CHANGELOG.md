@@ -209,6 +209,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **覆盖率**：`internal/mcp` 46% → 77.1%（目标 ≥70%），
   `internal/sse` 44.3% → 81.8%。
 
+#### P12 M4 日志聚合（共享 logs 表）
+- `PostgresDriver` 实现 logstore Driver 全契约（单表 + created_at/
+  token_id/channel_id 索引）；`logstore_backend` 配置（sqlite |
+  postgres | 跟随 database.driver）。
+- 文件语义映射：`ListFiles` = distinct UTC 日期，`DeleteFiles` =
+  整日范围删除（retention 经 Manager.RunRetention 原样工作）。
+- 测试：真 PG 全契约（insert/batch/query/过滤/分页/统计/时序/
+  top/删除）+ 日期范围解析。
+
 #### P12 M3 共享响应缓存（store 数据库）
 - `SQLiteCache` → `DBCache`（db + dialect）：`cache_backend=sqlite`
   自动跟随 store 驱动——Postgres 下多副本共享一张 `response_cache`
