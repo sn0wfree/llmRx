@@ -265,14 +265,19 @@ M0 完成后 M1（PG store 补齐）的验收 = 实现 Postgres + 跑 storetest
 
 ## 9. Rollout
 
-1. 本设计文档（git first doc first）。
-2. M0a dialect 包。
-3. M0b store 重构（13 组，逐组测试）。
-4. M0c storetest 套件全量。
-5. M0 验收（全量测试 + 覆盖率）。
-6. M1：PG store 补齐 = Postgres Dialect（已在 M0a 提供）+ 实现
-   88 方法 SQL（BIGSERIAL/BOOLEAN/JSONB 差异）+ storetest 验收。
+1. 本设计文档（git first doc first）。✅
+2. M0a dialect 包。✅
+3. M0b store 重构（13 组，逐组测试）。✅
+4. M0c storetest 套件全量。✅
+5. M0 验收（全量测试 + 覆盖率）。✅
+6. M1：PG store 补齐 = 共享 dbStore 嵌入 + Postgres Dialect +
+   storetest 验收（docker postgres:15-alpine + LLMRX_TEST_PG_DSN，
+   88 方法套件全绿）。✅
 7. M2-M5 依 P12-CLUSTER.md（限额/缓存/日志/部署）。
+
+**Status (2026-08-02)**: M0-M1 全部落地。store 覆盖率 84.6%、
+dialect 75.8%。新后端适配路径已验证：实现 Dialect + 嵌入 dbStore
++ 跑 storetest。
 
 ## 10. Out of scope（本设计）
 
