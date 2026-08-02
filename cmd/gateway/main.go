@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
+	_ "net/http/pprof" // registers pprof handlers on the default mux
 	"os"
 	"os/signal"
 	"syscall"
@@ -48,7 +50,12 @@ func main() {
 	cfgPath := flag.String("config", "config.yml", "config file path")
 	hcAddr := flag.String("healthcheck", "", "if set (e.g. 127.0.0.1:8787), probe /health and exit; used by docker HEALTHCHECK")
 	wipeKeys := flag.Bool("wipe-keys", false, "clear all encrypted key material in the keys table, then exit. Used to recover from a master-key rotation that left stored ciphertext undecryptable.")
+	pprofAddr := flag.String("pprof-addr", "", "if set (e.g. 127.0.0.1:6060), serve net/http/pprof profiles on a separate listener; intended for on-demand performance debugging, never expose publicly")
 	flag.Parse()
+
+	if *pprofAddr != "" {
+		go servePprof(*pprofAddr)
+	}
 
 	// `-healthcheck addr` short-circuits before any side-effects: no
 	// config load, no DB open, no privilege drop. The probe just
@@ -434,11 +441,22 @@ func main() {
 	}
 }
 
+// servePprof exposes net/http/pprof (cpu/heap/goroutine/allocs
+// profiles) on a dedicated listener when -pprof-addr is set. The
+// default mux is used because the pprof package registers its
+// handlers there on import. Bind to 127.0.0.1 or an internal
+// network address — never expose publicly.
+func servePprof(addr string) {
+	err := http.ListenAndServe(addr, nil)
+	if err != nil {
+		logging.Warn("pprof listener failed", logging.F("addr", addr), logging.F("error", err.Error()))
+	}
+}
+
 // cleanupLoop periodically clears admin session tokens whose
 // session_exp is in the past. Runs every 5 minutes; exits when ctx
 // is cancelled or the process exits.
-func cleanupLoop(ctx context.Context, st store.Store) {
-	t := time.NewTicker(5 * time.Minute)
+func cleanupLoop(ctx context.Context, st store.Store) {	t := time.NewTicker(5 * time.Minute)
 	defer t.Stop()
 	for {
 		select {
