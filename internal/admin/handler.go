@@ -18,12 +18,12 @@ import (
 	"github.com/sn0wfree/llmRx/internal/cache"
 	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/guardrail"
+	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/mcp"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/provider"
-	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/secrets"
@@ -33,19 +33,19 @@ import (
 )
 
 type Handler struct {
-	store      store.Store
-	logStore   *logstore.Manager
-	pool       *pool.ChannelPool
-	router     *router.RouterEngine
-	tokens     *tokencache.Cache
-	logBroker  *broker.Broker[*model.Log]
-	rt         *runtime.Defaults
-	cfg        *config.Config
-	keyFile    string
-	sessionTTL time.Duration
-	alertMgr   AlertReloader
-	responseCache cache.Cache
-	mcpClientMgr *mcp.ClientManager
+	store           store.Store
+	logStore        *logstore.Manager
+	pool            *pool.ChannelPool
+	router          *router.RouterEngine
+	tokens          *tokencache.Cache
+	logBroker       *broker.Broker[*model.Log]
+	rt              *runtime.Defaults
+	cfg             *config.Config
+	keyFile         string
+	sessionTTL      time.Duration
+	alertMgr        AlertReloader
+	responseCache   cache.Cache
+	mcpClientMgr    *mcp.ClientManager
 	guardrailEngine *guardrail.GuardrailEngine
 	// reloadNotifier broadcasts local config writes to other
 	// replicas (P12 M2 PG NOTIFY). nil = no-op.
@@ -259,8 +259,8 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		Expires: exp, MaxAge: int(h.sessionTTL.Seconds()),
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"session_token":         tok,
-		"session_expires_at":    exp.Format(time.RFC3339),
+		"session_token":      tok,
+		"session_expires_at": exp.Format(time.RFC3339),
 		"user": map[string]any{
 			"id":       u.ID,
 			"username": u.Username,
@@ -820,9 +820,9 @@ func (h *Handler) ReloadAll(w http.ResponseWriter, r *http.Request) {
 	h.fireReload()
 	if len(reloads) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":             true,
-			"channels":       h.pool.GetAllChannels() != nil,
-			"tokens":         h.tokens.Size(),
+			"ok":              true,
+			"channels":        h.pool.GetAllChannels() != nil,
+			"tokens":          h.tokens.Size(),
 			"alerts_reloaded": h.alertMgr != nil,
 		})
 		return
@@ -1150,13 +1150,13 @@ func (h *Handler) UpdateAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var patch struct {
-		Name        *string         `json:"name,omitempty"`
+		Name        *string          `json:"name,omitempty"`
 		Type        *model.AlertType `json:"type,omitempty"`
-		Threshold   *float64        `json:"threshold,omitempty"`
-		WindowSec   *int64          `json:"window_sec,omitempty"`
-		CooldownSec *int64          `json:"cooldown_sec,omitempty"`
-		WebhookURL  *string         `json:"webhook_url,omitempty"`
-		Enabled     *bool           `json:"enabled,omitempty"`
+		Threshold   *float64         `json:"threshold,omitempty"`
+		WindowSec   *int64           `json:"window_sec,omitempty"`
+		CooldownSec *int64           `json:"cooldown_sec,omitempty"`
+		WebhookURL  *string          `json:"webhook_url,omitempty"`
+		Enabled     *bool            `json:"enabled,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")

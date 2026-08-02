@@ -84,8 +84,8 @@ func TestCalcCost_CachedTokensDiscount(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			usage := provider.Usage{
-				PromptTokens:     tc.prompt,
-				CompletionTokens: tc.completion,
+				PromptTokens:        tc.prompt,
+				CompletionTokens:    tc.completion,
 				PromptTokensDetails: &provider.PromptTokensDetails{CachedTokens: tc.cached},
 			}
 			ch := tc.channel

@@ -75,9 +75,9 @@ func (BalancedStrategy) Sort(channels []*model.Channel) []*model.Channel {
 }
 
 var strategyMap = map[model.CostStrategy]CostStrategy{
-	model.StrategyCheapest:  CheapestStrategy{},
-	model.StrategyFastest:   FastestStrategy{},
-	model.StrategyBalanced:  BalancedStrategy{},
+	model.StrategyCheapest: CheapestStrategy{},
+	model.StrategyFastest:  FastestStrategy{},
+	model.StrategyBalanced: BalancedStrategy{},
 }
 
 func strategyFromName(name model.CostStrategy) CostStrategy {

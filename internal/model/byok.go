@@ -10,12 +10,12 @@ import "time"
 // exposed to admin users; only the masked form is shown.
 type BYOKChannel struct {
 	ID            int64
-	Provider      string    // openai / anthropic / gemini
-	KeyCiphertext string    // AES-256-GCM encrypted
-	KeyMasked     string    // "sk-...abcd"
-	OwnerIP       string    // client IP at creation time
-	OwnerEmail    string    // optional X-User-Email header
-	Status        int       // 1 = active
+	Provider      string // openai / anthropic / gemini
+	KeyCiphertext string // AES-256-GCM encrypted
+	KeyMasked     string // "sk-...abcd"
+	OwnerIP       string // client IP at creation time
+	OwnerEmail    string // optional X-User-Email header
+	Status        int    // 1 = active
 	LastUsedAt    time.Time
 	UseCount      int64
 	ExpiresAt     time.Time // optional TTL (BYOKConfig.TTLDays)

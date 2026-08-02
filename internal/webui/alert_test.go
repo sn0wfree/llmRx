@@ -161,15 +161,15 @@ func TestRenderFormError_AllFieldRenames(t *testing.T) {
 	h, _ := newTestWebUI(t)
 	rec := httptest.NewRecorder()
 	form := map[string][]string{
-		"name":          {"x"},
-		"provider":      {"openai"},
-		"base_url":      {"https://x"},
-		"models":        {"a"},
-		"intents":       {"chat"},
-		"priority":      {"3"},
-		"input_price":   {"0.001"},
-		"output_price":  {"0.002"},
-		"status":        {"1"},
+		"name":         {"x"},
+		"provider":     {"openai"},
+		"base_url":     {"https://x"},
+		"models":       {"a"},
+		"intents":      {"chat"},
+		"priority":     {"3"},
+		"input_price":  {"0.001"},
+		"output_price": {"0.002"},
+		"status":       {"1"},
 	}
 	h.renderFormError(rec, httptest.NewRequest(http.MethodGet, "/", nil), formErrorView{
 		Body: "channels_form_body", Title: "t", Active: "channels",

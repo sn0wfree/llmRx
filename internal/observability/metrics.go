@@ -6,21 +6,21 @@ import "github.com/prometheus/client_golang/prometheus"
 // Initialized once via New() and used by the instrument package.
 type Metrics struct {
 	// Counters
-	RequestsTotal        *prometheus.CounterVec
-	UpstreamErrorsTotal  *prometheus.CounterVec
-	BilledUSDTotal       *prometheus.CounterVec
-	PromptTokensTotal    *prometheus.CounterVec
+	RequestsTotal         *prometheus.CounterVec
+	UpstreamErrorsTotal   *prometheus.CounterVec
+	BilledUSDTotal        *prometheus.CounterVec
+	PromptTokensTotal     *prometheus.CounterVec
 	CompletionTokensTotal *prometheus.CounterVec
-	RateLimitBlocksTotal *prometheus.CounterVec
-	RetriesTotal         *prometheus.CounterVec
+	RateLimitBlocksTotal  *prometheus.CounterVec
+	RetriesTotal          *prometheus.CounterVec
 
 	// Histograms
 	RequestDuration *prometheus.HistogramVec
 
 	// Gauges
-	ActiveStreams    prometheus.Gauge
-	ChannelsEnabled  prometheus.Gauge
-	TokensActive     prometheus.Gauge
+	ActiveStreams   prometheus.Gauge
+	ChannelsEnabled prometheus.Gauge
+	TokensActive    prometheus.Gauge
 }
 
 // New creates and registers all Prometheus metrics.

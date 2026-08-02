@@ -128,13 +128,13 @@ func (h *Handler) ModelSetDetailPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]any{
-		"Body":      "model_set_detail_body",
-		"Title":     "模型集详情",
-		"User":      userToView(getUser(r)),
-		"Active":    "model-sets",
-		"Combo":     c,
-		"Token":     token,
-		"Coverage":  coverage,
+		"Body":     "model_set_detail_body",
+		"Title":    "模型集详情",
+		"User":     userToView(getUser(r)),
+		"Active":   "model-sets",
+		"Combo":    c,
+		"Token":    token,
+		"Coverage": coverage,
 	}
 	if err := h.renderer.Render(w, "model_set_detail_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

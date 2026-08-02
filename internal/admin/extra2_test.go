@@ -57,7 +57,9 @@ func TestAdmin_ListChannels(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code=%d", rec.Code)
 	}
-	var resp struct{ Data []model.Channel `json:"data"` }
+	var resp struct {
+		Data []model.Channel `json:"data"`
+	}
 	json.NewDecoder(rec.Body).Decode(&resp)
 	if len(resp.Data) != 1 {
 		t.Errorf("expected 1 channel, got %d", len(resp.Data))

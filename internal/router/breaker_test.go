@@ -120,7 +120,7 @@ func TestBreaker_PartialOpenFiltersOnlyAffected(t *testing.T) {
 func TestBreaker_DefaultsWhenChannelMissing(t *testing.T) {
 	// channel id 99 not in store → defaults (5/60s) apply
 	b := &CircuitBreaker{
-		store:   &stubStore{channels: map[int64]*model.Channel{}},
+		store: &stubStore{channels: map[int64]*model.Channel{}},
 	}
 
 	for i := 0; i < 5; i++ {
@@ -175,7 +175,7 @@ type liveDefaults struct {
 	resetMs     int64
 }
 
-func (l *liveDefaults) BreakerMaxFailures() int64   { return l.maxFailures }
+func (l *liveDefaults) BreakerMaxFailures() int64    { return l.maxFailures }
 func (l *liveDefaults) BreakerResetTimeoutMs() int64 { return l.resetMs }
 
 // compile-time check

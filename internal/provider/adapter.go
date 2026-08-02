@@ -36,7 +36,7 @@ type ChatRequest struct {
 	TopP                *float64        `json:"top_p,omitempty"`
 	FrequencyPenalty    *float64        `json:"frequency_penalty,omitempty"`
 	PresencePenalty     *float64        `json:"presence_penalty,omitempty"`
-	Stop                any             `json:"stop,omitempty"`          // string or []string
+	Stop                any             `json:"stop,omitempty"` // string or []string
 	N                   *int            `json:"n,omitempty"`
 	Seed                *int            `json:"seed,omitempty"`
 	User                string          `json:"user,omitempty"`
@@ -59,13 +59,13 @@ type ChatRequest struct {
 // ToolCalls / ToolCallID carry the function-calling side of the
 // conversation; the gateway forwards both fields as-is.
 type Message struct {
-	Role         string      `json:"role"`
-	Content      any         `json:"content,omitempty"`
-	Name         string      `json:"name,omitempty"`
-	ToolCalls    []ToolCall  `json:"tool_calls,omitempty"`
-	ToolCallID   string      `json:"tool_call_id,omitempty"`
-	CacheControl *CacheCtl   `json:"cache_control,omitempty"` // Anthropic extension
-	Refusal      string      `json:"refusal,omitempty"`
+	Role         string     `json:"role"`
+	Content      any        `json:"content,omitempty"`
+	Name         string     `json:"name,omitempty"`
+	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID   string     `json:"tool_call_id,omitempty"`
+	CacheControl *CacheCtl  `json:"cache_control,omitempty"` // Anthropic extension
+	Refusal      string     `json:"refusal,omitempty"`
 
 	// contentStr caches the result of ContentString() after the first
 	// call, avoiding repeated allocation on the hot path.
@@ -77,10 +77,10 @@ type Message struct {
 // "image_url"; other types pass through unchanged so the upstream
 // can decide how to interpret them.
 type ContentPart struct {
-	Type     string      `json:"type"`
-	Text     string      `json:"text,omitempty"`
-	ImageURL *ImageURL   `json:"image_url,omitempty"`
-	CacheCtl *CacheCtl   `json:"cache_control,omitempty"`
+	Type     string    `json:"type"`
+	Text     string    `json:"text,omitempty"`
+	ImageURL *ImageURL `json:"image_url,omitempty"`
+	CacheCtl *CacheCtl `json:"cache_control,omitempty"`
 }
 
 // ImageURL describes a multimodal image attachment.
@@ -111,9 +111,9 @@ type FunctionSpec struct {
 
 // ToolCall is a request from the model to invoke a function.
 type ToolCall struct {
-	Index    *int       `json:"index,omitempty"` // only present in streaming deltas
-	ID       string     `json:"id,omitempty"`
-	Type     string     `json:"type,omitempty"` // "function"
+	Index    *int         `json:"index,omitempty"` // only present in streaming deltas
+	ID       string       `json:"id,omitempty"`
+	Type     string       `json:"type,omitempty"` // "function"
 	Function FunctionCall `json:"function"`
 }
 
@@ -257,8 +257,8 @@ func (m *Message) ContentString() string {
 
 // FloatPtr returns *f so request fields can be encoded only when set.
 func FloatPtr(f float64) *float64 { return &f }
-func IntPtr(i int) *int             { return &i }
-func BoolPtr(b bool) *bool          { return &b }
+func IntPtr(i int) *int           { return &i }
+func BoolPtr(b bool) *bool        { return &b }
 
 // FloatOr returns *p or &def.
 func FloatOr(p *float64, def float64) float64 {
@@ -308,11 +308,11 @@ type ModelLister interface {
 
 // EmbeddingsRequest is the OpenAI-compatible embeddings request body.
 type EmbeddingsRequest struct {
-	Model          string   `json:"model"`
-	Input          any      `json:"input"` // string or []string
-	EncodingFormat string   `json:"encoding_format,omitempty"` // "float" (default) or "base64"
-	Dimensions     *int     `json:"dimensions,omitempty"`
-	User           string   `json:"user,omitempty"`
+	Model          string `json:"model"`
+	Input          any    `json:"input"`                     // string or []string
+	EncodingFormat string `json:"encoding_format,omitempty"` // "float" (default) or "base64"
+	Dimensions     *int   `json:"dimensions,omitempty"`
+	User           string `json:"user,omitempty"`
 }
 
 // Embedding is a single embedding vector entry.
@@ -359,9 +359,9 @@ type ImageObject struct {
 
 // ImagesResponse is the OpenAI-compatible image generation response.
 type ImagesResponse struct {
-	Created int64        `json:"created"`
+	Created int64         `json:"created"`
 	Data    []ImageObject `json:"data"`
-	Usage   *Usage       `json:"usage,omitempty"`
+	Usage   *Usage        `json:"usage,omitempty"`
 }
 
 // ImagesProvider is an optional capability for providers that support
@@ -376,7 +376,7 @@ type ImagesProvider interface {
 type AudioSpeechRequest struct {
 	Model          string  `json:"model"` // "tts-1", "tts-1-hd"
 	Input          string  `json:"input"`
-	Voice          string  `json:"voice"` // "alloy", "echo", "fable", "onyx", "nova", "shimmer"
+	Voice          string  `json:"voice"`                     // "alloy", "echo", "fable", "onyx", "nova", "shimmer"
 	ResponseFormat string  `json:"response_format,omitempty"` // "mp3", "opus", "aac", "flac"
 	Speed          float64 `json:"speed,omitempty"`
 }

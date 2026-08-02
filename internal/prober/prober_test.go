@@ -14,8 +14,8 @@ import (
 
 // fakeStore implements channelLister in-memory.
 type fakeStore struct {
-	mu    sync.Mutex
-	chs   []model.Channel
+	mu  sync.Mutex
+	chs []model.Channel
 }
 
 func (s *fakeStore) GetChannels() ([]model.Channel, error) {

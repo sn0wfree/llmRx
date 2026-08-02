@@ -219,13 +219,13 @@ func TestGuardrails_AllTypesAndHooks(t *testing.T) {
 		for _, hk := range hooks {
 			for _, act := range actions {
 				r := &model.GuardrailRule{
-					Name:        string(tp) + "/" + string(hk) + "/" + string(act),
-					Type:        tp,
-					Hook:        hk,
-					OnFailure:   act,
-					Config:      "{}",
-					Priority:    1,
-					Enabled:     true,
+					Name:      string(tp) + "/" + string(hk) + "/" + string(act),
+					Type:      tp,
+					Hook:      hk,
+					OnFailure: act,
+					Config:    "{}",
+					Priority:  1,
+					Enabled:   true,
 				}
 				if err := s.CreateGuardrailRule(r); err != nil {
 					t.Fatalf("Create(%s/%s/%s): %v", tp, hk, act, err)

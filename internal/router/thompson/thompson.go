@@ -35,11 +35,11 @@ import (
 
 // Sampler tracks Beta posteriors per channel ID.
 type Sampler struct {
-	mu                  sync.Mutex
-	rng                 *rand.Rand
-	state               map[int64]*beta
-	blend               float64
-	explore             float64
+	mu                   sync.Mutex
+	rng                  *rand.Rand
+	state                map[int64]*beta
+	blend                float64
+	explore              float64
 	minSamplesPerChannel int
 }
 

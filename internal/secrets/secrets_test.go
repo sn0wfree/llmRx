@@ -188,7 +188,7 @@ func TestMask(t *testing.T) {
 		{"sk-abcdefghijklmnop", "sk-a***mnop"},
 		{"short", "short"},
 		{"", ""},
-		{"12345678", "12345678"},   // exactly 8 chars → no mask
+		{"12345678", "12345678"}, // exactly 8 chars → no mask
 		{"123456789", "1234***6789"},
 	}
 	for _, c := range cases {

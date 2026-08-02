@@ -67,7 +67,7 @@ func TestKey_TemperatureZero(t *testing.T) {
 
 func TestKey_ToolOrdering(t *testing.T) {
 	req1 := &provider.ChatRequest{
-		Model: "gpt-4",
+		Model:    "gpt-4",
 		Messages: []provider.Message{{Role: "user", Content: "hi"}},
 		Tools: []provider.Tool{
 			{Type: "function", Function: provider.FunctionSpec{Name: "b", Description: "second"}},
@@ -75,7 +75,7 @@ func TestKey_ToolOrdering(t *testing.T) {
 		},
 	}
 	req2 := &provider.ChatRequest{
-		Model: "gpt-4",
+		Model:    "gpt-4",
 		Messages: []provider.Message{{Role: "user", Content: "hi"}},
 		Tools: []provider.Tool{
 			{Type: "function", Function: provider.FunctionSpec{Name: "a", Description: "first"}},

@@ -15,23 +15,23 @@ func TestFormErrorHelper_RendersAllFields(t *testing.T) {
 	h, _ := newTestWebUI(t)
 	rec := httptest.NewRecorder()
 	form := map[string][]string{
-		"name":          {"my-channel"},
-		"provider":      {"openai"},
-		"base_url":      {"https://api.example.com"},
-		"models":        {"gpt-4\ngpt-3.5"},
-		"intents":       {"chat"},
-		"priority":      {"5"},
-		"input_price":   {"0.001"},
-		"output_price":  {"0.002"},
-		"status":        {"1"},
+		"name":         {"my-channel"},
+		"provider":     {"openai"},
+		"base_url":     {"https://api.example.com"},
+		"models":       {"gpt-4\ngpt-3.5"},
+		"intents":      {"chat"},
+		"priority":     {"5"},
+		"input_price":  {"0.001"},
+		"output_price": {"0.002"},
+		"status":       {"1"},
 	}
 	h.renderFormError(rec, httptest.NewRequest(http.MethodGet, "/", nil), formErrorView{
-		Body:   "channels_form_body",
-		Title:  "新建通道",
-		Active: "channels",
-		Msg:    "测试错误",
-		Form:   form,
-		Fields: channelFormFields,
+		Body:         "channels_form_body",
+		Title:        "新建通道",
+		Active:       "channels",
+		Msg:          "测试错误",
+		Form:         form,
+		Fields:       channelFormFields,
 		FieldRenames: channelFormRenames,
 	})
 	if rec.Code != http.StatusOK {
@@ -105,14 +105,14 @@ func TestRecordKey_AllKnownTypes(t *testing.T) {
 // alias.
 func TestTitleCase(t *testing.T) {
 	cases := map[string]string{
-		"name":         "Name",
-		"plan_id":      "PlanId",
-		"combo_mode":   "ComboMode",
-		"":             "",
-		"a":            "A",
-		"a_b_c":        "ABC",
-		"base_url":     "BaseUrl",
-		"input_price":  "InputPrice",
+		"name":        "Name",
+		"plan_id":     "PlanId",
+		"combo_mode":  "ComboMode",
+		"":            "",
+		"a":           "A",
+		"a_b_c":       "ABC",
+		"base_url":    "BaseUrl",
+		"input_price": "InputPrice",
 	}
 	for in, want := range cases {
 		if got := titleCase(in); got != want {

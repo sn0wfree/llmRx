@@ -45,13 +45,13 @@ func (h *Handler) LogsPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := map[string]any{
-		"Body":      "logs_index_body",
-		"Title":     "日志",
-		"User":      userToView(getUser(r)),
-		"Active":    "logs",
-		"Logs":      logs,
-		"Filter":    f,
-		"FilterStr": r.URL.RawQuery,
+		"Body":       "logs_index_body",
+		"Title":      "日志",
+		"User":       userToView(getUser(r)),
+		"Active":     "logs",
+		"Logs":       logs,
+		"Filter":     f,
+		"FilterStr":  r.URL.RawQuery,
 		"FilterFrom": r.URL.Query().Get("from"),
 		"FilterTo":   r.URL.Query().Get("to"),
 	}
@@ -114,12 +114,12 @@ func (h *Handler) AlertsPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := map[string]any{
-		"Body":         "alerts_list_body",
-		"Title":        "告警",
-		"User":         userToView(getUser(r)),
-		"Active":       "alerts",
-		"Alerts":       alerts,
-		"AlertEvents":  events,
+		"Body":        "alerts_list_body",
+		"Title":       "告警",
+		"User":        userToView(getUser(r)),
+		"Active":      "alerts",
+		"Alerts":      alerts,
+		"AlertEvents": events,
 	}
 	if err := h.renderer.Render(w, "alerts_list_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

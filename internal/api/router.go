@@ -86,18 +86,18 @@ type toolCallAccum struct {
 }
 
 type Handler struct {
-	router    *router.RouterEngine
-	pool      *pool.ChannelPool
-	provider  provider.Provider // fallback (OpenAI) for tests
-	providers map[string]provider.Provider
-	cfg       *config.Config
-	store     store.Store
-	logStore  *logstore.Manager
-	logBroker *broker.Broker[*model.Log]
-	rt        *runtime.Defaults
-	limits    *ratelimit.Limiter
+	router     *router.RouterEngine
+	pool       *pool.ChannelPool
+	provider   provider.Provider // fallback (OpenAI) for tests
+	providers  map[string]provider.Provider
+	cfg        *config.Config
+	store      store.Store
+	logStore   *logstore.Manager
+	logBroker  *broker.Broker[*model.Log]
+	rt         *runtime.Defaults
+	limits     *ratelimit.Limiter
 	guardrails *guardrail.GuardrailEngine
-	prober    *proberpkg.Cache
+	prober     *proberpkg.Cache
 	// retryingCache is an atomic snapshot of the RetryingProvider
 	// cache. The read path (every non-streaming request) is a single
 	// atomic.Load — lock-free. The write path (admin config change)
@@ -106,7 +106,7 @@ type Handler struct {
 
 	// modelsCache caches the /models response for 30s to avoid
 	// scanning all channels on every ListModels call.
-	modelsCache   atomic.Value // holds *modelsCacheEntry
+	modelsCache atomic.Value // holds *modelsCacheEntry
 
 	// Extracted components for single responsibility.
 	costCalc *CostCalculator
@@ -995,15 +995,15 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type modelEntry struct {
-		ID           string                     `json:"id"`
-		Object       string                     `json:"object"`
-		Created      int64                      `json:"created"`
-		OwnedBy      string                     `json:"owned_by"`
-		ContextWindow *int                      `json:"context_window,omitempty"`
-		MaxOutput    *int                       `json:"max_output,omitempty"`
-		Pricing      *modelPricing              `json:"pricing,omitempty"`
-		Capabilities *modelmeta.ModelCapabilities `json:"capabilities,omitempty"`
-		Modalities   []string                   `json:"modalities,omitempty"`
+		ID            string                       `json:"id"`
+		Object        string                       `json:"object"`
+		Created       int64                        `json:"created"`
+		OwnedBy       string                       `json:"owned_by"`
+		ContextWindow *int                         `json:"context_window,omitempty"`
+		MaxOutput     *int                         `json:"max_output,omitempty"`
+		Pricing       *modelPricing                `json:"pricing,omitempty"`
+		Capabilities  *modelmeta.ModelCapabilities `json:"capabilities,omitempty"`
+		Modalities    []string                     `json:"modalities,omitempty"`
 	}
 
 	type modelsResp struct {
@@ -1087,7 +1087,8 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 	// Per-token model whitelist + IP whitelist enforcement.
 	if info, ok := lookupTokenInfo(r.Context()); ok {
 		if !info.HasModelAccess(req.Model) {
-			logging.Warn("api.model_denied", logging.F("model", req.Model), logging.F("token_id", info.ID), logging.F("endpoint", "embeddings")); writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
+			logging.Warn("api.model_denied", logging.F("model", req.Model), logging.F("token_id", info.ID), logging.F("endpoint", "embeddings"))
+			writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
 			return
 		}
 		ip := h.clientIP(r)
@@ -1152,7 +1153,8 @@ func (h *Handler) ImageGenerations(w http.ResponseWriter, r *http.Request) {
 	}
 	if info, ok := lookupTokenInfo(r.Context()); ok {
 		if !info.HasModelAccess(req.Model) {
-			logging.Warn("api.model_denied", logging.F("model", req.Model), logging.F("token_id", info.ID), logging.F("endpoint", "images/generations")); writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
+			logging.Warn("api.model_denied", logging.F("model", req.Model), logging.F("token_id", info.ID), logging.F("endpoint", "images/generations"))
+			writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
 			return
 		}
 	}
@@ -1211,7 +1213,8 @@ func (h *Handler) AudioSpeech(w http.ResponseWriter, r *http.Request) {
 	}
 	if info, ok := lookupTokenInfo(r.Context()); ok {
 		if !info.HasModelAccess(req.Model) {
-			logging.Warn("api.model_denied", logging.F("model", req.Model), logging.F("token_id", info.ID), logging.F("endpoint", "audio/speech")); writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
+			logging.Warn("api.model_denied", logging.F("model", req.Model), logging.F("token_id", info.ID), logging.F("endpoint", "audio/speech"))
+			writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
 			return
 		}
 	}
@@ -1290,7 +1293,8 @@ func (h *Handler) AudioTranscriptions(w http.ResponseWriter, r *http.Request) {
 	}
 	if info, ok := lookupTokenInfo(r.Context()); ok {
 		if !info.HasModelAccess(req.Model) {
-			logging.Warn("api.model_denied", logging.F("model", req.Model), logging.F("token_id", info.ID), logging.F("endpoint", "audio/transcriptions")); writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
+			logging.Warn("api.model_denied", logging.F("model", req.Model), logging.F("token_id", info.ID), logging.F("endpoint", "audio/transcriptions"))
+			writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
 			return
 		}
 	}
@@ -1354,7 +1358,8 @@ func (h *Handler) Rerank(w http.ResponseWriter, r *http.Request) {
 	}
 	if info, ok := lookupTokenInfo(r.Context()); ok {
 		if !info.HasModelAccess(req.Model) {
-			logging.Warn("api.model_denied", logging.F("model", req.Model), logging.F("token_id", info.ID), logging.F("endpoint", "rerank")); writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
+			logging.Warn("api.model_denied", logging.F("model", req.Model), logging.F("token_id", info.ID), logging.F("endpoint", "rerank"))
+			writeError(w, http.StatusForbidden, "model not allowed for this token", "model_not_allowed")
 			return
 		}
 	}
@@ -1426,8 +1431,6 @@ func calcCost(ch *model.Channel, usage provider.Usage) float64 {
 	return cc.RealCost(ch, usage)
 }
 
-
-
 // streamChatCompletions is invoked when the client sets stream=true.
 // It performs the normal route selection, asks the upstream for a
 // stream, and writes each chunk back as an SSE event. The
@@ -1480,7 +1483,7 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 	// goroutine and overwriting its cancel func (the prior
 	// implementation leaked one WithCancel per request).
 	var (
-		ctx    = r.Context()
+		ctx                       = r.Context()
 		cancel context.CancelFunc = func() {}
 	)
 	if timeout := h.streamTimeout(); timeout > 0 {
@@ -1502,15 +1505,15 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 	}
 
 	var (
-		usage           *provider.Usage
-		flushed         = 0
-		bytesSent       = int64(0)
-		contentBuilder  strings.Builder
-		streamBuf       bytes.Buffer
+		usage          *provider.Usage
+		flushed        = 0
+		bytesSent      = int64(0)
+		contentBuilder strings.Builder
+		streamBuf      bytes.Buffer
 		// toolCallAcc accumulates streaming delta.tool_calls keyed by
 		// Index. When finish_reason with tool_calls is seen, the
 		// accumulator is used to build the full assistant message.
-		toolCallAcc = map[int]*toolCallAccum{}
+		toolCallAcc  = map[int]*toolCallAccum{}
 		hasToolCalls bool
 	)
 	for {
@@ -1791,7 +1794,7 @@ func (h *Handler) tryCacheStream(ctx context.Context, req *provider.ChatRequest,
 		Usage:      usage,
 		CostUSD:    costUSD,
 		ChannelID:  route.Channel.ID,
-}
+	}
 	if err := h.responseCache.Set(ctx, entry, ttl); err != nil {
 		logging.Warn("cache stream set failed", logging.F("error", err.Error()))
 	}

@@ -228,9 +228,9 @@ func TestHook_IPConflict_DifferentKeyForSameIP(t *testing.T) {
 		},
 	}
 	mgr := New(Config{
-		Enabled:         true,
+		Enabled:          true,
 		ProviderPrefixes: []string{"sk-"},
-		UpstreamProbes:  map[string]ProbeFunc{"openai": func(_ context.Context, _, _ string) error { return nil }},
+		UpstreamProbes:   map[string]ProbeFunc{"openai": func(_ context.Context, _, _ string) error { return nil }},
 	}, store, nil)
 
 	req := httptest.NewRequest("POST", "/v1/chat", nil)
@@ -249,7 +249,7 @@ func TestHook_IPConflict_DifferentKeyForSameIP(t *testing.T) {
 func TestHook_UnsupportedProvider(t *testing.T) {
 	store := &fakeStore{}
 	mgr := New(Config{
-		Enabled:         true,
+		Enabled:          true,
 		ProviderPrefixes: []string{"sk-"},
 		UpstreamProbes:   map[string]ProbeFunc{}, // no probes for sk-
 	}, store, nil)
@@ -270,9 +270,9 @@ func TestHook_UnsupportedProvider(t *testing.T) {
 func TestHook_CreateFailed(t *testing.T) {
 	store := &fakeStoreWithErr{createErr: errors.New("disk full")}
 	mgr := New(Config{
-		Enabled:         true,
+		Enabled:          true,
 		ProviderPrefixes: []string{"sk-"},
-		UpstreamProbes:  map[string]ProbeFunc{"openai": func(_ context.Context, _, _ string) error { return nil }},
+		UpstreamProbes:   map[string]ProbeFunc{"openai": func(_ context.Context, _, _ string) error { return nil }},
 	}, store, nil)
 
 	req := httptest.NewRequest("POST", "/v1/chat", nil)
@@ -291,10 +291,10 @@ func TestHook_CreateFailed(t *testing.T) {
 func TestHook_TTLDaysSet(t *testing.T) {
 	store := &fakeStore{}
 	mgr := New(Config{
-		Enabled:         true,
+		Enabled:          true,
 		ProviderPrefixes: []string{"sk-"},
-		UpstreamProbes:  map[string]ProbeFunc{"openai": func(_ context.Context, _, _ string) error { return nil }},
-		TTLDays:         7,
+		UpstreamProbes:   map[string]ProbeFunc{"openai": func(_ context.Context, _, _ string) error { return nil }},
+		TTLDays:          7,
 	}, store, nil)
 
 	req := httptest.NewRequest("POST", "/v1/chat", nil)
@@ -313,10 +313,10 @@ func TestHook_TTLDaysSet(t *testing.T) {
 func TestHook_TTLDaysZero(t *testing.T) {
 	store := &fakeStore{}
 	mgr := New(Config{
-		Enabled:         true,
+		Enabled:          true,
 		ProviderPrefixes: []string{"sk-"},
-		UpstreamProbes:  map[string]ProbeFunc{"openai": func(_ context.Context, _, _ string) error { return nil }},
-		TTLDays:         0,
+		UpstreamProbes:   map[string]ProbeFunc{"openai": func(_ context.Context, _, _ string) error { return nil }},
+		TTLDays:          0,
 	}, store, nil)
 
 	req := httptest.NewRequest("POST", "/v1/chat", nil)
@@ -335,9 +335,9 @@ func TestHook_TTLDaysZero(t *testing.T) {
 func TestHook_PlaintextFallback_NoSecrets(t *testing.T) {
 	store := &fakeStore{}
 	mgr := New(Config{
-		Enabled:         true,
+		Enabled:          true,
 		ProviderPrefixes: []string{"sk-"},
-		UpstreamProbes:  map[string]ProbeFunc{"openai": func(_ context.Context, _, _ string) error { return nil }},
+		UpstreamProbes:   map[string]ProbeFunc{"openai": func(_ context.Context, _, _ string) error { return nil }},
 	}, store, nil) // secrets == nil
 
 	req := httptest.NewRequest("POST", "/v1/chat", nil)

@@ -923,7 +923,7 @@ func truncateByDate(names []string, budget int) []string {
 	}
 	// Group preserving input order (caller already sorted).
 	type dayGroup struct {
-		date string
+		date  string
 		files []string
 	}
 	var groups []dayGroup

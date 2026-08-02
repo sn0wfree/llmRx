@@ -334,7 +334,7 @@ func TestManagerCooldownFollowsRuntimeDefaults(t *testing.T) {
 	a := &model.Alert{
 		Name: "default-cooldown", Type: model.AlertErrorRate, Threshold: 0,
 		WindowSec: 60, CooldownSec: 0, // 0 = use default
-		Enabled:   true,
+		Enabled: true,
 	}
 	if err := st.CreateAlert(a); err != nil {
 		t.Fatalf("create alert: %v", err)

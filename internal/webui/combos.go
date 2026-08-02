@@ -29,12 +29,12 @@ func (h *Handler) CombosPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := map[string]any{
-		"Body":    "combos_list_body",
-		"Title":   "组合模型",
-		"User":    userToView(getUser(r)),
-		"Active":  "tokens",
-		"Token":   token,
-		"Combos":  combos,
+		"Body":   "combos_list_body",
+		"Title":  "组合模型",
+		"User":   userToView(getUser(r)),
+		"Active": "tokens",
+		"Token":  token,
+		"Combos": combos,
 	}
 	if err := h.renderer.Render(w, "combos_list_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -54,11 +54,11 @@ func (h *Handler) ComboNewForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := map[string]any{
-		"Body":    "combo_form_body",
-		"Title":   "新建组合模型",
-		"User":    userToView(getUser(r)),
-		"Active":  "tokens",
-		"Token":   token,
+		"Body":   "combo_form_body",
+		"Title":  "新建组合模型",
+		"User":   userToView(getUser(r)),
+		"Active": "tokens",
+		"Token":  token,
 	}
 	if err := h.renderer.Render(w, "combo_form_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -88,12 +88,12 @@ func (h *Handler) ComboEditForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := map[string]any{
-		"Body":    "combo_form_body",
-		"Title":   "编辑组合模型",
-		"User":    userToView(getUser(r)),
-		"Active":  "tokens",
-		"Token":   token,
-		"Combo":   combo,
+		"Body":   "combo_form_body",
+		"Title":  "编辑组合模型",
+		"User":   userToView(getUser(r)),
+		"Active": "tokens",
+		"Token":  token,
+		"Combo":  combo,
 	}
 	if err := h.renderer.Render(w, "combo_form_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -359,5 +359,3 @@ func (h *Handler) comboDeleteByID(w http.ResponseWriter, _ *http.Request, tokenI
 	h.triggerReload()
 	w.WriteHeader(http.StatusOK)
 }
-
-

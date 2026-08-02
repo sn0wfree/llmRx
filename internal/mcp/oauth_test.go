@@ -14,19 +14,25 @@ import (
 
 type atomicInt64 struct{ v int64 }
 
-func (a *atomicInt64) Add(n int64) int64   { return atomic.AddInt64(&a.v, n) }
-func (a *atomicInt64) Load() int64         { return atomic.LoadInt64(&a.v) }
+func (a *atomicInt64) Add(n int64) int64 { return atomic.AddInt64(&a.v, n) }
+func (a *atomicInt64) Load() int64       { return atomic.LoadInt64(&a.v) }
 
 type atomicBool struct{ v int32 }
 
-func (a *atomicBool) Store(b bool) { var n int32; if b { n = 1 }; atomic.StoreInt32(&a.v, n) }
-func (a *atomicBool) Load() bool   { return atomic.LoadInt32(&a.v) == 1 }
+func (a *atomicBool) Store(b bool) {
+	var n int32
+	if b {
+		n = 1
+	}
+	atomic.StoreInt32(&a.v, n)
+}
+func (a *atomicBool) Load() bool { return atomic.LoadInt32(&a.v) == 1 }
 
 // fakeOAuthServer simulates an RFC 8414 + 7591 + 8628 authorization
 // server for tests.
 type fakeOAuthServer struct {
-	t               *testing.T
-	ts              *httptest.Server
+	t                *testing.T
+	ts               *httptest.Server
 	registrationHits atomicInt64
 	deviceHits       atomicInt64
 	tokenHits        atomicInt64
@@ -43,10 +49,10 @@ func newFakeOAuthServer(t *testing.T) *fakeOAuthServer {
 	mux.HandleFunc("/.well-known/oauth-authorization-server.mcp", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
-			"issuer":                       f.ts.URL,
-			"authorization_endpoint":       f.ts.URL + "/authorize",
-			"token_endpoint":               f.ts.URL + "/token",
-			"registration_endpoint":        f.ts.URL + "/register",
+			"issuer":                        f.ts.URL,
+			"authorization_endpoint":        f.ts.URL + "/authorize",
+			"token_endpoint":                f.ts.URL + "/token",
+			"registration_endpoint":         f.ts.URL + "/register",
 			"device_authorization_endpoint": f.ts.URL + "/device",
 		})
 	})
@@ -250,7 +256,7 @@ func TestOAuthTokenRefresh(t *testing.T) {
 	defer f.close()
 
 	// Persist an expired token manually.
-	
+
 	st, err := mgr.Authorize(context.Background(), srv.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -308,8 +314,8 @@ func TestOAuthNoDeviceEndpoint(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/oauth-authorization-server.mcp", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{
-			"issuer":             "https://x",
-			"token_endpoint":     "https://x/token",
+			"issuer":                "https://x",
+			"token_endpoint":        "https://x/token",
 			"registration_endpoint": "https://x/register",
 		})
 	})

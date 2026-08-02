@@ -24,9 +24,9 @@ const (
 type KeyStatus int
 
 const (
-	KeyActive       KeyStatus = 0
-	KeyRateLimited  KeyStatus = 1
-	KeyDisabled     KeyStatus = 2
+	KeyActive      KeyStatus = 0
+	KeyRateLimited KeyStatus = 1
+	KeyDisabled    KeyStatus = 2
 )
 
 type TokenStatus int
@@ -49,9 +49,9 @@ const (
 type CostStrategy string
 
 const (
-	StrategyCheapest  CostStrategy = "cheapest"
-	StrategyFastest   CostStrategy = "fastest"
-	StrategyBalanced  CostStrategy = "balanced"
+	StrategyCheapest CostStrategy = "cheapest"
+	StrategyFastest  CostStrategy = "fastest"
+	StrategyBalanced CostStrategy = "balanced"
 )
 
 // ComboMode selects the routing strategy inside a token combo model.
@@ -74,16 +74,16 @@ type CircuitBreakerConfig struct {
 }
 
 type Channel struct {
-	ID             int64              `json:"id" gorm:"primaryKey"`
-	Name           string             `json:"name" gorm:"uniqueIndex;size:128"`
-	Provider       string             `json:"provider" gorm:"size:64"`
-	Protocol       string             `json:"protocol" gorm:"size:32"`
-	BaseURL        string             `json:"base_url" gorm:"size:512"`
-	Models         []string           `json:"models" gorm:"serializer:json"`
-	Intents        []string           `json:"intents" gorm:"serializer:json"`
-	Priority       int                `json:"priority"`
-	InputPrice     float64            `json:"input_price_per_1m"`
-	OutputPrice    float64            `json:"output_price_per_1m"`
+	ID          int64    `json:"id" gorm:"primaryKey"`
+	Name        string   `json:"name" gorm:"uniqueIndex;size:128"`
+	Provider    string   `json:"provider" gorm:"size:64"`
+	Protocol    string   `json:"protocol" gorm:"size:32"`
+	BaseURL     string   `json:"base_url" gorm:"size:512"`
+	Models      []string `json:"models" gorm:"serializer:json"`
+	Intents     []string `json:"intents" gorm:"serializer:json"`
+	Priority    int      `json:"priority"`
+	InputPrice  float64  `json:"input_price_per_1m"`
+	OutputPrice float64  `json:"output_price_per_1m"`
 	// CachedInputDiscount is the rate applied to prompt tokens that
 	// the upstream identifies as cache hits. The actual charge for
 	// cached tokens is CachedInputDiscount * InputPrice per 1M tokens.
@@ -93,39 +93,39 @@ type Channel struct {
 	//   1.0 = no discount (cached = normal rate)
 	//
 	// Default if unset: 0.1.
-	CachedInputDiscount float64       `json:"cached_input_discount"`
+	CachedInputDiscount float64              `json:"cached_input_discount"`
 	CircuitBreaker      CircuitBreakerConfig `json:"circuit_breaker" gorm:"serializer:json"`
-	Status         ChannelStatus      `json:"status"`
-	CreatedAt      time.Time          `json:"created_at"`
-	UpdatedAt      time.Time          `json:"updated_at"`
+	Status              ChannelStatus        `json:"status"`
+	CreatedAt           time.Time            `json:"created_at"`
+	UpdatedAt           time.Time            `json:"updated_at"`
 }
 
 type Key struct {
-	ID         int64     `json:"id" gorm:"primaryKey"`
-	ChannelID  int64     `json:"channel_id" gorm:"index"`
+	ID        int64 `json:"id" gorm:"primaryKey"`
+	ChannelID int64 `json:"channel_id" gorm:"index"`
 	// Key is the plaintext form. After P0 the store treats this
 	// field as **transient** — write paths accept plaintext, store
 	// it encrypted in KeyCiphertext, and zero out Key. Read paths
 	// decrypt KeyCiphertext back into Key. Legacy rows created
 	// before P0 still have plaintext in Key and an empty
 	// KeyCiphertext; the store migrates them lazily on first read.
-	Key         string    `json:"key,omitempty" gorm:"size:512"`
-	KeyCiphertext string  `json:"-" gorm:"size:1024"`
-	KeyMasked   string    `json:"key_masked" gorm:"size:64"`
-	Status      KeyStatus `json:"status"`
-	LastUsedAt  time.Time `json:"last_used_at"`
-	CreatedAt   time.Time `json:"created_at"`
+	Key           string    `json:"key,omitempty" gorm:"size:512"`
+	KeyCiphertext string    `json:"-" gorm:"size:1024"`
+	KeyMasked     string    `json:"key_masked" gorm:"size:64"`
+	Status        KeyStatus `json:"status"`
+	LastUsedAt    time.Time `json:"last_used_at"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type Plan struct {
-	ID           int64     `json:"id" gorm:"primaryKey"`
-	Name         string    `json:"name" gorm:"size:128"`
-	BudgetUSD    float64   `json:"budget_usd"`
-	UsedUSD      float64   `json:"used_usd"`
-	MarkupRatio  float64   `json:"markup_ratio"`
-	Status       int       `json:"status"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID          int64     `json:"id" gorm:"primaryKey"`
+	Name        string    `json:"name" gorm:"size:128"`
+	BudgetUSD   float64   `json:"budget_usd"`
+	UsedUSD     float64   `json:"used_usd"`
+	MarkupRatio float64   `json:"markup_ratio"`
+	Status      int       `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type Token struct {
@@ -145,10 +145,10 @@ type Token struct {
 }
 
 type User struct {
-	ID           int64      `json:"id" gorm:"primaryKey"`
-	Username     string     `json:"username" gorm:"uniqueIndex;size:64"`
-	PasswordHash string     `json:"-" gorm:"size:256"`
-	Role         UserRole   `json:"role"`
+	ID           int64    `json:"id" gorm:"primaryKey"`
+	Username     string   `json:"username" gorm:"uniqueIndex;size:64"`
+	PasswordHash string   `json:"-" gorm:"size:256"`
+	Role         UserRole `json:"role"`
 	// Permissions overrides the role's default permission set. JSON
 	// array of strings: "+perm" to grant, "-perm" to revoke. Empty
 	// means "use role defaults only".
@@ -160,31 +160,31 @@ type User struct {
 }
 
 type Log struct {
-	ID              int64     `json:"id" gorm:"primaryKey"`
-	TokenID         int64     `json:"token_id" gorm:"index"`
-	ChannelID       int64     `json:"channel_id"`
-	KeyID           int64     `json:"key_id"`
-	Model           string    `json:"model" gorm:"size:128"`
-	PromptTokens    int       `json:"prompt_tokens"`
-	CompletionTokens int      `json:"completion_tokens"`
+	ID               int64  `json:"id" gorm:"primaryKey"`
+	TokenID          int64  `json:"token_id" gorm:"index"`
+	ChannelID        int64  `json:"channel_id"`
+	KeyID            int64  `json:"key_id"`
+	Model            string `json:"model" gorm:"size:128"`
+	PromptTokens     int    `json:"prompt_tokens"`
+	CompletionTokens int    `json:"completion_tokens"`
 	// CachedTokens is the number of prompt tokens served from the
 	// upstream's prompt cache (Anthropic, OpenAI GPT-5+, etc.). The
 	// real cost calculation subtracts (CachedTokens * InputPrice *
 	// (1 - CachedInputDiscount)).
-	CachedTokens    int       `json:"cached_tokens"`
-	RealCostUSD     float64   `json:"real_cost_usd"`
-	BilledCostUSD   float64   `json:"billed_cost_usd"`
-	DurationMs      int64     `json:"duration_ms"`
-	StatusCode      int       `json:"status_code"`
-	RouterPath      string    `json:"router_path" gorm:"size:128"`
-	RequestIP       string    `json:"request_ip" gorm:"size:64"`
+	CachedTokens  int     `json:"cached_tokens"`
+	RealCostUSD   float64 `json:"real_cost_usd"`
+	BilledCostUSD float64 `json:"billed_cost_usd"`
+	DurationMs    int64   `json:"duration_ms"`
+	StatusCode    int     `json:"status_code"`
+	RouterPath    string  `json:"router_path" gorm:"size:128"`
+	RequestIP     string  `json:"request_ip" gorm:"size:64"`
 	// Endpoint records the log source. Empty means a normal LLM
 	// request; "mcp" marks a row produced by an MCP tool call.
-	Endpoint string    `json:"endpoint" gorm:"size:16"`
+	Endpoint string `json:"endpoint" gorm:"size:16"`
 	// Units is the number of billed units this row represents
 	// (1 per MCP tool call).
-	Units    int       `json:"units"`
-	CreatedAt       time.Time `json:"created_at"`
+	Units     int       `json:"units"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // ProviderDef is a user-defined provider descriptor stored in the DB.
@@ -211,14 +211,14 @@ type ProviderDef struct {
 // combo names are token-scoped (two tokens may both have "smart-1")
 // and must not collide with any channel.Models real model name.
 type TokenComboModel struct {
-	ID        int64      `json:"id" gorm:"primaryKey"`
-	TokenID   int64      `json:"token_id" gorm:"index"`
-	Name      string     `json:"name" gorm:"size:64"`
-	Models    []string   `json:"models" gorm:"serializer:json"`
-	Mode      ComboMode  `json:"mode"`
+	ID        int64        `json:"id" gorm:"primaryKey"`
+	TokenID   int64        `json:"token_id" gorm:"index"`
+	Name      string       `json:"name" gorm:"size:64"`
+	Models    []string     `json:"models" gorm:"serializer:json"`
+	Mode      ComboMode    `json:"mode"`
 	Strategy  CostStrategy `json:"strategy"` // "" = inherit global
-	Enabled   bool       `json:"enabled"`
-	IsDefault bool       `json:"is_default" gorm:"default:false"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	Enabled   bool         `json:"enabled"`
+	IsDefault bool         `json:"is_default" gorm:"default:false"`
+	CreatedAt time.Time    `json:"created_at"`
+	UpdatedAt time.Time    `json:"updated_at"`
 }

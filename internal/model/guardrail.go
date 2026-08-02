@@ -31,17 +31,17 @@ const (
 // GuardrailRule represents a single guardrail check. Rules are global
 // and reusable; tokens and plans reference them by ID.
 type GuardrailRule struct {
-	ID          int64          `json:"id" gorm:"primaryKey"`
-	Name        string         `json:"name" gorm:"size:128"`
-	Description string         `json:"description" gorm:"size:512"`
-	Type        GuardrailType  `json:"type" gorm:"size:32"`
-	Hook        GuardrailHook  `json:"hook" gorm:"size:16"`
+	ID          int64           `json:"id" gorm:"primaryKey"`
+	Name        string          `json:"name" gorm:"size:128"`
+	Description string          `json:"description" gorm:"size:512"`
+	Type        GuardrailType   `json:"type" gorm:"size:32"`
+	Hook        GuardrailHook   `json:"hook" gorm:"size:16"`
 	OnFailure   GuardrailAction `json:"on_failure" gorm:"size:16"`
-	Config      string         `json:"config" gorm:"serializer:json"`
-	Priority    int            `json:"priority"`
-	Enabled     bool           `json:"enabled"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
+	Config      string          `json:"config" gorm:"serializer:json"`
+	Priority    int             `json:"priority"`
+	Enabled     bool            `json:"enabled"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
 }
 
 // GuardrailEvent records a guardrail check result for auditing.

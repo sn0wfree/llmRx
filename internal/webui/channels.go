@@ -135,18 +135,18 @@ func (h *Handler) ChannelCreate(w http.ResponseWriter, r *http.Request) {
 
 	providerVal := r.FormValue("provider")
 	ch := &model.Channel{
-		Name:      strings.TrimSpace(r.FormValue("name")),
-		Provider:  providerVal,
-		Protocol:  "openai", // default
-		BaseURL:   strings.TrimSpace(r.FormValue("base_url")),
-		Models:    splitLines(r.FormValue("models")),
-		Intents:   splitLines(r.FormValue("intents")),
-		Priority:  parseIntDefault(r.FormValue("priority"), 5),
-		InputPrice: parseFloatDefault(r.FormValue("input_price"), 0),
+		Name:        strings.TrimSpace(r.FormValue("name")),
+		Provider:    providerVal,
+		Protocol:    "openai", // default
+		BaseURL:     strings.TrimSpace(r.FormValue("base_url")),
+		Models:      splitLines(r.FormValue("models")),
+		Intents:     splitLines(r.FormValue("intents")),
+		Priority:    parseIntDefault(r.FormValue("priority"), 5),
+		InputPrice:  parseFloatDefault(r.FormValue("input_price"), 0),
 		OutputPrice: parseFloatDefault(r.FormValue("output_price"), 0),
-		Status:    model.ChannelEnabled,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		Status:      model.ChannelEnabled,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
 	}
 	if r.FormValue("status") != "1" {
 		ch.Status = model.ChannelDisabled
@@ -333,10 +333,10 @@ func (h *Handler) ChannelKeyCreate(w http.ResponseWriter, r *http.Request) {
 	h.triggerReload()
 	// HTMX: render the new key row
 	if err := h.renderer.RenderPartial(w, "key_row", map[string]any{
-		"ID":         k.ID,
-		"KeyMasked":  k.KeyMasked,
-		"CreatedAt":  k.CreatedAt,
-		"ChannelID":  id,
+		"ID":        k.ID,
+		"KeyMasked": k.KeyMasked,
+		"CreatedAt": k.CreatedAt,
+		"ChannelID": id,
 	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}

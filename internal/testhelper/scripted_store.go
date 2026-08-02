@@ -25,58 +25,58 @@ type ScriptedStore struct {
 	underlying store.Store
 
 	// Channels
-	GetChannelsFunc  func() ([]model.Channel, error)
-	GetChannelFunc   func(id int64) (*model.Channel, error)
-	CreateChannelFunc func(ch *model.Channel) error
-	UpdateChannelFunc func(ch *model.Channel) error
-	DeleteChannelFunc func(id int64) error
+	GetChannelsFunc        func() ([]model.Channel, error)
+	GetChannelFunc         func(id int64) (*model.Channel, error)
+	CreateChannelFunc      func(ch *model.Channel) error
+	UpdateChannelFunc      func(ch *model.Channel) error
+	DeleteChannelFunc      func(id int64) error
 	GetDrainedChannelsFunc func() ([]store.DrainedChannel, error)
 
 	// Keys
-	GetKeysFunc  func(channelID int64) ([]model.Key, error)
+	GetKeysFunc   func(channelID int64) ([]model.Key, error)
 	CreateKeyFunc func(k *model.Key) error
 	DeleteKeyFunc func(id int64) error
-	WipeKeysFunc func() (int64, error)
+	WipeKeysFunc  func() (int64, error)
 
 	// Tokens
-	GetTokenFunc         func(key string) (*model.Token, error)
-	GetTokenByIDFunc     func(id int64) (*model.Token, error)
-	GetTokensFunc        func() ([]model.Token, error)
-	CreateTokenFunc      func(t *model.Token) error
-	UpdateTokenFunc      func(t *model.Token) error
-	DeleteTokenFunc      func(id int64) error
+	GetTokenFunc            func(key string) (*model.Token, error)
+	GetTokenByIDFunc        func(id int64) (*model.Token, error)
+	GetTokensFunc           func() ([]model.Token, error)
+	CreateTokenFunc         func(t *model.Token) error
+	UpdateTokenFunc         func(t *model.Token) error
+	DeleteTokenFunc         func(id int64) error
 	IncrementTokenSpendFunc func(tokenID int64, amount float64) error
 	IncrementPlanSpendFunc  func(planID int64, amount float64) error
 	RecordRequestSpendFunc  func(tokenID, planID int64, amount float64) error
 	MarkTokenExpiredFunc    func(tokenID int64) error
 
 	// Plans
-	GetPlansFunc  func() ([]model.Plan, error)
-	GetPlanFunc   func(id int64) (*model.Plan, error)
+	GetPlansFunc   func() ([]model.Plan, error)
+	GetPlanFunc    func(id int64) (*model.Plan, error)
 	CreatePlanFunc func(p *model.Plan) error
 	UpdatePlanFunc func(p *model.Plan) error
 	DeletePlanFunc func(id int64) error
 
 	// Users
-	GetUsersFunc          func() ([]model.User, error)
-	GetUserFunc           func(id int64) (*model.User, error)
-	GetUserByUsernameFunc func(username string) (*model.User, error)
-	GetUserBySessionFunc  func(token string) (*model.User, error)
-	CreateUserFunc        func(u *model.User) error
-	UpdateUserFunc        func(u *model.User) error
+	GetUsersFunc               func() ([]model.User, error)
+	GetUserFunc                func(id int64) (*model.User, error)
+	GetUserByUsernameFunc      func(username string) (*model.User, error)
+	GetUserBySessionFunc       func(token string) (*model.User, error)
+	CreateUserFunc             func(u *model.User) error
+	UpdateUserFunc             func(u *model.User) error
 	CleanupExpiredSessionsFunc func() (int64, error)
 
 	// Alerts
-	GetAlertsFunc       func() ([]model.Alert, error)
-	GetAlertFunc        func(id int64) (*model.Alert, error)
-	CreateAlertFunc     func(a *model.Alert) error
-	UpdateAlertFunc     func(a *model.Alert) error
-	DeleteAlertFunc     func(id int64) error
+	GetAlertsFunc        func() ([]model.Alert, error)
+	GetAlertFunc         func(id int64) (*model.Alert, error)
+	CreateAlertFunc      func(a *model.Alert) error
+	UpdateAlertFunc      func(a *model.Alert) error
+	DeleteAlertFunc      func(id int64) error
 	RecordAlertFiredFunc func(id int64, atUnix int64) error
-	DisableAlertFunc    func(id int64, reason string) error
-	GetAlertEventsFunc  func(limit int) ([]model.AlertEvent, error)
+	DisableAlertFunc     func(id int64, reason string) error
+	GetAlertEventsFunc   func(limit int) ([]model.AlertEvent, error)
 	CreateAlertEventFunc func(e *model.AlertEvent) error
-	AckAlertEventFunc   func(id int64) error
+	AckAlertEventFunc    func(id int64) error
 
 	// Raw
 	RawQueryRowFunc func(query string, args ...any) *sql.Row
@@ -84,39 +84,39 @@ type ScriptedStore struct {
 	RawDBFunc       func() *sql.DB
 
 	// Runtime
-	GetRuntimeSettingsFunc  func() ([]byte, error)
-	SetRuntimeSettingsFunc  func(payload []byte) error
+	GetRuntimeSettingsFunc func() ([]byte, error)
+	SetRuntimeSettingsFunc func(payload []byte) error
 
 	// Secrets
 	ReencryptAllKeysFunc func(oldMgr, newMgr *secrets.Manager) (int, error)
-	SetSecretsFunc        func(m *secrets.Manager)
-	RotateMasterKeyFunc   func(newKeyHex string) (int, error)
+	SetSecretsFunc       func(m *secrets.Manager)
+	RotateMasterKeyFunc  func(newKeyHex string) (int, error)
 
 	// Lifecycle
 	PingFunc  func(ctx context.Context) error
 	CloseFunc func() error
 
 	// BYOK
-	CreateBYOKChannelFunc    func(ctx context.Context, ch *model.BYOKChannel) (int64, error)
-	ListBYOKChannelsFunc     func(ctx context.Context) ([]*model.BYOKChannel, error)
-	GetBYOKChannelFunc       func(ctx context.Context, id int64) (*model.BYOKChannel, error)
-	GetBYOKChannelByIPFunc   func(ctx context.Context, ownerIP string) (*model.BYOKChannel, error)
-	TouchBYOKChannelFunc     func(ctx context.Context, id int64) error
-	DeleteBYOKChannelFunc    func(ctx context.Context, id int64) error
+	CreateBYOKChannelFunc  func(ctx context.Context, ch *model.BYOKChannel) (int64, error)
+	ListBYOKChannelsFunc   func(ctx context.Context) ([]*model.BYOKChannel, error)
+	GetBYOKChannelFunc     func(ctx context.Context, id int64) (*model.BYOKChannel, error)
+	GetBYOKChannelByIPFunc func(ctx context.Context, ownerIP string) (*model.BYOKChannel, error)
+	TouchBYOKChannelFunc   func(ctx context.Context, id int64) error
+	DeleteBYOKChannelFunc  func(ctx context.Context, id int64) error
 
 	// ProviderDefs
-	GetProviderDefsFunc  func() ([]model.ProviderDef, error)
+	GetProviderDefsFunc   func() ([]model.ProviderDef, error)
 	CreateProviderDefFunc func(p *model.ProviderDef) error
 	DeleteProviderDefFunc func(id int64) error
 
 	// ComboModels
-	GetComboModelsFunc    func(tokenID int64) ([]model.TokenComboModel, error)
-	GetComboModelFunc     func(id int64) (*model.TokenComboModel, error)
-	GetAllComboModelsFunc func() ([]model.TokenComboModel, error)
+	GetComboModelsFunc     func(tokenID int64) ([]model.TokenComboModel, error)
+	GetComboModelFunc      func(id int64) (*model.TokenComboModel, error)
+	GetAllComboModelsFunc  func() ([]model.TokenComboModel, error)
 	ListAllComboModelsFunc func() ([]model.TokenComboModel, error)
-	CreateComboModelFunc  func(c *model.TokenComboModel) error
-	UpdateComboModelFunc  func(c *model.TokenComboModel) error
-	DeleteComboModelFunc  func(id int64) error
+	CreateComboModelFunc   func(c *model.TokenComboModel) error
+	UpdateComboModelFunc   func(c *model.TokenComboModel) error
+	DeleteComboModelFunc   func(id int64) error
 	SetDefaultModelSetFunc func(tokenID, comboID int64) error
 
 	// Guardrails

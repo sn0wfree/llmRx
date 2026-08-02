@@ -81,11 +81,11 @@ type anthropicContentBlock struct {
 }
 
 type anthropicResponse struct {
-	ID         string            `json:"id"`
-	Model      string            `json:"model"`
+	ID         string             `json:"id"`
+	Model      string             `json:"model"`
 	Content    []anthropicContent `json:"content"`
 	Usage      anthropicUsage     `json:"usage"`
-	StopReason string            `json:"stop_reason"`
+	StopReason string             `json:"stop_reason"`
 }
 
 type anthropicContent struct {
@@ -133,9 +133,9 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req *ChatRequest, apiKey, 
 		}
 	}
 	return &ChatResponse{
-		ID:    ar.ID,
+		ID:     ar.ID,
 		Object: "chat.completion",
-		Model: ar.Model,
+		Model:  ar.Model,
 		Choices: []Choice{{
 			Index:        0,
 			Message:      Message{Role: "assistant", Content: text},
@@ -267,25 +267,25 @@ func (p *AnthropicProvider) StreamChat(ctx context.Context, req *ChatRequest, ap
 						eventType = strings.TrimPrefix(line, "event: ")
 					case strings.HasPrefix(line, "data: "):
 						payload := strings.TrimPrefix(line, "data: ")
-					if eventType == "content_block_delta" {
-						var d struct {
-							Delta struct {
-								Type string `json:"type"`
-								Text string `json:"text"`
-							} `json:"delta"`
-						}
-						if json.Unmarshal([]byte(payload), &d) == nil {
-							chunk := StreamChunk{
-								Object:  "chat.completion.chunk",
-								Choices: []StreamChoice{{Index: 0, Delta: Message{Content: d.Delta.Text}}},
+						if eventType == "content_block_delta" {
+							var d struct {
+								Delta struct {
+									Type string `json:"type"`
+									Text string `json:"text"`
+								} `json:"delta"`
 							}
-							select {
-							case <-ctx.Done():
-								return
-							case out <- StreamEvent{Chunk: chunk}:
+							if json.Unmarshal([]byte(payload), &d) == nil {
+								chunk := StreamChunk{
+									Object:  "chat.completion.chunk",
+									Choices: []StreamChoice{{Index: 0, Delta: Message{Content: d.Delta.Text}}},
+								}
+								select {
+								case <-ctx.Done():
+									return
+								case out <- StreamEvent{Chunk: chunk}:
+								}
 							}
 						}
-					}
 						if eventType == "message_start" {
 							var m struct {
 								Message struct {
@@ -296,7 +296,7 @@ func (p *AnthropicProvider) StreamChat(ctx context.Context, req *ChatRequest, ap
 							if json.Unmarshal([]byte(payload), &m) == nil {
 								chunk := StreamChunk{
 									ID: m.Message.ID, Object: "chat.completion.chunk",
-									Model: m.Message.Model,
+									Model:   m.Message.Model,
 									Choices: []StreamChoice{{Index: 0, Delta: Message{Role: "assistant"}}},
 								}
 								select {

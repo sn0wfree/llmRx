@@ -40,7 +40,7 @@ type Manager struct {
 	// manager reads AlertCooldownSec() on every evaluation so admin
 	// changes take effect without a restart. When nil, falls back
 	// to the static fallbackCooldown captured at construction.
-	defaults       *runtime.Defaults
+	defaults         *runtime.Defaults
 	fallbackCooldown time.Duration
 
 	mu    sync.RWMutex

@@ -208,11 +208,11 @@ func (r *Renderer) Flash(w http.ResponseWriter, level, msg string) {
 
 // PageData wraps data with common fields needed by base.html.
 type PageData struct {
-	Title   string
-	User    *User
-	Active  string
-	Flash   string
-	Data    any
+	Title  string
+	User   *User
+	Active string
+	Flash  string
+	Data   any
 }
 
 // User is a minimal projection of model.User for templates.

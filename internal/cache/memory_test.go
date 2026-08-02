@@ -152,7 +152,7 @@ func TestMemoryCache_ConcurrentAccess(t *testing.T) {
 			key := string(rune('a' + (n % 26)))
 			_ = m.Set(context.Background(), &Entry{Key: key, StatusCode: 200, Body: json.RawMessage(`{}`)}, 0)
 			_, _, _ = m.Get(context.Background(), key)
-		_ = m.Delete(context.Background(), key)
+			_ = m.Delete(context.Background(), key)
 		}(i)
 	}
 	wg.Wait()

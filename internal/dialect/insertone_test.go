@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	_ "github.com/mattn/go-sqlite3"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 func openSQLite(t *testing.T) *sql.DB {
@@ -96,4 +96,3 @@ func TestParseBoolMethodForms(t *testing.T) {
 		t.Fatal("Postgres.ParseBool(string forms)")
 	}
 }
-

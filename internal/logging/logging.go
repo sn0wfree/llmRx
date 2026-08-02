@@ -58,9 +58,9 @@ const (
 
 // Logger is a structured JSON logger. Safe for concurrent use.
 type Logger struct {
-	mu    sync.Mutex
-	out   io.Writer
-	level Level
+	mu     sync.Mutex
+	out    io.Writer
+	level  Level
 	format Format
 	fields map[string]any
 }
@@ -76,7 +76,7 @@ func New(w io.Writer, level Level, format Format) *Logger {
 }
 
 var (
-	defaultMu sync.Mutex
+	defaultMu     sync.Mutex
 	defaultLogger = New(os.Stdout, LevelInfo, FormatJSON)
 )
 

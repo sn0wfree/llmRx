@@ -28,7 +28,7 @@ type StaticRouter struct {
 	// read the snapshot without a lock; Reload() swaps the pointer
 	// under channelsMu.
 	channelsSnapshot atomic.Value // holds *[]model.Channel
-	channelsMu       sync.Mutex    // serializes Reload() calls
+	channelsMu       sync.Mutex   // serializes Reload() calls
 }
 
 func NewStaticRouter(st store.Store) *StaticRouter {

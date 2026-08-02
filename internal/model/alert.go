@@ -8,10 +8,10 @@ import "time"
 type AlertType string
 
 const (
-	AlertErrorRate     AlertType = "error_rate"     // ratio of status>=400 to total in window
-	AlertP95Latency    AlertType = "p95_latency"    // approximate p95 of duration_ms in window
-	AlertCostSpike     AlertType = "cost_spike"     // cost in window vs prior window
-	AlertKeyExhausted  AlertType = "key_exhausted"  // any channel has 0 active keys
+	AlertErrorRate    AlertType = "error_rate"    // ratio of status>=400 to total in window
+	AlertP95Latency   AlertType = "p95_latency"   // approximate p95 of duration_ms in window
+	AlertCostSpike    AlertType = "cost_spike"    // cost in window vs prior window
+	AlertKeyExhausted AlertType = "key_exhausted" // any channel has 0 active keys
 )
 
 // Alert is a user-configured rule. Threshold semantics depend on
@@ -33,12 +33,12 @@ type Alert struct {
 // AlertEvent records a fired alert. Payload is JSON-serialised
 // metric values; the Webhook delivery status is also stored.
 type AlertEvent struct {
-	ID              int64     `json:"id"`
-	AlertID         int64     `json:"alert_id"`
-	AlertName       string    `json:"alert_name"`
-	AlertType       AlertType `json:"alert_type"`
-	FiredAt         time.Time `json:"fired_at"`
-	Payload         string    `json:"payload"`
-	DeliveredWebhook bool     `json:"delivered_webhook"`
-	Acknowledged    bool      `json:"acknowledged"`
+	ID               int64     `json:"id"`
+	AlertID          int64     `json:"alert_id"`
+	AlertName        string    `json:"alert_name"`
+	AlertType        AlertType `json:"alert_type"`
+	FiredAt          time.Time `json:"fired_at"`
+	Payload          string    `json:"payload"`
+	DeliveredWebhook bool      `json:"delivered_webhook"`
+	Acknowledged     bool      `json:"acknowledged"`
 }

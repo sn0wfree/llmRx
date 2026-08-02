@@ -30,10 +30,10 @@ func (m *mockProvider) Chat(ctx context.Context, req *provider.ChatRequest, key,
 
 type mockAgenticRepo struct {
 	store.MCPRepository
-	tools     []store.MCPTool
-	server    *store.MCPServer
-	pricing   map[int64]*store.MCPToolPricing
-	serverCalls int
+	tools        []store.MCPTool
+	server       *store.MCPServer
+	pricing      map[int64]*store.MCPToolPricing
+	serverCalls  int
 	pricingCalls int
 }
 

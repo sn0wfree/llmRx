@@ -18,8 +18,8 @@ var errTestStore = errors.New("test store error")
 
 type errorLogDriver struct{ err error }
 
-func (d *errorLogDriver) Open(dir string) error                                          { return nil }
-func (d *errorLogDriver) Insert(entry *model.Log) error                                 { return d.err }
+func (d *errorLogDriver) Open(dir string) error         { return nil }
+func (d *errorLogDriver) Insert(entry *model.Log) error { return d.err }
 func (d *errorLogDriver) QueryAcross(f logstore.QueryFilter, days []string) ([]model.Log, int64, error) {
 	return nil, 0, d.err
 }
@@ -32,9 +32,9 @@ func (d *errorLogDriver) TimeSeries(f logstore.QueryFilter, bucketSec int64, day
 func (d *errorLogDriver) TopByField(f logstore.QueryFilter, field string, limit int, days []string) ([]logstore.NamedMetric, error) {
 	return nil, d.err
 }
-func (d *errorLogDriver) ListFiles() ([]string, error)   { return nil, d.err }
-func (d *errorLogDriver) DeleteFiles(days []string) error { return d.err }
-func (d *errorLogDriver) Close() error                  { return nil }
+func (d *errorLogDriver) ListFiles() ([]string, error)                  { return nil, d.err }
+func (d *errorLogDriver) DeleteFiles(days []string) error               { return d.err }
+func (d *errorLogDriver) Close() error                                  { return nil }
 func (d *errorLogDriver) BatchInsert(entries []*model.Log) (int, error) { return 0, d.err }
 
 func newErrorLogStore(t *testing.T) *logstore.Manager {

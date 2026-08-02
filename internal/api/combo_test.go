@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/model"
-	"github.com/sn0wfree/llmRx/internal/provider"
 	proberpkg "github.com/sn0wfree/llmRx/internal/prober"
+	"github.com/sn0wfree/llmRx/internal/provider"
 	"github.com/sn0wfree/llmRx/internal/testhelper"
 )
 

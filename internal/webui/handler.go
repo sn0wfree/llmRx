@@ -19,15 +19,15 @@ import (
 
 // Handler holds dependencies for the admin web UI.
 type Handler struct {
-	store      WebuiStore
-	logStore   *logstore.Manager
-	renderer   *Renderer
-	adminH     *webAPIBridge
-	configPath string
-	prober     *prober.Cache
+	store         WebuiStore
+	logStore      *logstore.Manager
+	renderer      *Renderer
+	adminH        *webAPIBridge
+	configPath    string
+	prober        *prober.Cache
 	responseCache cache.Cache
 	mcpClientMgr  *mcp.ClientManager
-	oauth     *mcp.OAuthManager
+	oauth         *mcp.OAuthManager
 }
 
 // New creates a web UI handler. adminAPI provides the legacy
@@ -118,7 +118,7 @@ func (h *Handler) Routes() http.Handler {
 		r.Post("/tokens/{id}", h.TokenAction)
 		r.Delete("/tokens/{id}", h.TokenDelete)
 
-// ComboModels (sub-resource of tokens)
+		// ComboModels (sub-resource of tokens)
 		r.Get("/tokens/{id}/combos", h.CombosPage)
 		r.Get("/tokens/{id}/combos/new", h.ComboNewForm)
 		r.Get("/tokens/{id}/combos/{cid}/edit", h.ComboEditForm)

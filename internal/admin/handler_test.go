@@ -51,8 +51,8 @@ func login(t *testing.T, app *testhelper.App) string {
 		t.Fatalf("login: %d %s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		SessionToken      string `json:"session_token"`
-		SessionExpiresAt  string `json:"session_expires_at"`
+		SessionToken     string `json:"session_token"`
+		SessionExpiresAt string `json:"session_expires_at"`
 	}
 	decodeJSON(t, rec, &resp)
 	if resp.SessionToken == "" {
@@ -96,9 +96,9 @@ func TestAdmin_DashboardRequiresSession(t *testing.T) {
 		t.Fatalf("with session: expected 200, got %d %s", rec.Code, rec.Body.String())
 	}
 	var dash struct {
-		ChannelsTotal  int            `json:"channels_total"`
-		TokensTotal    int            `json:"tokens_total"`
-		KeysByChannel  map[string]int `json:"keys_by_channel"`
+		ChannelsTotal int            `json:"channels_total"`
+		TokensTotal   int            `json:"tokens_total"`
+		KeysByChannel map[string]int `json:"keys_by_channel"`
 	}
 	decodeJSON(t, rec, &dash)
 	if dash.ChannelsTotal != 1 || dash.TokensTotal != 1 || dash.KeysByChannel["1"] != 1 {
@@ -841,7 +841,7 @@ func TestAdmin_ConfigReloadsOnStartup(t *testing.T) {
 	// Simulate a new process: fresh runtime.Defaults seeded with
 	// the default YAML values, then overlaid with the DB row.
 	rt := app.RT
-	rt.SetCostStrategy("cheapest")  // default YAML seed
+	rt.SetCostStrategy("cheapest") // default YAML seed
 	rt.SetMarkupRatio(1.0)
 	rt.SetBreakerMaxFailures(5)
 	rt.SetBreakerResetTimeoutMs(30000)
@@ -1109,8 +1109,8 @@ func TestAdmin_AlertsCRUD(t *testing.T) {
 		t.Fatalf("update: %d %s", rec.Code, rec.Body.String())
 	}
 	var upd struct {
-		Name    string  `json:"name"`
-		Enabled bool    `json:"enabled"`
+		Name      string  `json:"name"`
+		Enabled   bool    `json:"enabled"`
 		Threshold float64 `json:"threshold"`
 	}
 	decodeJSON(t, rec, &upd)

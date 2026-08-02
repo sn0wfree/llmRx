@@ -15,10 +15,10 @@ import (
 type contextKey string
 
 const (
-	TokenKey    contextKey = "token_key"
-	TokenIDKey  contextKey = "token_id"
+	TokenKey     contextKey = "token_key"
+	TokenIDKey   contextKey = "token_id"
 	TokenInfoKey contextKey = "token_info"
-	UserKey     contextKey = "user_key"
+	UserKey      contextKey = "user_key"
 )
 
 type errorBody struct {

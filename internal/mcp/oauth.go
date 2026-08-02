@@ -28,11 +28,11 @@ const (
 // oauthServerMetadata is the RFC 8414 authorization server
 // metadata document.
 type oauthServerMetadata struct {
-	Issuer                        string `json:"issuer"`
-	AuthorizationEndpoint         string `json:"authorization_endpoint"`
-	TokenEndpoint                 string `json:"token_endpoint"`
-	RegistrationEndpoint          string `json:"registration_endpoint"`
-	DeviceAuthorizationEndpoint   string `json:"device_authorization_endpoint"`
+	Issuer                      string `json:"issuer"`
+	AuthorizationEndpoint       string `json:"authorization_endpoint"`
+	TokenEndpoint               string `json:"token_endpoint"`
+	RegistrationEndpoint        string `json:"registration_endpoint"`
+	DeviceAuthorizationEndpoint string `json:"device_authorization_endpoint"`
 }
 
 // oauthTokenSet is the persisted token state.

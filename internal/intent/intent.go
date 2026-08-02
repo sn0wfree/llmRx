@@ -117,8 +117,8 @@ func loadFrom(path string) (Classifier, error) {
 	}
 	cl, _ := loadClose(handle)
 	n := &native{
-		so:      handle,
-		cap:     4096,
+		so:       handle,
+		cap:      4096,
 		classify: unsafe.Pointer(cs),
 		backend:  unsafe.Pointer(be),
 		close:    unsafe.Pointer(cl),
@@ -183,15 +183,15 @@ func (n *native) Classify(text string) Intent {
 	}
 	raw := out[:written]
 	var res struct {
-		Label  string          `json:"label"`
-		Score  float64         `json:"score"`
+		Label string  `json:"label"`
+		Score float64 `json:"score"`
 		// The Rust side serialises debug as `Vec<(&str, f32)>`,
 		// which serde renders as a JSON array of [label, weight]
 		// tuples (not as objects). Decode into RawMessage first
 		// so we can accept both shapes — Rust's current shape
 		// (tuple array) and a future object-array shape — without
 		// losing the structured Debug entries either way.
-		Debug  []json.RawMessage `json:"debug"`
+		Debug []json.RawMessage `json:"debug"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
 		logging.Warn("intent parse error",

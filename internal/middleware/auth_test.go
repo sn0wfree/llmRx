@@ -145,7 +145,7 @@ func TestTokenInfo_HasModelAccess_ComboMembers(t *testing.T) {
 	tk := TokenInfo{
 		ComboModels: map[string]model.TokenComboModel{
 			"my-set": {
-				Models: []string{"gpt-4o", "claude-3"},
+				Models:  []string{"gpt-4o", "claude-3"},
 				Enabled: true,
 			},
 		},
@@ -165,7 +165,7 @@ func TestTokenInfo_HasModelAccess_DisabledComboIgnored(t *testing.T) {
 	tk := TokenInfo{
 		ComboModels: map[string]model.TokenComboModel{
 			"disabled-set": {
-				Models: []string{"secret-model"},
+				Models:  []string{"secret-model"},
 				Enabled: false,
 			},
 		},
@@ -179,7 +179,7 @@ func TestTokenInfo_HasModelAccess_ComboNameAllowed(t *testing.T) {
 	tk := TokenInfo{
 		ComboModels: map[string]model.TokenComboModel{
 			"my-set": {
-				Models: []string{"m1"},
+				Models:  []string{"m1"},
 				Enabled: true,
 			},
 		},

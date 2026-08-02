@@ -149,7 +149,7 @@ func TestSeed_PropagatesTokenError(t *testing.T) {
 	st := openTestStore(t)
 	// Use a ScriptedStore that fails on CreateToken.
 	scripted := &scriptedStore{
-		Store: st,
+		Store:          st,
 		createTokenErr: errSimulated("simulated token create failure"),
 	}
 	cfg := &config.Config{

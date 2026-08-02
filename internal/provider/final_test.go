@@ -68,8 +68,8 @@ func TestAnthropicChat_Metadata(t *testing.T) {
 
 	p := provider.NewAnthropicProvider()
 	resp, _, err := p.Chat(context.Background(), &provider.ChatRequest{
-		Model:    "claude-3",
-		Messages: []provider.Message{{Role: "user", Content: "hi"}},
+		Model:     "claude-3",
+		Messages:  []provider.Message{{Role: "user", Content: "hi"}},
 		MaxTokens: 10,
 	}, "sk", srv.URL)
 	if err != nil {
@@ -89,8 +89,8 @@ func TestAnthropicChat_ToolUseResponse(t *testing.T) {
 
 	p := provider.NewAnthropicProvider()
 	resp, _, err := p.Chat(context.Background(), &provider.ChatRequest{
-		Model:    "claude-3",
-		Messages: []provider.Message{{Role: "user", Content: "what's the weather?"}},
+		Model:     "claude-3",
+		Messages:  []provider.Message{{Role: "user", Content: "what's the weather?"}},
 		MaxTokens: 100,
 	}, "sk", srv.URL)
 	if err != nil {

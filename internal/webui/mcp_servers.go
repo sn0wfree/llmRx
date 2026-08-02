@@ -44,11 +44,11 @@ func (h *Handler) MCPServersPage(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, row)
 	}
 	data := map[string]any{
-		"Body":    "mcp_servers_list_body",
-		"Title":   "MCP 服务器",
-		"User":    userToView(getUser(r)),
-		"Active":  "mcp-servers",
-		"Servers": rows,
+		"Body":     "mcp_servers_list_body",
+		"Title":    "MCP 服务器",
+		"User":     userToView(getUser(r)),
+		"Active":   "mcp-servers",
+		"Servers":  rows,
 		"HasOAuth": h.oauth != nil,
 	}
 	if err := h.renderer.Render(w, "mcp_servers_list_body", data); err != nil {
@@ -71,12 +71,12 @@ func (h *Handler) MCPOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := map[string]any{
-		"Body":         "mcp_oauth_authorize_body",
-		"Title":        "OAuth 授权",
-		"User":         userToView(getUser(r)),
-		"Active":       "mcp-servers",
-		"State":        st,
-		"ServerID":     id,
+		"Body":     "mcp_oauth_authorize_body",
+		"Title":    "OAuth 授权",
+		"User":     userToView(getUser(r)),
+		"Active":   "mcp-servers",
+		"State":    st,
+		"ServerID": id,
 	}
 	if err := h.renderer.Render(w, "mcp_oauth_authorize_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

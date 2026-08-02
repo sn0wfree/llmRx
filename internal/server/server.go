@@ -196,15 +196,15 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	// keys via channel_invoke, so it must not be unauthenticated.
 	s.engine.With(authmw.WithLimitsAndOptions(s.tokens.Lookup, handler.Limits(), s.byokHook)).
 		Post("/mcp/llmrx", func(w http.ResponseWriter, r *http.Request) {
-		body, err := readBody(r)
-		if err != nil {
-			http.Error(w, `{"jsonrpc":"2.0","error":{"code":-32700,"message":"invalid body"}}`, http.StatusBadRequest)
-			return
-		}
-		resp := s.mcpServer.HandleHTTP(r.Context(), body)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	})
+			body, err := readBody(r)
+			if err != nil {
+				http.Error(w, `{"jsonrpc":"2.0","error":{"code":-32700,"message":"invalid body"}}`, http.StatusBadRequest)
+				return
+			}
+			resp := s.mcpServer.HandleHTTP(r.Context(), body)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		})
 
 	s.engine.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

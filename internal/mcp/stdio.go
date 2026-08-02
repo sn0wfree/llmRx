@@ -26,10 +26,10 @@ const stdioMaxFrameBytes = 16 << 20 // 16 MiB
 type stdioTransport struct {
 	command string // shell command, run via sh -c
 
-	mu      sync.Mutex
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	scanner *bufio.Scanner
+	mu        sync.Mutex
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	scanner   *bufio.Scanner
 	closeOnce sync.Once
 }
 

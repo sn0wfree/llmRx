@@ -138,7 +138,7 @@ type staticStage struct {
 	extraChannels []func() []*model.Channel
 }
 
-func (s *staticStage) Name() string { return "static" }
+func (s *staticStage) Name() string                                { return "static" }
 func (s *staticStage) Apply(_ context.Context, rctx *RouteContext) {}
 
 type breakerStage struct {

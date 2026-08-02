@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/provider"
-	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/testhelper"
 )
 

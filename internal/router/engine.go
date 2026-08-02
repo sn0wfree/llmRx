@@ -17,15 +17,15 @@ import (
 // observed once at the source instead of scattered across api
 // handlers.
 type RouterEngine struct {
-	static         *StaticRouter
-	breaker        *CircuitBreaker
-	cost           *CostRouter
-	thompson       *thompson.Sampler
-	intent         intent.Classifier
-	pool           *pool.ChannelPool
-	store          store.Store
-	extraChannels  []func() []*model.Channel // BYOK hook (Phase 1.5 reserved)
-	trafficObs     []TrafficObserver          // optional real-traffic observers (prober etc.)
+	static        *StaticRouter
+	breaker       *CircuitBreaker
+	cost          *CostRouter
+	thompson      *thompson.Sampler
+	intent        intent.Classifier
+	pool          *pool.ChannelPool
+	store         store.Store
+	extraChannels []func() []*model.Channel // BYOK hook (Phase 1.5 reserved)
+	trafficObs    []TrafficObserver         // optional real-traffic observers (prober etc.)
 }
 
 // TrafficObserver is the pluggable hook RouterEngine invokes on
@@ -166,9 +166,9 @@ func (e *RouterEngine) CostStrategy() model.CostStrategy {
 // and the log line. It is optional; zero value gives the legacy
 // behaviour where no L4 step runs.
 type RouteOptions struct {
-	Text         string              // last user message, used for L4 intent classification
-	ModelSet     []string            // optional L1 override: match any of these models (combo load_balance)
-	CostStrategy model.CostStrategy  // optional L3 override: "" = use global
+	Text         string             // last user message, used for L4 intent classification
+	ModelSet     []string           // optional L1 override: match any of these models (combo load_balance)
+	CostStrategy model.CostStrategy // optional L3 override: "" = use global
 }
 
 // Route is the legacy entry point. Use RouteWith for L4 support.

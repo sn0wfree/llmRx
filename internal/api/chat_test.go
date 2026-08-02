@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/provider"
-	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/testhelper"
 )
 
@@ -299,10 +299,10 @@ func TestChat_ListModelsDetails(t *testing.T) {
 	}
 	var resp struct {
 		Data []struct {
-			ID            string   `json:"id"`
-			OwnedBy       string   `json:"owned_by"`
-			ContextWindow *int     `json:"context_window"`
-			MaxOutput     *int     `json:"max_output"`
+			ID            string `json:"id"`
+			OwnedBy       string `json:"owned_by"`
+			ContextWindow *int   `json:"context_window"`
+			MaxOutput     *int   `json:"max_output"`
 			Pricing       *struct {
 				Input  float64 `json:"input"`
 				Output float64 `json:"output"`

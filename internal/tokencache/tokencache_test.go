@@ -11,10 +11,10 @@ import (
 
 // fakeStore implements the TokenSource methods the cache depends on.
 type fakeStore struct {
-	tokens   []model.Token
-	plans    map[int64]*model.Plan
-	planErr  error // returned by GetPlan when non-nil; supersedes plans map
-	combos   []model.TokenComboModel
+	tokens  []model.Token
+	plans   map[int64]*model.Plan
+	planErr error // returned by GetPlan when non-nil; supersedes plans map
+	combos  []model.TokenComboModel
 }
 
 func (f *fakeStore) GetTokens() ([]model.Token, error) { return f.tokens, nil }

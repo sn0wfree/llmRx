@@ -34,9 +34,9 @@ type GuardrailEngine struct {
 // cachedRule holds a guardrail rule with pre-parsed config.
 type cachedRule struct {
 	rule      model.GuardrailRule
-	config    interface{} // parsed config (type depends on rule type)
+	config    interface{}      // parsed config (type depends on rule type)
 	compiled  []*regexp.Regexp // pre-compiled regex patterns
-	caseLower []string     // lowercased blocked words
+	caseLower []string         // lowercased blocked words
 	minChars  int
 	maxChars  int
 }

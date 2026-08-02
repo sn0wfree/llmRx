@@ -205,8 +205,8 @@ func TestOpenAIStream_PassesIncludeUsage(t *testing.T) {
 
 	p := NewOpenAIProvider()
 	_, err := p.StreamChat(context.Background(), &ChatRequest{
-		Model:        "m",
-		Messages:     []Message{{Role: "user", Content: "hi"}},
+		Model:         "m",
+		Messages:      []Message{{Role: "user", Content: "hi"}},
 		StreamOptions: &StreamOptions{IncludeUsage: true},
 	}, "sk", srv.URL)
 	if err != nil {
@@ -417,11 +417,11 @@ func TestGemini_TranslateReq_FullGenerationConfig(t *testing.T) {
 			{Role: "system", Content: "be terse"},
 			{Role: "user", Content: "hi"},
 		},
-		MaxTokens:    64,
-		Temperature:  &temp,
-		TopP:         &topp,
-		N:            &n,
-		Stop:         "END",
+		MaxTokens:      64,
+		Temperature:    &temp,
+		TopP:           &topp,
+		N:              &n,
+		Stop:           "END",
 		ResponseFormat: &ResponseFormat{Type: "json_object"},
 		Tools: []Tool{{Function: FunctionSpec{
 			Name:        "search",
@@ -476,9 +476,9 @@ func TestGemini_TranslateReq_FullGenerationConfig(t *testing.T) {
 func TestGemini_TranslateReq_ToolChoiceRequiredBecomesAny(t *testing.T) {
 	p := NewGeminiProvider()
 	in := &ChatRequest{
-		Model:    "gemini-pro",
-		Messages: []Message{{Role: "user", Content: "hi"}},
-		Tools:    []Tool{{Function: FunctionSpec{Name: "f"}}},
+		Model:      "gemini-pro",
+		Messages:   []Message{{Role: "user", Content: "hi"}},
+		Tools:      []Tool{{Function: FunctionSpec{Name: "f"}}},
 		ToolChoice: map[string]any{"type": "function", "function": map[string]any{"name": "f"}},
 	}
 	out := p.translateReq(in)
@@ -491,8 +491,8 @@ func TestGemini_TranslateReq_JsonSchemaPassesThrough(t *testing.T) {
 	p := NewGeminiProvider()
 	schema := map[string]any{"type": "object", "properties": map[string]any{"x": map[string]any{"type": "string"}}}
 	in := &ChatRequest{
-		Model:    "gemini-pro",
-		Messages: []Message{{Role: "user", Content: "hi"}},
+		Model:          "gemini-pro",
+		Messages:       []Message{{Role: "user", Content: "hi"}},
 		ResponseFormat: &ResponseFormat{Type: "json_schema", JSONSchema: &JSONSchemaCfg{Name: "out", Schema: schema}},
 	}
 	out := p.translateReq(in)

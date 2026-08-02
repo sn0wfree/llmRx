@@ -304,5 +304,5 @@ type liveDefaultsWrapper struct {
 	resetMs     int64
 }
 
-func (l *liveDefaultsWrapper) BreakerMaxFailures() int64   { return l.maxFailures }
+func (l *liveDefaultsWrapper) BreakerMaxFailures() int64    { return l.maxFailures }
 func (l *liveDefaultsWrapper) BreakerResetTimeoutMs() int64 { return l.resetMs }

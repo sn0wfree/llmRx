@@ -131,15 +131,15 @@ func evalCostSpike(r *model.Alert, now time.Time, st store.Store, ls *logstore.M
 		reason := fmt.Sprintf("cost_spike window %ds exceeds 4-day safe limit (2*window must be <= 8 days)", r.WindowSec)
 		if derr := st.DisableAlert(r.ID, reason); derr != nil {
 			logging.Warn("alert auto-disable failed",
-					logging.F("rule_id", r.ID),
-					logging.F("error", derr.Error()),
-				)
+				logging.F("rule_id", r.ID),
+				logging.F("error", derr.Error()),
+			)
 		} else {
 			logging.Info("alert auto-disabled rule",
-					logging.F("rule_id", r.ID),
-					logging.F("name", r.Name),
-					logging.F("reason", reason),
-				)
+				logging.F("rule_id", r.ID),
+				logging.F("name", r.Name),
+				logging.F("reason", reason),
+			)
 		}
 		return false, nil, nil
 	}

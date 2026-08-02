@@ -20,8 +20,8 @@ func TestAnthropicChat_MixedContentBlocks(t *testing.T) {
 
 	p := provider.NewAnthropicProvider()
 	resp, _, err := p.Chat(context.Background(), &provider.ChatRequest{
-		Model: "claude-3",
-		Messages: []provider.Message{{Role: "user", Content: "hi"}},
+		Model:     "claude-3",
+		Messages:  []provider.Message{{Role: "user", Content: "hi"}},
 		MaxTokens: 100,
 	}, "sk", srv.URL)
 	if err != nil {
@@ -42,8 +42,8 @@ func TestAnthropicChat_ToolUseOnly(t *testing.T) {
 
 	p := provider.NewAnthropicProvider()
 	resp, _, err := p.Chat(context.Background(), &provider.ChatRequest{
-		Model: "claude-3",
-		Messages: []provider.Message{{Role: "user", Content: "call fn"}},
+		Model:     "claude-3",
+		Messages:  []provider.Message{{Role: "user", Content: "call fn"}},
 		MaxTokens: 100,
 	}, "sk", srv.URL)
 	if err != nil {
@@ -64,7 +64,7 @@ func TestOpenAIChat_MalformedJSON(t *testing.T) {
 
 	p := provider.NewOpenAIProvider()
 	_, _, err := p.Chat(context.Background(), &provider.ChatRequest{
-		Model: "gpt-4",
+		Model:    "gpt-4",
 		Messages: []provider.Message{{Role: "user", Content: "hi"}},
 	}, "sk", srv.URL)
 	if err == nil {
@@ -82,8 +82,8 @@ func TestGeminiChat_EmptyParts(t *testing.T) {
 
 	p := provider.NewGeminiProvider()
 	resp, _, err := p.Chat(context.Background(), &provider.ChatRequest{
-		Model: "gemini-pro",
-		Messages: []provider.Message{{Role: "user", Content: "hi"}},
+		Model:     "gemini-pro",
+		Messages:  []provider.Message{{Role: "user", Content: "hi"}},
 		MaxTokens: 10,
 	}, "sk", srv.URL)
 	if err != nil {
@@ -116,9 +116,9 @@ func TestOpenAIStream_MalformedChunk(t *testing.T) {
 
 	p := provider.NewOpenAIProvider()
 	ch, err := p.StreamChat(context.Background(), &provider.ChatRequest{
-		Model: "gpt-4",
+		Model:    "gpt-4",
 		Messages: []provider.Message{{Role: "user", Content: "hi"}},
-		Stream: true,
+		Stream:   true,
 	}, "sk", srv.URL)
 	if err != nil {
 		t.Fatalf("StreamChat: %v", err)
@@ -146,10 +146,10 @@ func TestGeminiChat_StopAsSlice(t *testing.T) {
 
 	p := provider.NewGeminiProvider()
 	resp, _, err := p.Chat(context.Background(), &provider.ChatRequest{
-		Model: "gemini-pro",
-		Messages: []provider.Message{{Role: "user", Content: "hi"}},
+		Model:     "gemini-pro",
+		Messages:  []provider.Message{{Role: "user", Content: "hi"}},
 		MaxTokens: 10,
-		Stop: []string{"END1", "END2"},
+		Stop:      []string{"END1", "END2"},
 	}, "sk", srv.URL)
 	if err != nil {
 		t.Fatalf("Chat: %v", err)

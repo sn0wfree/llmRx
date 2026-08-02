@@ -93,13 +93,13 @@ func BenchmarkE2E_Parallel(b *testing.B) {
 // ---------- helpers ----------
 
 type benchEnv struct {
-	store   store.Store
-	logs    *logstore.Manager
-	pool    *pool.ChannelPool
-	tc      *tokencache.Cache
-	eng     *router.RouterEngine
-	srv     http.Handler
-	token   string
+	store store.Store
+	logs  *logstore.Manager
+	pool  *pool.ChannelPool
+	tc    *tokencache.Cache
+	eng   *router.RouterEngine
+	srv   http.Handler
+	token string
 }
 
 func (e *benchEnv) Close() {
@@ -170,8 +170,8 @@ func newBenchEnv(tb testing.TB) *benchEnv {
 
 	apiHandler := New(&config.Config{}, eng, cp, st, ls, broker.New[*model.Log](64), rt)
 	apiHandler.SetProviders(map[string]provider.Provider{
-		"":          mock,
-		"openai":     mock,
+		"":                  mock,
+		"openai":            mock,
 		"openai-compatible": mock,
 	})
 
@@ -280,11 +280,11 @@ func TestE2E_LoadReport(t *testing.T) {
 	const requests = 500
 
 	var (
-		totalNs    int64 // atomic nanoseconds accumulator
-		minNs      int64 // atomic min latency in ns (init to math.MaxInt64)
-		maxNs      int64 // atomic max latency in ns
-		statuses   sync.Map
-		failures   int64
+		totalNs  int64 // atomic nanoseconds accumulator
+		minNs    int64 // atomic min latency in ns (init to math.MaxInt64)
+		maxNs    int64 // atomic max latency in ns
+		statuses sync.Map
+		failures int64
 	)
 	atomic.StoreInt64(&minNs, math.MaxInt64)
 

@@ -385,8 +385,8 @@ type capabilityMock struct {
 	rerankErr    error
 	rerankCalls  int
 
-	modelsList []string
-	modelsErr  error
+	modelsList  []string
+	modelsErr   error
 	modelsCalls int
 }
 

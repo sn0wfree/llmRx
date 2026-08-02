@@ -10,11 +10,11 @@ import (
 func (h *Handler) GuardrailsPage(w http.ResponseWriter, r *http.Request) {
 	rules := h.loadGuardrailRules()
 	data := map[string]any{
-		"Body":    "guardrails_list_body",
-		"Title":   "安全规则",
-		"User":    userToView(getUser(r)),
-		"Active":  "guardrails",
-		"Rules":   rules,
+		"Body":   "guardrails_list_body",
+		"Title":  "安全规则",
+		"User":   userToView(getUser(r)),
+		"Active": "guardrails",
+		"Rules":  rules,
 	}
 	if err := h.renderer.Render(w, "guardrails_list_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

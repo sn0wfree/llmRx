@@ -102,8 +102,6 @@ func TestAudioSpeech_NoChannel(t *testing.T) {
 	}
 }
 
-
-
 func TestAudioSpeech_ResponseFormat(t *testing.T) {
 	app := testhelper.New(t)
 	app.AddChannel("c", "openai", "https://x", []string{"tts-1"}, "sk-key")

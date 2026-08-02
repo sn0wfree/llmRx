@@ -99,12 +99,12 @@ func TestCalcCost_Basic(t *testing.T) {
 
 func TestCalcCost_CachedTokens(t *testing.T) {
 	ch := &model.Channel{
-		InputPrice:         1.0,
-		OutputPrice:        0.0,
+		InputPrice:          1.0,
+		OutputPrice:         0.0,
 		CachedInputDiscount: 0.1,
 	}
 	usage := provider.Usage{
-		PromptTokens: 1000000,
+		PromptTokens:        1000000,
 		PromptTokensDetails: &provider.PromptTokensDetails{CachedTokens: 500000},
 	}
 	cost := calcCost(ch, usage)

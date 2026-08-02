@@ -9,15 +9,15 @@ import (
 )
 
 type MCPServer struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	URL       string    `json:"url"`
-	AuthHdr   string    `json:"auth_header"`
+	ID      int64  `json:"id"`
+	Name    string `json:"name"`
+	URL     string `json:"url"`
+	AuthHdr string `json:"auth_header"`
 	// Transport is the wire protocol: "http" (default) or "stdio".
-	Transport string    `json:"transport"`
+	Transport string `json:"transport"`
 	// Command is the shell command for stdio servers
 	// (e.g. "npx @modelcontextprotocol/server-github").
-	Command   string    `json:"command"`
+	Command string `json:"command"`
 	// OAuthConfigJSON holds the OAuth client config
 	// ({"client_id":...,"client_secret":...,"scopes":[...]}). Empty
 	// means the server requires no OAuth (static auth_header only).

@@ -21,8 +21,8 @@ const effectiveLimit = 1000
 // actually returned (may be < len(items) due to cap), and error
 // is null on success or a human-readable string on failure.
 type effectiveSection struct {
-	Items any    `json:"items"`
-	Count int    `json:"count"`
+	Items any     `json:"items"`
+	Count int     `json:"count"`
 	Error *string `json:"error"`
 }
 
@@ -31,30 +31,30 @@ type effectiveSection struct {
 // corresponding model types so the response stays small and
 // secrets (API key ciphertext) never leak to the admin UI.
 type effectiveChannel struct {
-	ID         int64                 `json:"id"`
-	Name       string                `json:"name"`
-	Protocol   string                `json:"protocol"`
-	Priority   int                   `json:"priority"`
-	Status     model.ChannelStatus   `json:"status"`
-	ModelCount int                   `json:"model_count"`
+	ID         int64               `json:"id"`
+	Name       string              `json:"name"`
+	Protocol   string              `json:"protocol"`
+	Priority   int                 `json:"priority"`
+	Status     model.ChannelStatus `json:"status"`
+	ModelCount int                 `json:"model_count"`
 }
 
 type effectiveToken struct {
-	ID     int64              `json:"id"`
-	Name   string             `json:"name"`
-	PlanID int64              `json:"plan_id"`
-	Status model.TokenStatus  `json:"status"`
-	RPM    int                `json:"rpm"`
-	TPM    int                `json:"tpm"`
+	ID     int64             `json:"id"`
+	Name   string            `json:"name"`
+	PlanID int64             `json:"plan_id"`
+	Status model.TokenStatus `json:"status"`
+	RPM    int               `json:"rpm"`
+	TPM    int               `json:"tpm"`
 }
 
 type effectivePlan struct {
-	ID         int64   `json:"id"`
-	Name       string  `json:"name"`
-	BudgetUSD  float64 `json:"budget_usd"`
-	UsedUSD    float64 `json:"used_usd"`
+	ID          int64   `json:"id"`
+	Name        string  `json:"name"`
+	BudgetUSD   float64 `json:"budget_usd"`
+	UsedUSD     float64 `json:"used_usd"`
 	MarkupRatio float64 `json:"markup_ratio"`
-	Status     int     `json:"status"`
+	Status      int     `json:"status"`
 }
 
 type effectiveAlert struct {
@@ -72,12 +72,12 @@ type effectiveRuntime struct {
 }
 
 type effectiveResponse struct {
-	Runtime    effectiveRuntime `json:"runtime"`
-	YAMLSeeds  runtime.Snapshot `json:"yaml_seeds"`
-	Channels   effectiveSection `json:"channels"`
-	Tokens     effectiveSection `json:"tokens"`
-	Plans      effectiveSection `json:"plans"`
-	Alerts     effectiveSection `json:"alerts"`
+	Runtime   effectiveRuntime `json:"runtime"`
+	YAMLSeeds runtime.Snapshot `json:"yaml_seeds"`
+	Channels  effectiveSection `json:"channels"`
+	Tokens    effectiveSection `json:"tokens"`
+	Plans     effectiveSection `json:"plans"`
+	Alerts    effectiveSection `json:"alerts"`
 }
 
 // EffectiveConfig returns a single read-only snapshot of every

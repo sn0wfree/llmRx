@@ -220,4 +220,3 @@ func TestSetMaxSubscribersRuntime(t *testing.T) {
 		t.Fatalf("c2 after disable: %d", v)
 	}
 }
-

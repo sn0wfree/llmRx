@@ -66,13 +66,13 @@ func BenchmarkRenderer_ChannelsList(b *testing.B) {
 	channels := make([]map[string]any, 50)
 	for i := range channels {
 		channels[i] = map[string]any{
-			"ID":        int64(i + 1),
-			"Name":      "channel-name-" + string(rune('a'+i%26)),
-			"Provider":  "openai",
-			"BaseURL":   "https://api.example.com/v1",
-			"Models":    []string{"gpt-4", "gpt-3.5-turbo"},
-			"Priority":  5,
-			"Status":    1,
+			"ID":       int64(i + 1),
+			"Name":     "channel-name-" + string(rune('a'+i%26)),
+			"Provider": "openai",
+			"BaseURL":  "https://api.example.com/v1",
+			"Models":   []string{"gpt-4", "gpt-3.5-turbo"},
+			"Priority": 5,
+			"Status":   1,
 		}
 	}
 
