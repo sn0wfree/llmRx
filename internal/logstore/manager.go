@@ -331,6 +331,46 @@ func (m *Manager) flush(batch []*model.Log) {
 	}
 }
 
+// checkpointDriver is the optional interface a Driver may implement
+// to compact its WAL. The SQLite driver does; the Postgres driver
+// has no WAL and is skipped via type assertion.
+type checkpointDriver interface {
+	CheckpointActive() error
+}
+
+// checkpointInterval is how often the maintenance goroutine runs a
+// TRUNCATE checkpoint on the active log file. SQLite's own
+// autocheckpoint runs on the committing thread (occasional jank)
+// and can be starved by long readers; a dedicated thread is the
+// sqlite.org-recommended layout and keeps the WAL bounded.
+var checkpointInterval = 60 * time.Second
+
+// RunCheckpoints periodically compacts the active day file's WAL.
+// Non-SQLite drivers are skipped (type assertion). Exits when ctx
+// is cancelled. Runs one pass immediately on entry.
+func (m *Manager) RunCheckpoints(ctx context.Context) {
+	cd, ok := m.driver.(checkpointDriver)
+	if !ok {
+		return
+	}
+	run := func() {
+		if err := cd.CheckpointActive(); err != nil {
+			logging.Warn("logstore checkpoint failed", logging.F("error", err.Error()))
+		}
+	}
+	run()
+	t := time.NewTicker(checkpointInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			run()
+		}
+	}
+}
+
 // RunRetention periodically deletes log files older than the
 // number of days reported by retentionDays() on each tick. The
 // caller passes a function so admin updates to the retention

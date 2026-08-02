@@ -1045,3 +1045,75 @@ func TestSetSynchronousOffStillWrites(t *testing.T) {
 		t.Errorf("rows=%d want 2", total)
 	}
 }
+
+// TestCheckpointActive_TruncatesWAL: after bulk inserts the WAL
+// holds committed frames; a TRUNCATE checkpoint resets it to zero
+// bytes so the file on disk stays bounded.
+func TestCheckpointActive_TruncatesWAL(t *testing.T) {
+	d, dir := newTestDriver(t)
+	now := time.Now().UTC()
+	entries := make([]*model.Log, 0, 2000)
+	for i := 0; i < 2000; i++ {
+		entries = append(entries, makeLog(1, 1, "m", 200, now))
+	}
+	if _, err := d.BatchInsert(entries); err != nil {
+		t.Fatalf("batch insert: %v", err)
+	}
+	walPath := filepath.Join(dir, now.Format("2006-01-02")+".db-wal")
+	fi, err := os.Stat(walPath)
+	if err != nil {
+		t.Fatalf("wal stat: %v", err)
+	}
+	if fi.Size() == 0 {
+		t.Skip("WAL was already compacted by autocheckpoint")
+	}
+
+	if err := d.CheckpointActive(); err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	fi2, err := os.Stat(walPath)
+	if err != nil {
+		t.Fatalf("wal stat after: %v", err)
+	}
+	if fi2.Size() != 0 {
+		t.Errorf("wal size after TRUNCATE = %d, want 0", fi2.Size())
+	}
+}
+
+// TestRunCheckpoints_Periodic: the maintenance loop runs a
+// checkpoint on entry and then on every tick (interval shortened),
+// keeping the WAL of the active file compacted while inserts flow.
+func TestRunCheckpoints_Periodic(t *testing.T) {
+	d, dir := newTestDriver(t)
+	old := checkpointInterval
+	checkpointInterval = 30 * time.Millisecond
+	defer func() { checkpointInterval = old }()
+
+	m, err := New(dir, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+
+	now := time.Now().UTC()
+	entries := make([]*model.Log, 0, 3000)
+	for i := 0; i < 3000; i++ {
+		entries = append(entries, makeLog(1, 1, "m", 200, now))
+	}
+	if _, err := m.BatchInsert(entries); err != nil {
+		t.Fatal(err)
+	}
+	walPath := filepath.Join(dir, now.Format("2006-01-02")+".db-wal")
+	if fi, err := os.Stat(walPath); err != nil || fi.Size() == 0 {
+		t.Skip("no WAL to compact (autocheckpoint already ran)")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go m.RunCheckpoints(ctx)
+	time.Sleep(120 * time.Millisecond) // ≥3 ticks
+	cancel()
+
+	if fi, err := os.Stat(walPath); err == nil && fi.Size() != 0 {
+		t.Errorf("wal size after maintenance ticks = %d, want 0", fi.Size())
+	}
+}

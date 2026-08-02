@@ -344,6 +344,7 @@ func main() {
 	// log_retention_days take effect on the next sweep instead
 	// of being frozen at goroutine start.
 	go logStore.RunRetention(ctx, func() int { return int(rt.LogRetentionDays()) })
+	go logStore.RunCheckpoints(ctx)
 	go alertMgr.Start(ctx)
 
 	// BYOK (bring-your-own-key) is not implemented: the previous

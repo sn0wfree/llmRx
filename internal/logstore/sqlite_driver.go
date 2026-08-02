@@ -228,7 +228,10 @@ func (d *SQLiteDriver) acquire(date string, seqHint int) (*dayFile, string, erro
 		if atomic.LoadInt64(&df.bytesWritten) < MaxFileBytes {
 			return df, key, nil
 		}
-		// Full: close and evict; fall through to next seq.
+		// Full: checkpoint the WAL into the file (so the sealed
+		// file is complete and its WAL doesn't linger at 100MB+),
+		// then close and evict; fall through to next seq.
+		checkpointConn(df.conn)
 		_ = df.conn.Close()
 		delete(d.conns, key)
 	}
@@ -279,6 +282,15 @@ func (d *SQLiteDriver) acquire(date string, seqHint int) (*dayFile, string, erro
 	if err != nil {
 		return nil, "", fmt.Errorf("logstore: open %s: %w", path, err)
 	}
+	// Hard cap on the WAL file size: even when checkpoint is
+	// starved by a long-running reader, the WAL stays bounded
+	// (sqlite truncates it back after the next checkpoint).
+	// 32MB is the configured ceiling; the periodic maintenance
+	// checkpoint keeps it far below in practice.
+	if _, err := conn.Exec("PRAGMA journal_size_limit=33554432"); err != nil {
+		_ = conn.Close()
+		return nil, "", fmt.Errorf("logstore: journal_size_limit %s: %w", key, err)
+	}
 	conn.SetMaxOpenConns(2) // 1 writer + 1 reader for ATTACH
 
 	if err := ensureLogSchema(conn); err != nil {
@@ -293,6 +305,36 @@ func (d *SQLiteDriver) acquire(date string, seqHint int) (*dayFile, string, erro
 	}
 	d.conns[key] = df
 	return df, key, nil
+}
+
+// checkpointConn runs a TRUNCATE checkpoint on a connection,
+// transferring the WAL into the database file and resetting it to
+// zero bytes. Errors are ignored on purpose: this is a maintenance
+// operation — a busy file (active reader) simply defers the WAL
+// compaction to the next periodic checkpoint. The busy_timeout on
+// the DSN bounds any blocking.
+func checkpointConn(conn *sql.DB) {
+	_, _ = conn.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+}
+
+// CheckpointActive compacts the WAL of the most recently written
+// day file (TRUNCATE resets the file to zero bytes, so a 240MB WAL
+// returns to ~0 after this). Called periodically by the Manager;
+// safe to run concurrently with inserts (SQLite serialises).
+func (d *SQLiteDriver) CheckpointActive() error {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	var latest *dayFile
+	for _, df := range d.conns {
+		if latest == nil || atomic.LoadInt64(&df.bytesWritten) > atomic.LoadInt64(&latest.bytesWritten) {
+			latest = df
+		}
+	}
+	if latest == nil {
+		return nil
+	}
+	checkpointConn(latest.conn)
+	return nil
 }
 
 // dayFileKey formats a (date, seq) pair into the basename used on
