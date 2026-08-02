@@ -8,23 +8,27 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig    `yaml:"server"`
-	Database DatabaseConfig  `yaml:"database"`
-	Strategy StrategyConfig  `yaml:"strategy"`
-	Tokens   []TokenConfig   `yaml:"tokens"`
-	Channels []ChannelConfig `yaml:"channels"`
-	Secrets  SecretsConfig   `yaml:"secrets"`
-	BYOK     BYOKConfig      `yaml:"byok"`
+	Server    ServerConfig     `yaml:"server"`
+	Database  DatabaseConfig   `yaml:"database"`
+	Strategy  StrategyConfig   `yaml:"strategy"`
+	Tokens    []TokenConfig    `yaml:"tokens"`
+	Channels  []ChannelConfig  `yaml:"channels"`
+	Secrets   SecretsConfig    `yaml:"secrets"`
+	BYOK      BYOKConfig       `yaml:"byok"`
 	Providers []ProviderConfig `yaml:"providers"`
 }
 
 type ServerConfig struct {
-	Host               string  `yaml:"host"`
-	Port               int     `yaml:"port"`
-	LogLevel           string  `yaml:"log_level"`
-	AdminPassword      string  `yaml:"admin_password"`
-	LogRetentionDays   int     `yaml:"log_retention_days"`
-	LogDir             string  `yaml:"log_dir"` // default "data/logs"
+	Host             string `yaml:"host"`
+	Port             int    `yaml:"port"`
+	LogLevel         string `yaml:"log_level"`
+	AdminPassword    string `yaml:"admin_password"`
+	LogRetentionDays int    `yaml:"log_retention_days"`
+	LogDir           string `yaml:"log_dir"` // default "data/logs"
+	// LogstoreBackend selects the log storage driver: "sqlite"
+	// (per-date files), "postgres" (shared table, cluster mode) or
+	// "" (default: follow database.driver).
+	LogstoreBackend    string  `yaml:"logstore_backend"`
 	MarkupRatio        float64 `yaml:"markup_ratio"`
 	BreakerMax         int     `yaml:"breaker_max_failures"`
 	BreakerResetMs     int     `yaml:"breaker_reset_timeout_ms"`

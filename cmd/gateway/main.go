@@ -20,13 +20,13 @@ import (
 	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/logstore"
 	authmw "github.com/sn0wfree/llmRx/internal/middleware"
-	"github.com/sn0wfree/llmRx/internal/notify"
-	"github.com/sn0wfree/llmRx/internal/observability"
-	"github.com/sn0wfree/llmRx/internal/ratelimit"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/modelmeta"
+	"github.com/sn0wfree/llmRx/internal/notify"
+	"github.com/sn0wfree/llmRx/internal/observability"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/provider"
+	"github.com/sn0wfree/llmRx/internal/ratelimit"
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/secrets"
@@ -140,20 +140,44 @@ func main() {
 		logging.Warn("DEV_ALLOW_PLAINTEXT_KEYS enabled, keys stored plaintext")
 	}
 
-	// Initialize per-date log store. LogDir defaults to "data/logs".
+	// Initialize log store. Default: per-date SQLite files under
+	// LogDir. Cluster mode (database.driver=postgres) uses the
+	// shared Postgres logs table unless logstore_backend=sqlite is
+	// set explicitly.
 	logDir := cfg.Server.LogDir
 	if logDir == "" {
 		logDir = "data/logs"
 	}
-	if err := logstore.EnsureDir(logDir); err != nil {
-		fatalf("logstore failed", logging.F("error", err.Error()))
+	logBackend := cfg.Server.LogstoreBackend
+	if logBackend == "" {
+		if cfg.Database.Driver == "postgres" {
+			logBackend = "postgres"
+		} else {
+			logBackend = "sqlite"
+		}
 	}
-	logStore, err := logstore.New(logDir, nil)
+	var logDriver logstore.Driver
+	switch logBackend {
+	case "postgres":
+		d, err := logstore.NewPostgresDriver(cfg.Database.DSN)
+		if err != nil {
+			fatalf("logstore failed", logging.F("error", err.Error()))
+		}
+		logDriver = d
+		logging.Info("logstore backend: postgres (shared logs table)")
+	case "sqlite":
+		if err := logstore.EnsureDir(logDir); err != nil {
+			fatalf("logstore failed", logging.F("error", err.Error()))
+		}
+		logging.Info("logstore backend: sqlite", logging.F("path", logDir))
+	default:
+		fatalf("logstore backend", logging.F("backend", logBackend))
+	}
+	logStore, err := logstore.New(logDir, logDriver)
 	if err != nil {
 		fatalf("logstore failed", logging.F("error", err.Error()))
 	}
 	defer logStore.Close()
-	logging.Info("logstore initialized", logging.F("path", logDir))
 
 	// Load provider descriptors from config.yml and DB into the
 	// provider registry. Built-in providers from providers.yaml are
