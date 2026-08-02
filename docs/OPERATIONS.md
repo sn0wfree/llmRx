@@ -818,12 +818,13 @@ docker inspect --format '{{.State.Pid}}' llmrx | xargs -I {} ps -o pid,uid,user 
 SQLite 写并发上限。检查：
 - 有没有别的进程在写同一个 db（多容器 + 共享 NFS 没启用 cache=shared）
 - 长事务没结束
-- WAL 没清（checkpoint 失败）
+- WAL 没清（checkpoint 失败；日志库的 WAL 会自动 TRUNCATE 截断，主库见下）
 
 临时缓解：
 
 ```bash
 sqlite3 /data/llmrx.db 'PRAGMA wal_checkpoint(TRUNCATE);'
+# 日志库（data/logs/YYYY-MM-DD*.db）同理，网关每 60s 自动截断，一般无需手动
 ```
 
 长期方案：升 Postgres。
@@ -836,6 +837,56 @@ L2 熔断器 5 次失败会打开 channel。检查：
 - base_url 是否正确
 
 看熔断状态：Web UI Dashboard / `GET /api/v1/channels` 看 `circuit_breaker`。
+
+### 11.8 高负载下日志写饱和 / 吞吐骤降（runbook）
+
+**症状**：请求延迟飙升、吞吐骤降；日志出现 `logstore batch insert failed`；
+进程 fd 数逼近上限；`accept4: too many open files`；RSS 异常增长。
+
+**根因链**（2026-08 压测实测）：持续负载超过 SQLite 单写者吞吐 →
+异步日志队列（2000 槽）填满 → 请求路径回退**同步写日志** →
+请求与批量 worker 争写锁（`_busy_timeout` 内互相等待）→ 在途请求堆积 →
+连接/fd 耗尽 → 雪崩。防护已内置（见下"已内置防护"），此 runbook 用于残留场景。
+
+**诊断**（按序执行）：
+
+```bash
+# 1. 日志队列/丢弃状态（看是否在丢日志）
+grep -c "logstore.*dropped\|batch insert failed" data/logs/../llmRx.log 2>/dev/null
+# 或看网关日志里 logstore 相关 warn
+
+# 2. WAL 是否膨胀（正常 <40MB）
+ls -lh data/logs/*.db-wal
+
+# 3. 进程 fd 数 / 连接数
+ls /proc/$(pgrep llmRx)/fd | wc -l
+ss -s
+
+# 4. 手动截断 WAL（立即回收磁盘 + 恢复读性能）
+sqlite3 data/logs/2026-08-02-1.db 'PRAGMA wal_checkpoint(TRUNCATE);'
+
+# 5. 当前并发与负载
+ps -o rss,vsz,pcpu -p $(pgrep llmRx)
+```
+
+**处置阶梯**（从轻到重）：
+
+1. 手动 checkpoint 截断 WAL（上面的 sqlite3 命令；网关每 60s 也会自动做，等下一轮即可）
+2. 调大/清理日志保留窗口：`PUT /api/v1/config` 设 `log_retention_days`（或删旧日志文件）
+3. 若为日志写入瓶颈且可接受崩溃丢 <1s 日志：config 设 `logstore.synchronous: off` 后重启（写入吞吐 2-5x）
+4. 仍过载：确认 `server.max_inflight_requests`（默认 10000）生效——超限请求直接 503，保护进程不雪崩
+5. 长期：升 Postgres logstore（`logstore_backend: postgres`），或把 `/metrics` 接入 Prometheus 提前预警
+
+**已内置防护**（2026-08 起）：
+- 日志队列满 → **丢弃 + 计数**（不再同步回退阻塞请求；`logstore.drop_on_full` 默认 true）
+- 独立 checkpoint goroutine（60s `wal_checkpoint(TRUNCATE)`）+ 轮转前截断 + `journal_size_limit=32MB` 硬上限
+- `logstore.synchronous: off` 可配置（崩溃丢最近 <1s，类似 Redis AOF everysec）
+- `server.max_inflight_requests` 默认 10000：在途请求超限立即 503，防 fd 耗尽
+
+**预防（部署层面）**：
+- **fd 上限**：systemd 部署设 `LimitNOFILE=65535`；docker 部署加 `ulimits: { nofile: { soft: 65535, hard: 65535 } }`；裸机检查 `ulimit -n`（默认 1024 在压测/高并发下必炸）
+- 日志目录所在磁盘留足空间并监控（WAL 峰值 = journal_size_limit + 活跃 db 大小）
+- SQLite 读事务保持短小（管理面查询/导出别开长事务——checkpoint 会被读者饿死导致 WAL 无限增长）
 
 ---
 
@@ -858,6 +909,7 @@ L2 熔断器 5 次失败会打开 channel。检查：
 - [ ] `restart: unless-stopped`
 - [ ] 资源限制：CPU + 内存
 - [ ] 日志驱动配置了 max-size 滚动
+- [ ] **fd 上限**：systemd `LimitNOFILE=65535` / docker `ulimits: nofile 65535`（默认 1024 高并发必炸）
 - [ ] `/health` 在 K8s readinessProbe / LB health check 里
 - [ ] 备份脚本跑通（restore 演练至少一次）
 
