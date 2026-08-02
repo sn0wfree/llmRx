@@ -991,3 +991,57 @@ func TestRunRetentionKeepsRecentFiles(t *testing.T) {
 		t.Fatal("recent file was deleted")
 	}
 }
+
+func TestSetSynchronous_Validation(t *testing.T) {
+	d := NewSQLiteDriver()
+	for _, bad := range []string{"full", "off ", "On", "extra"} {
+		if err := d.SetSynchronous(bad); err == nil {
+			t.Errorf("SetSynchronous(%q) should fail", bad)
+		}
+	}
+	for _, good := range []string{"", "normal", "off"} {
+		if err := d.SetSynchronous(good); err != nil {
+			t.Errorf("SetSynchronous(%q): %v", good, err)
+		}
+	}
+	if d.syncMode != "off" {
+		t.Errorf("syncMode=%q want off", d.syncMode)
+	}
+}
+
+// TestSetSynchronousOffStillWrites: synchronous=off must keep the
+// write path fully functional (same rows, just without fsync).
+func TestSetSynchronousOffStillWrites(t *testing.T) {
+	dir := t.TempDir()
+	d := NewSQLiteDriver()
+	if err := d.SetSynchronous("off"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Open(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	now := time.Now()
+	if err := d.Insert(makeLog(1, 1, "m", 200, now)); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if _, err := d.BatchInsert([]*model.Log{makeLog(2, 2, "m2", 300, now)}); err != nil {
+		t.Fatalf("batch insert: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	// Reopen and verify both rows survived.
+	d2 := NewSQLiteDriver()
+	if err := d2.Open(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer d2.Close()
+	_, total, err := d2.QueryAcross(QueryFilter{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Errorf("rows=%d want 2", total)
+	}
+}

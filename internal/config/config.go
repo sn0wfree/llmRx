@@ -30,6 +30,11 @@ type ServerConfig struct {
 	// (per-date files), "postgres" (shared table, cluster mode) or
 	// "" (default: follow database.driver).
 	LogstoreBackend    string  `yaml:"logstore_backend"`
+	// LogstoreSynchronous is the SQLite synchronous level for log
+	// files: "normal" (default) or "off". Off trades crash-durability
+	// of the last ~1s of logs for ~2-5x write throughput (Redis AOF
+	// everysec semantics); only meaningful for logstore_backend=sqlite.
+	LogstoreSynchronous string `yaml:"logstore_synchronous"`
 	MarkupRatio        float64 `yaml:"markup_ratio"`
 	BreakerMax         int     `yaml:"breaker_max_failures"`
 	BreakerResetMs     int     `yaml:"breaker_reset_timeout_ms"`

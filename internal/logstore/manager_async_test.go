@@ -86,9 +86,90 @@ func TestAsyncCloseDrains(t *testing.T) {
 	}
 }
 
-// ---------- Sync fallback when channel is full ----------
+// ---------- Queue-full behavior ----------
 
-func TestAsyncFallbackOnFullChannel(t *testing.T) {
+// blockingDriver wraps a real driver and parks every BatchInsert
+// until release is closed, so the async worker can be held busy
+// deterministically while the test floods the queue.
+type blockingDriver struct {
+	inner   Driver
+	release chan struct{}
+}
+
+func (b *blockingDriver) Open(dir string) error { return b.inner.Open(dir) }
+func (b *blockingDriver) Close() error          { return b.inner.Close() }
+func (b *blockingDriver) Insert(entry *model.Log) error {
+	return b.inner.Insert(entry)
+}
+func (b *blockingDriver) BatchInsert(entries []*model.Log) (int, error) {
+	<-b.release
+	return b.inner.BatchInsert(entries)
+}
+func (b *blockingDriver) TimeSeries(f QueryFilter, bucketSec int64, days []string) ([]SeriesBucket, error) {
+	return b.inner.TimeSeries(f, bucketSec, days)
+}
+func (b *blockingDriver) TopByField(f QueryFilter, field string, limit int, days []string) ([]NamedMetric, error) {
+	return b.inner.TopByField(f, field, limit, days)
+}
+func (b *blockingDriver) ListFiles() ([]string, error)    { return b.inner.ListFiles() }
+func (b *blockingDriver) DeleteFiles(days []string) error { return b.inner.DeleteFiles(days) }
+func (b *blockingDriver) LogStats(days []string) (LogStatsResult, error) {
+	return b.inner.LogStats(days)
+}
+func (b *blockingDriver) QueryAcross(filter QueryFilter, days []string) ([]model.Log, int64, error) {
+	return b.inner.QueryAcross(filter, days)
+}
+
+// TestAsyncDropOnFullDefault: with the default config (DropOnFull),
+// a full queue drops entries and counts them instead of blocking.
+// Invariants: every row is accounted for (dropped + persisted ==
+// inserts) and the vast majority is dropped while the worker is
+// parked — the request path never waits on SQLite.
+func TestAsyncDropOnFullDefault(t *testing.T) {
+	dir := t.TempDir()
+	release := make(chan struct{})
+	drv := &blockingDriver{inner: NewSQLiteDriver(), release: release}
+	m, err := New(dir, drv)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer m.Close()
+
+	m.SetAsyncConfig(AsyncConfig{
+		Enabled:       true,
+		BatchSize:     1, // flush per entry — worker stays busy on the parked insert
+		FlushInterval: time.Hour,
+		ChannelSize:   1,
+		DropOnFull:    true,
+	})
+
+	const n = 1000
+	now := time.Now()
+	for i := 0; i < n; i++ {
+		if err := m.Insert(makeLog(1, 1, "m", 200, now)); err != nil {
+			t.Fatalf("Insert %d: %v", i, err)
+		}
+	}
+	close(release) // unblock the worker
+	m.Flush()
+
+	dropped := m.Dropped()
+	_, total, _ := m.Query(QueryFilter{}, nil)
+	if dropped == 0 {
+		t.Fatal("dropped=0: queue-full drop never triggered")
+	}
+	if dropped+total != n {
+		t.Fatalf("accounting: dropped=%d persisted=%d, sum=%d want %d", dropped, total, dropped+total, n)
+	}
+	if dropped < n-2 {
+		t.Errorf("dropped=%d: expected the parked worker to force ~all drops", dropped)
+	}
+}
+
+// TestAsyncStrictModeKeepsEveryRow: DropOnFull=false preserves the
+// old synchronous fallback — all rows persist, requests pay the
+// sync write cost.
+func TestAsyncStrictModeKeepsEveryRow(t *testing.T) {
 	dir := t.TempDir()
 	m, err := New(dir, nil)
 	if err != nil {
@@ -96,21 +177,22 @@ func TestAsyncFallbackOnFullChannel(t *testing.T) {
 	}
 	defer m.Close()
 
-	// Set a tiny channel so it fills up immediately.
 	m.SetAsyncConfig(AsyncConfig{
 		Enabled:       true,
 		BatchSize:     500,
 		FlushInterval: time.Hour,
 		ChannelSize:   1,
+		DropOnFull:    false,
 	})
 
-	// The first insert fills the channel; subsequent inserts
-	// fall back to sync. All should succeed.
 	now := time.Now()
 	for i := 0; i < 10; i++ {
 		if err := m.Insert(makeLog(1, 1, "m", 200, now)); err != nil {
 			t.Fatalf("Insert %d: %v", i, err)
 		}
+	}
+	if got := m.Dropped(); got != 0 {
+		t.Errorf("dropped=%d want 0 in strict mode", got)
 	}
 	m.Flush()
 

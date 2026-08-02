@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/logging"
@@ -22,6 +23,16 @@ type AsyncConfig struct {
 	BatchSize     int
 	FlushInterval time.Duration
 	ChannelSize   int
+	// DropOnFull controls what happens when the queue is full:
+	//   true  (default) — the entry is dropped and counted. The
+	//         request path never touches SQLite, so a saturated
+	//         logstore degrades gracefully (lost audit rows under
+	//         sustained overload) instead of stalling the gateway.
+	//   false — synchronous insert fallback. Keeps every row but
+	//         blocks the request on the log write; the sync insert
+	//         contends with the batch worker for the SQLite write
+	//         lock, which is what turns overload into a stall.
+	DropOnFull bool
 }
 
 // DefaultAsyncConfig is the default async configuration.
@@ -29,11 +40,13 @@ type AsyncConfig struct {
 //  - BatchSize:     500 (flush when batch reaches this size)
 //  - FlushInterval: 100ms (flush on timer even if batch is below size)
 //  - ChannelSize:   2000 (backpressure buffer, ~2s at 1000 req/s)
+//  - DropOnFull:    true (drop + count instead of blocking requests)
 var DefaultAsyncConfig = AsyncConfig{
 	Enabled:       true,
 	BatchSize:     500,
 	FlushInterval: 100 * time.Millisecond,
 	ChannelSize:   2000,
+	DropOnFull:    true,
 }
 
 // Manager is the package-level façade over a Driver. The store
@@ -47,6 +60,10 @@ type Manager struct {
 	mu        sync.RWMutex
 	started   bool
 	closeOnce sync.Once
+
+	// dropped counts log entries discarded because the queue was
+	// full (DropOnFull mode). Atomic; exposed via Dropped().
+	dropped int64
 
 	// Async batch fields.
 	asyncCfg    AsyncConfig
@@ -104,9 +121,16 @@ func (m *Manager) Flush() {
 // Dir returns the storage directory. Useful for diagnostics.
 func (m *Manager) Dir() string { return m.dir }
 
+// Dropped returns how many log entries were discarded because the
+// async queue was full (DropOnFull mode). Zero in strict mode.
+func (m *Manager) Dropped() int64 { return atomic.LoadInt64(&m.dropped) }
+
 // Insert writes a single log entry. When async is enabled the entry
-// is enqueued to the batch worker. If the channel is full the call
-// falls back to a synchronous insert so the request is never lost.
+// is enqueued to the batch worker. If the channel is full the
+// behavior depends on DropOnFull: default is to drop the entry and
+// count it (the request path never blocks on SQLite); strict mode
+// (DropOnFull=false) falls back to a synchronous insert so no row
+// is ever lost, at the cost of blocking the caller under overload.
 func (m *Manager) Insert(entry *model.Log) error {
 	if !m.asyncCfg.Enabled {
 		return m.driver.Insert(entry)
@@ -126,9 +150,20 @@ func (m *Manager) Insert(entry *model.Log) error {
 	case ch <- entry:
 		return nil
 	default:
-		// Channel full — fall back to synchronous insert to avoid
-		// backpressure on the caller.
-		return m.driver.Insert(entry)
+		if !m.asyncCfg.DropOnFull {
+			// Strict mode: keep every row, pay the sync cost.
+			return m.driver.Insert(entry)
+		}
+		// Drop + count. Rate-limited warn: one log line per
+		// thousand drops, so a saturated logstore stays audible
+		// without spamming the error log.
+		n := atomic.AddInt64(&m.dropped, 1)
+		if n%1000 == 1 {
+			logging.Warn("logstore queue full — dropping log entries",
+				logging.F("dropped_total", n),
+			)
+		}
+		return nil
 	}
 }
 

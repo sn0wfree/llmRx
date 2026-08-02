@@ -175,6 +175,14 @@ func main() {
 		if err := logstore.EnsureDir(logDir); err != nil {
 			fatalf("logstore failed", logging.F("error", err.Error()))
 		}
+		drv := logstore.NewSQLiteDriver()
+		if err := drv.SetSynchronous(cfg.Server.LogstoreSynchronous); err != nil {
+			fatalf("logstore failed", logging.F("error", err.Error()))
+		}
+		logDriver = drv
+		if cfg.Server.LogstoreSynchronous == "off" {
+			logging.Warn("logstore synchronous=off — crash may lose the most recent ~1s of logs")
+		}
 		logging.Info("logstore backend: sqlite", logging.F("path", logDir))
 	default:
 		fatalf("logstore backend", logging.F("backend", logBackend))

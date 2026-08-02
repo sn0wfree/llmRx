@@ -129,3 +129,24 @@ func TestLoad_AutoRouterDefaults(t *testing.T) {
 		t.Error("llm classifier should default to disabled")
 	}
 }
+
+func TestLoad_LogstoreSynchronous(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yml")
+	yaml := `
+server:
+  port: 9000
+  logstore_backend: sqlite
+  logstore_synchronous: off
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Server.LogstoreBackend != "sqlite" || cfg.Server.LogstoreSynchronous != "off" {
+		t.Errorf("got backend=%q synchronous=%q", cfg.Server.LogstoreBackend, cfg.Server.LogstoreSynchronous)
+	}
+}

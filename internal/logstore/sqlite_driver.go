@@ -38,6 +38,12 @@ const estimatedRowBytes = 150
 type SQLiteDriver struct {
 	dir     string
 	maxOpen int
+	// syncMode is the SQLite synchronous level for log files:
+	// "normal" (default, fsync on checkpoint only) or "off"
+	// (no fsync at all — ~2-5x write throughput, but a process or
+	// OS crash can lose the most recent ~1s of committed rows,
+	// equivalent to Redis AOF "everysec" semantics).
+	syncMode string
 
 	mu    sync.RWMutex
 	conns map[string]*dayFile // dayFile (basename without .db) → state
@@ -52,9 +58,25 @@ type dayFile struct {
 // NewSQLiteDriver returns an unopened driver. Call Open before use.
 func NewSQLiteDriver() *SQLiteDriver {
 	return &SQLiteDriver{
-		conns:   make(map[string]*dayFile),
-		maxOpen: 4, // today + 3 historical
+		conns:    make(map[string]*dayFile),
+		maxOpen:  4, // today + 3 historical
+		syncMode: "normal",
 	}
+}
+
+// SetSynchronous overrides the per-file synchronous level. Accepts
+// "normal" (default) or "off". Must be called before Open/acquire
+// so every connection inherits it via the DSN.
+func (d *SQLiteDriver) SetSynchronous(mode string) error {
+	switch mode {
+	case "", "normal":
+		d.syncMode = "normal"
+	case "off":
+		d.syncMode = "off"
+	default:
+		return fmt.Errorf("logstore: invalid synchronous mode %q (want normal|off)", mode)
+	}
+	return nil
 }
 
 // Open sets the storage directory and creates it if missing.
@@ -253,7 +275,7 @@ func (d *SQLiteDriver) acquire(date string, seqHint int) (*dayFile, string, erro
 
 	key = dayFileKey(date, seq)
 	path := filepath.Join(d.dir, key+".db")
-	conn, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000")
+	conn, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_synchronous="+d.syncMode+"&_busy_timeout=5000")
 	if err != nil {
 		return nil, "", fmt.Errorf("logstore: open %s: %w", path, err)
 	}
