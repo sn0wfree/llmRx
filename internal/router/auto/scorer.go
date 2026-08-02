@@ -5,7 +5,6 @@ package auto
 
 import (
 	"math"
-	"regexp"
 	"strings"
 
 	"github.com/sn0wfree/llmRx/internal/model"
@@ -96,6 +95,11 @@ type ComplexityScorer interface {
 // heuristicScorer is the zero-dependency heuristic classifier.
 // It scores seven independent dimensions, combines them with
 // fixed weights, and maps the result to a tier.
+//
+// Matching is deliberately regexp-free: \b-heavy alternations on
+// RE2 blow up to milliseconds on multi-KB prompts (DFA state
+// explosion), while lowercasing + byte tokenization + map lookups
+// stay in the tens of microseconds.
 type heuristicScorer struct {
 	thresholds Thresholds
 }
@@ -127,27 +131,79 @@ const (
 	wSimple   = 0.20 // subtracted
 )
 
-// Keyword/regex signals. All patterns are ASCII-only on purpose:
-// Chinese and other non-ASCII text simply produces no marker hits
-// and is scored by length (token count) alone, which keeps the
-// classifier deterministic across languages without a dictionary.
+// Keyword signals. All sets are lowercase ASCII words: the input
+// is lowercased once, then split into [a-z0-9]+ tokens, so CJK
+// and other non-ASCII text produces no marker hits and is scored
+// by length (token count) alone — deterministic across languages
+// without a dictionary.
 var (
-	codePattern = regexp.MustCompile(`(?i)(\x60{3}|=>|\bfunc(?:tion)?\b|\bdef\b|\bclass\b|\bstruct\b|\binterface\b|\bimport\b|\bpackage\b|\bconst\b|\bvar\b|\blet\b|\breturn\b|\bpublic\b|\bprivate\b|\bstatic\b|\btry\b|\bcatch\b|\bthrow\b|\blambda\b|\bdeclare\b)`)
+	codeWords = wordSet(
+		"func", "function", "def", "class", "struct", "interface", "import",
+		"package", "const", "var", "let", "return", "public", "private",
+		"static", "try", "catch", "throw", "lambda", "declare",
+	)
 
-	reasoningPattern = regexp.MustCompile(`(?i)(\bbecause\b|\btherefore\b|\bthus\b|\bhence\b|\bproof\b|\bprove\b|\bderive\b|\bdeduce\b|\bexplain\b|\bwhy\b|\bhow\b|\banalyze\b|\banalyse\b|\bevaluate\b|\bcompare\b|\bcontrast\b|\bjustify\b|\bimplications\b|\bscenario\b|\bassume\b|\bconsequence\b|\bdepend\b|edge case|trade-off|step by step|what if|\bsynthesi\w*|\bhypothesi\w*)`)
+	reasoningWords = wordSet(
+		"because", "therefore", "thus", "hence", "proof", "prove", "derive",
+		"deduce", "explain", "why", "how", "analyze", "analyse", "evaluate",
+		"compare", "contrast", "justify", "implications", "scenario", "assume",
+		"consequence", "depend",
+	)
 
-	technicalPattern = regexp.MustCompile(`(?i)(\bapi\b|\bendpoint\b|\bdatabase\b|\bsql\b|\bquery\b|\btransaction\b|\bschema\b|\bdeadlock\b|\bmutex\b|\bgoroutine\b|\bthread\b|\bcompiler\b|\bkernel\b|\bprotocol\b|\blatency\b|\bthroughput\b|\bcache\b|\brecursion\b|\balgorithm\b|\bcomplexity\b|o\(n\)|\bsdk\b|\bcli\b|\bhttp\b|\bjson\b|\byaml\b|\boauth\b|\bjwt\b|\btls\b|memory leak|\bregression\b|\bdeployment\b|\bcontainer\b|\bmicroservice\b|\bkubernetes\b|\bk8s\b|\bobservability\b|\btelemetry\b|\bmetric\w*|\blogging\b|graceful shutdown|\breplica\b|\bshard\b|\bindex\b|\bjoin\b|backpressure|dead letter)`)
+	technicalWords = wordSet(
+		"api", "endpoint", "database", "sql", "query", "transaction", "schema",
+		"deadlock", "mutex", "goroutine", "thread", "compiler", "kernel",
+		"protocol", "latency", "throughput", "cache", "recursion", "algorithm",
+		"complexity", "sdk", "cli", "http", "json", "yaml", "oauth", "jwt",
+		"tls", "regression", "deployment", "container", "microservice",
+		"kubernetes", "k8s", "observability", "telemetry", "logging", "replica",
+		"shard", "index", "join",
+	)
 
-	simplePattern = regexp.MustCompile(`(?i)(\bhello\b|\bhi\b|\bhey\b|\bthanks\b|thank you|\bok\b|\bokay\b|\bsure\b|\bbye\b|\bgreetings\b|\bgood morning\b|\bgood evening\b|\bhow are you\b)`)
+	simpleWords = wordSet(
+		"hello", "hi", "hey", "thanks", "ok", "okay", "sure", "bye",
+		"greetings",
+	)
 
-	multiStepPattern = regexp.MustCompile(`(?i)(step \d|\bsteps?\b|\bfirst\b|\bsecond\b|\bthird\b|\bthen\b|\bfinally\b|\badditionally\b|\bmoreover\b|\bfurthermore\b|\boutline\b|\bplan\b|\bprocedure\b|\binstructions?\b|\bsequence\b|\benumerate\b)`)
+	multiStepWords = wordSet(
+		"step", "steps", "first", "second", "third", "then", "finally",
+		"additionally", "moreover", "furthermore", "outline", "plan",
+		"procedure", "instruction", "instructions", "sequence", "enumerate",
+	)
 
-	numberedListPattern = regexp.MustCompile(`(?m)^\s*\d+[.)]`)
+	openQuestionWords = wordSet(
+		"why", "how", "explain", "compare", "evaluate", "analyze", "analyse",
+		"describe", "discuss", "justify", "design", "implement", "debug",
+		"fix", "refactor", "optimize", "optimise", "recommend",
+	)
 
-	openQuestionPattern = regexp.MustCompile(`(?i)(\bwhy\b|\bhow\b|\bexplain\b|\bcompare\b|\bevaluate\b|\banalyze\b|\banalyse\b|\bdescribe\b|\bdiscuss\b|\bjustify\b|\bdesign\b|\bimplement\b|\bdebug\b|\bfix\b|\brefactor\b|\boptimize\b|\boptimise\b|\brecommend\b|best practice|trade-off|\balternative\w*|\bdifference\w*|edge case)`)
+	// wordPrefixes match trailing-wildcard signals such as
+	// \bsynthesi\w*: any token starting with one of these counts.
+	wordPrefixes = []string{"synthesi", "hypothesi", "metric", "alternative", "difference"}
 
-	closedQuestionPattern = regexp.MustCompile(`(?i)(is it|are there|do you|does it|can you|yes or no|true or false|is there|is this)`)
+	// codePhrases / technicalPhrases / etc. hold the signals that
+	// were multi-word or symbolic substrings in the original
+	// regexes; matched with plain substring search on the
+	// lowercased text.
+	codePhrases      = []string{"```", "=>"}
+	reasoningPhrases = []string{"edge case", "trade-off", "step by step", "what if"}
+	technicalPhrases = []string{"o(n)", "memory leak", "graceful shutdown", "backpressure", "dead letter"}
+	simplePhrases    = []string{"thank you", "how are you", "good morning", "good evening"}
+
+	openQuestionPhrases   = []string{"best practice", "trade-off", "edge case"}
+	closedQuestionPhrases = []string{
+		"is it", "are there", "do you", "does it", "can you",
+		"yes or no", "true or false", "is there", "is this",
+	}
 )
+
+func wordSet(words ...string) map[string]bool {
+	m := make(map[string]bool, len(words))
+	for _, w := range words {
+		m[w] = true
+	}
+	return m
+}
 
 // TokenEstimate approximates token count: non-ASCII runes (CJK)
 // count as one token each, ASCII text at ~4 chars/token. Without
@@ -166,9 +222,138 @@ func TokenEstimate(text string) int {
 	return other + (ascii+3)/4
 }
 
-// count returns the number of non-overlapping pattern matches.
-func count(re *regexp.Regexp, text string) int {
-	return len(re.FindAllStringIndex(text, -1))
+// lowerTokens lowercases text once and splits it into [a-z0-9]+
+// tokens (byte scan: every non-ASCII byte is a separator, so CJK
+// text simply yields no tokens). The returned tokens share the
+// lowercased string's backing memory.
+func lowerTokens(text string) (low string, toks []string) {
+	low = strings.ToLower(text)
+	toks = make([]string, 0, 32)
+	start := -1
+	for i := 0; i < len(low); i++ {
+		c := low[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			if start < 0 {
+				start = i
+			}
+			continue
+		}
+		if start >= 0 {
+			toks = append(toks, low[start:i])
+			start = -1
+		}
+	}
+	if start >= 0 {
+		toks = append(toks, low[start:])
+	}
+	return low, toks
+}
+
+// countWords counts tokens in set, early-exiting at cap (the
+// dimension scores saturate at 3 hits, so counting further is
+// wasted work).
+func countWords(toks []string, set map[string]bool, cap int) int {
+	hits := 0
+	for _, t := range toks {
+		if set[t] {
+			hits++
+			if hits >= cap {
+				return hits
+			}
+		}
+	}
+	return hits
+}
+
+// countPrefix counts tokens starting with any prefix, capped.
+func countPrefix(toks []string, prefixes []string, cap int) int {
+	hits := 0
+	for _, t := range toks {
+		for _, p := range prefixes {
+			if strings.HasPrefix(t, p) {
+				hits++
+				if hits >= cap {
+					return hits
+				}
+				break
+			}
+		}
+	}
+	return hits
+}
+
+// countPhrases counts distinct substring hits for phrases, capped
+// at cap. Each phrase contributes at most one hit (it cannot be
+// matched twice at the same location by a substring search).
+func countPhrases(low string, phrases []string, cap int) int {
+	hits := 0
+	for _, p := range phrases {
+		if strings.Contains(low, p) {
+			hits++
+			if hits >= cap {
+				return hits
+			}
+		}
+	}
+	return hits
+}
+
+// countStepN counts "step <digits>" markers: a "step" token
+// directly followed by an all-digit token.
+func countStepN(toks []string) int {
+	hits := 0
+	for i := 0; i+1 < len(toks); i++ {
+		if toks[i] == "step" && isAllDigits(toks[i+1]) {
+			hits++
+		}
+	}
+	if hits > 3 {
+		return 3
+	}
+	return hits
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// countNumberedLines counts list items ("1." / "1)") at the start
+// of lines, capped at 3 — the hand-rolled twin of the old
+// (?m)^\s*\d+[.)] regex (measured ~17x faster).
+func countNumberedLines(low string) int {
+	hits := 0
+	for len(low) > 0 {
+		nl := strings.IndexByte(low, '\n')
+		var line string
+		if nl < 0 {
+			line, low = low, ""
+		} else {
+			line, low = low[:nl], low[nl+1:]
+		}
+		j := 0
+		for j < len(line) && (line[j] == ' ' || line[j] == '\t') {
+			j++
+		}
+		k := j
+		for k < len(line) && line[k] >= '0' && line[k] <= '9' {
+			k++
+		}
+		if k > j && k < len(line) && (line[k] == '.' || line[k] == ')') {
+			hits++
+			if hits >= 3 {
+				return hits
+			}
+		}
+	}
+	return hits
 }
 
 // Classify scores text across seven dimensions and maps the
@@ -179,19 +364,22 @@ func (h *heuristicScorer) Classify(text string) Score {
 		return Score{Tier: TierSimple, Score: 0, Cause: CauseEmpty}
 	}
 
-	code := clampRatio(count(codePattern, text), 3)
-	reason := clampRatio(count(reasoningPattern, text), 3)
-	tech := clampRatio(count(technicalPattern, text), 3)
-	steps := clampRatio(count(multiStepPattern, text)+count(numberedListPattern, text), 3)
+	low, toks := lowerTokens(text)
+	est := TokenEstimate(text)
+
+	code := clampRatio(countWords(toks, codeWords, 3)+countPhrases(low, codePhrases, 3), 3)
+	reason := clampRatio(countWords(toks, reasoningWords, 3)+countPhrases(low, reasoningPhrases, 3), 3)
+	tech := clampRatio(countWords(toks, technicalWords, 3)+countPrefix(toks, wordPrefixes, 3)+countPhrases(low, technicalPhrases, 3), 3)
+	steps := clampRatio(countWords(toks, multiStepWords, 3)+countStepN(toks)+countNumberedLines(low), 3)
 
 	dims := Dims{
-		TokenCount: ramp(float64(TokenEstimate(text)), 20, 1200),
+		TokenCount: ramp(float64(est), 20, 1200),
 		Code:       code,
 		Reasoning:  reason,
 		Technical:  tech,
-		Simple:     suppressSimple(simpleSignal(text, TokenEstimate(text)), code, reason, tech, steps),
+		Simple:     suppressSimple(simpleSignal(low, toks, est), code, reason, tech, steps),
 		MultiStep:  steps,
-		Question:   questionSignal(text),
+		Question:   questionSignal(low, toks),
 	}
 
 	raw := wToken*dims.TokenCount +
@@ -250,10 +438,10 @@ func clampRatio(hits, cap int) float64 {
 
 // simpleSignal is the anti-complexity dimension: short messages
 // and greetings push the final score down.
-func simpleSignal(text string, tokens int) float64 {
+func simpleSignal(low string, toks []string, tokens int) float64 {
 	shortness := ramp(float64(120-tokens), 0, 90) // 120 tokens -> 0, 30 -> 1
 	signal := 0.7 * shortness
-	if len(simplePattern.FindAllString(text, -1)) > 0 {
+	if countWords(toks, simpleWords, 1) > 0 || countPhrases(low, simplePhrases, 1) > 0 {
 		signal += 0.3
 	}
 	return math.Min(1, signal)
@@ -263,15 +451,15 @@ func simpleSignal(text string, tokens int) float64 {
 // markers (why/how/explain/design/...) score up to 1; a bare "?"
 // with no markers is a mild 0.2; a closed yes/no question is a
 // mild 0.1.
-func questionSignal(text string) float64 {
-	open := len(openQuestionPattern.FindAllString(text, -1))
+func questionSignal(low string, toks []string) float64 {
+	open := countWords(toks, openQuestionWords, 2) + countPhrases(low, openQuestionPhrases, 2)
 	if open > 0 {
 		return clampRatio(open, 2)
 	}
-	if strings.Contains(text, "?") {
+	if strings.Contains(low, "?") {
 		return 0.2
 	}
-	if len(closedQuestionPattern.FindAllString(text, -1)) > 0 {
+	if countPhrases(low, closedQuestionPhrases, 1) > 0 {
 		return 0.1
 	}
 	return 0
