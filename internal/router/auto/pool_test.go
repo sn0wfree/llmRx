@@ -1,8 +1,10 @@
 package auto
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/sn0wfree/llmRx/internal/modelmeta"
 	"github.com/sn0wfree/llmRx/internal/router/thompson"
 )
 
@@ -66,5 +68,79 @@ func TestSelectWarmPicksQuality(t *testing.T) {
 	}
 	if wins < int(0.99*float64(N)) {
 		t.Fatalf("quality arm should dominate: %d/%d", wins, N)
+	}
+}
+
+// TestFilterContextCandidates: models whose context window cannot
+// fit the estimated prompt (+ headroom) are dropped; unknown models
+// are kept (lenient).
+func TestFilterContextCandidates(t *testing.T) {
+	if err := modelmeta.Init(""); err != nil {
+		t.Fatalf("modelmeta.Init: %v", err)
+	}
+	// gpt-4o: 128k context; deepseek-chat: 64k. "unknown-model" has
+	// no entry.
+	cands := []string{"gpt-4o", "deepseek-chat", "unknown-model"}
+
+	// Tiny prompt: nothing filtered.
+	got := FilterContextCandidates(cands, 10)
+	if len(got) != 3 {
+		t.Fatalf("tiny prompt filtered: %v", got)
+	}
+
+	// 150k estimated tokens -> need 180k: both known models dropped.
+	got = FilterContextCandidates(cands, 150000)
+	if len(got) != 1 || got[0] != "unknown-model" {
+		t.Fatalf("huge prompt: want [unknown-model], got %v", got)
+	}
+
+	// 70k tokens -> need 84k: deepseek-chat (64k) dropped, gpt-4o kept.
+	got = FilterContextCandidates(cands, 70000)
+	if len(got) != 2 {
+		t.Fatalf("70k prompt: want 2 candidates, got %v", got)
+	}
+	for _, m := range got {
+		if m == "deepseek-chat" {
+			t.Fatalf("deepseek-chat should be filtered at 70k: %v", got)
+		}
+	}
+}
+
+// TestFilterContextCandidates_NeverStarves: when every candidate
+// would be dropped the input is returned unchanged.
+func TestFilterContextCandidates_NeverStarves(t *testing.T) {
+	if err := modelmeta.Init(""); err != nil {
+		t.Fatalf("modelmeta.Init: %v", err)
+	}
+	got := FilterContextCandidates([]string{"gpt-4o", "deepseek-chat"}, 500000)
+	if len(got) != 2 {
+		t.Fatalf("tier must not be starved: %v", got)
+	}
+}
+
+// TestFilterContextCandidates_EdgeInputs: empty / single-element /
+// non-positive token counts pass through untouched.
+func TestFilterContextCandidates_EdgeInputs(t *testing.T) {
+	if err := modelmeta.Init(""); err != nil {
+		t.Fatalf("modelmeta.Init: %v", err)
+	}
+	if got := FilterContextCandidates(nil, 100); len(got) != 0 {
+		t.Fatalf("nil: %v", got)
+	}
+	if got := FilterContextCandidates([]string{"gpt-4o"}, 100); len(got) != 1 {
+		t.Fatalf("single: %v", got)
+	}
+	if got := FilterContextCandidates([]string{"gpt-4o", "deepseek-chat"}, 0); len(got) != 2 {
+		t.Fatalf("zero tokens: %v", got)
+	}
+}
+
+// TestTokenEstimate: CJK runes count one token each, ASCII ~4/1.
+func TestTokenEstimate(t *testing.T) {
+	if got := TokenEstimate(strings.Repeat("a", 400)); got != 100 {
+		t.Fatalf("ascii: got %d, want 100", got)
+	}
+	if got := TokenEstimate(strings.Repeat("中", 50)); got != 50 {
+		t.Fatalf("cjk: got %d, want 50", got)
 	}
 }

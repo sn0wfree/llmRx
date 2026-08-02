@@ -152,6 +152,13 @@ type breakerStage struct {
 
 func (s *breakerStage) Name() string { return "breaker" }
 func (s *breakerStage) Apply(_ context.Context, rctx *RouteContext) {
+	if rctx.Options.SkipBreaker {
+		// Safety net: the auto router's fallback attempts go through
+		// even when every candidate channel is open — a degraded
+		// call beats a hard failure.
+		rctx.LogParts = append(rctx.LogParts, "L2(breaker,bypass)")
+		return
+	}
 	rctx.Candidates = s.breaker.Filter(rctx.Candidates)
 	rctx.LogParts = append(rctx.LogParts, "L2(breaker)")
 	if len(rctx.Candidates) == 0 {

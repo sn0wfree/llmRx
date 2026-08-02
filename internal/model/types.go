@@ -49,9 +49,10 @@ const (
 type CostStrategy string
 
 const (
-	StrategyCheapest CostStrategy = "cheapest"
-	StrategyFastest  CostStrategy = "fastest"
-	StrategyBalanced CostStrategy = "balanced"
+	StrategyCheapest       CostStrategy = "cheapest"
+	StrategyFastest        CostStrategy = "fastest"
+	StrategyBalanced       CostStrategy = "balanced"
+	StrategyWeightedRandom CostStrategy = "weighted_random"
 )
 
 // ComboMode selects the routing strategy inside a token combo model.

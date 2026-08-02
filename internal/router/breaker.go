@@ -1,6 +1,7 @@
 package router
 
 import (
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -12,13 +13,46 @@ import (
 const (
 	defaultMaxFailures = 5
 	defaultResetDur    = 60 * time.Second
+
+	// rateLimitCooldown is how long a 429 (rate-limited) channel is
+	// kept out of the candidate set before being retried.
+	rateLimitCooldown = 5 * time.Second
+
+	// minuteWindowRateThreshold is the failure fraction over the
+	// last minute that trips the sliding-window cooldown.
+	minuteWindowRateThreshold = 0.5
+	// minuteWindowMinSamples is the minimum number of observations
+	// in the window before the rate threshold applies (a 1-of-2
+	// flake must not take a channel down).
+	minuteWindowMinSamples = 10
+	// windowSize is the ring buffer of recent attempts used to
+	// compute the minute failure rate. Bounded memory per channel.
+	windowSize = 64
 )
+
+// windowSample is one observed attempt inside the minute-rate ring.
+type windowSample struct {
+	at   int64 // unix milliseconds
+	fail bool
+}
 
 type breakerEntry struct {
 	failures    int
 	lastFailure time.Time
 	isOpen      bool
-	mu          sync.Mutex
+	// hardReject marks a channel that returned 401/404: retrying is
+	// pointless (auth/config error), so it stays excluded until the
+	// operator reloads or a success arrives.
+	hardReject bool
+	// cooldownUntil parks the channel for rateLimitCooldown (429)
+	// or minuteCooldown (sustained minute failure rate).
+	cooldownUntil time.Time
+	// window is a ring of recent attempts for the minute failure
+	// rate computation.
+	window    [windowSize]windowSample
+	windowN   int // number of samples stored
+	windowPos int // next write slot
+	mu        sync.Mutex
 }
 
 // BreakerDefaults is the live snapshot of operator-tunable
@@ -188,6 +222,8 @@ func (b *CircuitBreaker) reload(channelID int64) {
 	entry.mu.Lock()
 	entry.failures = 0
 	entry.isOpen = false
+	entry.hardReject = false
+	entry.cooldownUntil = time.Time{}
 	entry.mu.Unlock()
 	// Also clear the cached cfg so the next cfgFor() picks up any
 	// updated operator config (per-channel or defaults).
@@ -211,10 +247,29 @@ func (b *CircuitBreaker) reloadAll() {
 }
 
 func (b *CircuitBreaker) Filter(channels []*model.Channel) []*model.Channel {
+	now := time.Now()
 	var healthy []*model.Channel
 	for _, ch := range channels {
 		entry := b.getEntry(ch.ID)
 		entry.mu.Lock()
+		// Hard rejects (401/404) stay excluded until reload or a
+		// recorded success — retrying an auth failure is pointless.
+		if entry.hardReject {
+			entry.mu.Unlock()
+			continue
+		}
+		// Short cooldowns (429).
+		if now.Before(entry.cooldownUntil) {
+			entry.mu.Unlock()
+			continue
+		}
+		// Sustained bad minute failure rate: exclude while the
+		// sliding window looks unhealthy (pure window semantics —
+		// success samples push it back below the threshold).
+		if fails, total := entry.minuteFailureRate(now); total >= minuteWindowMinSamples && float64(fails)/float64(total) > minuteWindowRateThreshold {
+			entry.mu.Unlock()
+			continue
+		}
 		if entry.isOpen {
 			_, resetDur := b.cfgFor(ch.ID)
 			if time.Since(entry.lastFailure) > resetDur {
@@ -236,17 +291,78 @@ func (b *CircuitBreaker) RecordSuccess(channelID int64) {
 	entry.mu.Lock()
 	entry.failures = 0
 	entry.isOpen = false
+	entry.hardReject = false
+	entry.cooldownUntil = time.Time{}
+	entry.pushWindow(time.Now(), false)
 	entry.mu.Unlock()
 }
 
-func (b *CircuitBreaker) RecordFailure(channelID int64) {
+// pushWindow appends one attempt to the minute-rate ring. Callers
+// must hold entry.mu.
+func (e *breakerEntry) pushWindow(now time.Time, fail bool) {
+	e.window[e.windowPos] = windowSample{at: now.UnixMilli(), fail: fail}
+	e.windowPos = (e.windowPos + 1) % windowSize
+	if e.windowN < windowSize {
+		e.windowN++
+	}
+}
+
+// minuteFailureRate computes the failure fraction over the last 60
+// seconds from the ring. Callers must hold entry.mu.
+func (e *breakerEntry) minuteFailureRate(now time.Time) (failures, total int) {
+	cutoff := now.Add(-time.Minute).UnixMilli()
+	for i := 0; i < e.windowN; i++ {
+		s := e.window[i]
+		if s.at >= cutoff {
+			total++
+			if s.fail {
+				failures++
+			}
+		}
+	}
+	return failures, total
+}
+
+// RecordFailure records a failed upstream attempt bucketed by the
+// upstream HTTP status:
+//
+//   - 401/404: hard reject — the channel is excluded until an
+//     operator reload or a success (retrying is pointless).
+//   - 429: short 5s cooldown; does not count toward the consecutive
+//     failure counter (transient rate limiting, not a quality drop).
+//   - other (5xx and network errors): existing consecutive-failure
+//     semantics.
+//
+// In addition, every failure updates the minute sliding window; a
+// channel whose failure rate over the last minute exceeds 50% (with
+// enough samples) is parked for a minute.
+func (b *CircuitBreaker) RecordFailure(channelID int64, status int) {
 	entry := b.getEntry(channelID)
-	maxFail, _ := b.cfgFor(channelID)
 	entry.mu.Lock()
+	now := time.Now()
+
+	switch status {
+	case http.StatusUnauthorized, http.StatusNotFound:
+		entry.hardReject = true
+		entry.failures = 0
+		entry.isOpen = false
+		entry.cooldownUntil = time.Time{}
+		entry.pushWindow(now, true)
+		entry.mu.Unlock()
+		return
+	case http.StatusTooManyRequests:
+		entry.cooldownUntil = now.Add(rateLimitCooldown)
+		entry.pushWindow(now, true)
+		entry.mu.Unlock()
+		return
+	}
+
 	entry.failures++
-	entry.lastFailure = time.Now()
+	entry.lastFailure = now
+	maxFail, _ := b.cfgFor(channelID)
 	if entry.failures >= maxFail {
 		entry.isOpen = true
 	}
+	entry.pushWindow(now, true)
 	entry.mu.Unlock()
 }

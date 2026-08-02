@@ -169,6 +169,10 @@ type RouteOptions struct {
 	Text         string             // last user message, used for L4 intent classification
 	ModelSet     []string           // optional L1 override: match any of these models (combo load_balance)
 	CostStrategy model.CostStrategy // optional L3 override: "" = use global
+	// SkipBreaker bypasses the L2 circuit-breaker filter. Used by
+	// the auto router's fallback list (the safety net): a degraded
+	// attempt is preferable to failing the request outright.
+	SkipBreaker bool
 }
 
 // Route is the legacy entry point. Use RouteWith for L4 support.
@@ -191,8 +195,12 @@ func (e *RouterEngine) RecordSuccess(channelID int64) {
 	}
 }
 
-func (e *RouterEngine) RecordFailure(channelID int64) {
-	e.breaker.RecordFailure(channelID)
+// RecordFailure records a failed real call. status is the upstream
+// HTTP status (or a synthesized one like 502/504 for network and
+// stream failures); the circuit breaker buckets by it (401/404 hard
+// reject, 429 short cooldown, 5xx consecutive failures).
+func (e *RouterEngine) RecordFailure(channelID int64, status int) {
+	e.breaker.RecordFailure(channelID, status)
 	e.thompson.RecordFailure(channelID)
 	for _, obs := range e.trafficObs {
 		obs.OnRealFailure(channelID)

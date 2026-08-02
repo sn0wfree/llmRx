@@ -3,8 +3,14 @@ package auto
 import (
 	"strings"
 
+	"github.com/sn0wfree/llmRx/internal/modelmeta"
 	"github.com/sn0wfree/llmRx/internal/router/thompson"
 )
+
+// contextHeadroom is the fraction of the estimated token count
+// reserved for the response (and tokenizer error): a model is only
+// eligible when contextWindow >= estimate * (1 + contextHeadroom).
+const contextHeadroom = 0.2
 
 // ArmKey builds the Thompson arm key for a (tier, model) pair.
 // The key format is "tier:model", e.g. "simple:deepseek-chat".
@@ -42,6 +48,30 @@ type Pool struct {
 // shared sampler so arms persist with the L5 state file.
 func NewPool(s *thompson.Sampler) *Pool {
 	return &Pool{sampler: s}
+}
+
+// FilterContextCandidates drops candidates whose documented context
+// window cannot fit the estimated prompt tokens (TokenEstimate plus
+// headroom). Models with no modelmeta entry are kept — the filter
+// is lenient, never a hard gate on unknowns. When every candidate
+// would be dropped the input list is returned unchanged: starving
+// the tier is worse than risking an upstream rejection.
+func FilterContextCandidates(candidates []string, estimatedTokens int) []string {
+	if len(candidates) <= 1 || estimatedTokens <= 0 {
+		return candidates
+	}
+	need := estimatedTokens + int(float64(estimatedTokens)*contextHeadroom)
+	out := make([]string, 0, len(candidates))
+	for _, m := range candidates {
+		meta, ok := modelmeta.Get(m)
+		if !ok || meta.ContextWindow <= 0 || meta.ContextWindow >= need {
+			out = append(out, m)
+		}
+	}
+	if len(out) == 0 {
+		return candidates
+	}
+	return out
 }
 
 // Select samples the candidate arms of one tier and returns the

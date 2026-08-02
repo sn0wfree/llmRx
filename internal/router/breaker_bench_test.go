@@ -37,7 +37,7 @@ func BenchmarkBreaker_RecordSuccessRecordFailure(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		id := chIDs[i%channels]
 		br.RecordSuccess(id)
-		br.RecordFailure(id)
+		br.RecordFailure(id, 500)
 	}
 }
 

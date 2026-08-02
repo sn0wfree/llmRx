@@ -43,7 +43,7 @@ func TestRouter_RouteAllBroken(t *testing.T) {
 	app.AddChannelWithPrice("c1", "openai", "https://x", []string{"m"}, 1, 1, "k1")
 	chs, _ := app.Store.GetChannels()
 	for i := 0; i < 6; i++ {
-		app.Engine.RecordFailure(chs[0].ID)
+		app.Engine.RecordFailure(chs[0].ID, 500)
 	}
 	_, err := app.Engine.Route(context.Background(), "m")
 	if err == nil {
@@ -136,7 +136,7 @@ func TestRouter_RecordSuccess(t *testing.T) {
 func TestRouter_RecordFailure(t *testing.T) {
 	app := testhelper.New(t)
 	ch := app.AddChannelWithPrice("c", "openai", "https://x", []string{"m"}, 1, 1, "k")
-	app.Engine.RecordFailure(ch.ID)
+	app.Engine.RecordFailure(ch.ID, 500)
 	snap := app.Engine.Thompson().Snapshot()
 	if ab, ok := snap[ch.ID]; !ok || ab[1] < 2.0 {
 		t.Fatalf("RecordFailure should increment beta: %+v", snap)
@@ -187,7 +187,7 @@ func TestRouter_TrafficObserver_NotifiedOnFailure(t *testing.T) {
 	ch := app.AddChannelWithPrice("c", "openai", "https://x", []string{"m"}, 1, 1, "k")
 	spy := &observerSpy{}
 	app.Engine.SetTrafficObserver(spy)
-	app.Engine.RecordFailure(ch.ID)
+	app.Engine.RecordFailure(ch.ID, 500)
 	if spy.failureN != 1 {
 		t.Errorf("expected 1 failure notification, got %d", spy.failureN)
 	}
@@ -197,8 +197,8 @@ func TestRouter_TrafficObserver_NilSafe(t *testing.T) {
 	app := testhelper.New(t)
 	ch := app.AddChannelWithPrice("c", "openai", "https://x", []string{"m"}, 1, 1, "k")
 	app.Engine.SetTrafficObserver(nil)
-	app.Engine.RecordSuccess(ch.ID) // must not panic
-	app.Engine.RecordFailure(ch.ID) // must not panic
+	app.Engine.RecordSuccess(ch.ID)      // must not panic
+	app.Engine.RecordFailure(ch.ID, 500) // must not panic
 }
 
 func TestRouter_ThompsonAccessor(t *testing.T) {
@@ -214,8 +214,8 @@ func TestRouter_SetBreakerDefaults(t *testing.T) {
 	chs, _ := app.Store.GetChannels()
 	live := &liveDefaultsWrapper{maxFailures: 2, resetMs: 30}
 	app.Engine.SetBreakerDefaults(live)
-	app.Engine.RecordFailure(chs[0].ID)
-	app.Engine.RecordFailure(chs[0].ID)
+	app.Engine.RecordFailure(chs[0].ID, 500)
+	app.Engine.RecordFailure(chs[0].ID, 500)
 	r, err := app.Engine.Route(context.Background(), "m")
 	if err == nil {
 		t.Fatalf("expected breaker to be open after 2 failures with live defaults, got channel %s", r.Channel.Name)
@@ -227,7 +227,7 @@ func TestRouter_LoadSaveThompsonState(t *testing.T) {
 	ch := app.AddChannelWithPrice("c", "openai", "https://x", []string{"m"}, 1, 1, "k")
 	app.Engine.RecordSuccess(ch.ID)
 	app.Engine.RecordSuccess(ch.ID)
-	app.Engine.RecordFailure(ch.ID)
+	app.Engine.RecordFailure(ch.ID, 500)
 
 	statePath := filepath.Join(t.TempDir(), "thompson_state.json")
 	if err := app.Engine.SaveThompsonState(statePath); err != nil {

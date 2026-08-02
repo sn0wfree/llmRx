@@ -20,7 +20,7 @@ func TestRouter_ReloadAllClearsBreakerState(t *testing.T) {
 	chs, _ := app.Store.GetChannels()
 	for _, c := range chs {
 		for i := 0; i < 6; i++ {
-			app.Engine.RecordFailure(c.ID)
+			app.Engine.RecordFailure(c.ID, 500)
 		}
 	}
 	if r, _ := app.Engine.RouteWith(context.Background(), "m", router.RouteOptions{}); r != nil {
@@ -39,7 +39,7 @@ func TestRouter_ReloadChannelStillWorks(t *testing.T) {
 	app := testhelper.New(t)
 	ch := app.AddChannelWithPrice("c", "openai", "https://x", []string{"m"}, 1, 1, "k")
 	for i := 0; i < 6; i++ {
-		app.Engine.RecordFailure(ch.ID)
+		app.Engine.RecordFailure(ch.ID, 500)
 	}
 	if r, _ := app.Engine.RouteWith(context.Background(), "m", router.RouteOptions{}); r != nil {
 		t.Fatalf("breaker should be open, got %v", r)

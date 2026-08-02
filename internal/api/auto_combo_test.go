@@ -255,3 +255,89 @@ func TestAutoCombo_Streaming(t *testing.T) {
 		t.Errorf("stream body should contain chunk-1: %s", rec.Body.String())
 	}
 }
+
+// TestAutoCombo_FallbackBypassesBreaker: when every tier candidate
+// is unroutable and the fallback channel's breaker is open, the
+// safety net still attempts the fallback (SkipBreaker) — a degraded
+// call beats a hard 502.
+func TestAutoCombo_FallbackBypassesBreaker(t *testing.T) {
+	app := testhelper.New(t)
+	app.AddToken("sk-t", "t")
+	// c1 serves m1 (fallback-only); c2 serves m2 (the only tier
+	// candidate). m1 must NOT be a tier candidate, otherwise the
+	// fallback dedup would skip it.
+	c1 := app.AddChannel("c1", "openai", "https://x", []string{"m1"}, "sk-1")
+	c2 := app.AddChannel("c2", "openai", "https://x", []string{"m2"}, "sk-2")
+	tiers := map[string]model.TierConfig{
+		"simple":   {Models: []string{"m2"}},
+		"standard": {Models: []string{"m2"}},
+		"complex":  {Models: []string{"m2"}},
+		"agentic":  {Models: []string{"m2"}},
+	}
+	addAutoCombo(t, app, "sk-t", tiers, []string{"m1"})
+
+	// Make the tier candidate unroutable: delete c2 from the store
+	// and refresh the static router snapshot so RouteWith("m2")
+	// fails, forcing the fallback path.
+	if err := app.Store.DeleteChannel(c2.ID); err != nil {
+		t.Fatalf("delete c2: %v", err)
+	}
+	app.Engine.ReloadAllChannels()
+
+	// Open c1's breaker (5 consecutive failures).
+	for i := 0; i < 5; i++ {
+		app.Engine.RecordFailure(c1.ID, 500)
+	}
+
+	rec := doAutoChat(t, app, `{"model":"auto","messages":[{"role":"user","content":"hello"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s (fallback must bypass the breaker)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-llmRx-Routed-Model"); got != "m1" {
+		t.Errorf("routed header = %q, want m1 via bypassed fallback", got)
+	}
+}
+
+// TestAutoCombo_ContextBudget: a prompt that cannot fit the
+// candidate models' context windows is routed to the model with
+// headroom, even when it sits last in the tier's cost order.
+func TestAutoCombo_ContextBudget(t *testing.T) {
+	app := testhelper.New(t)
+	app.AddToken("sk-t", "t")
+	// One channel serving all three candidates.
+	app.AddChannel("c1", "openai", "https://x", []string{"gpt-4o", "deepseek-chat", "claude-3-5-sonnet"}, "sk-1")
+	tiers := map[string]model.TierConfig{
+		"simple":   {Models: []string{"gpt-4o"}},
+		"standard": {Models: []string{"gpt-4o", "deepseek-chat", "claude-3-5-sonnet"}},
+		"complex":  {Models: []string{"claude-3-5-sonnet"}},
+		"agentic":  {Models: []string{"claude-3-5-sonnet"}},
+	}
+	addAutoCombo(t, app, "sk-t", tiers, []string{"claude-3-5-sonnet"})
+
+	// Small prompt: all candidates fit, cold start picks gpt-4o.
+	rec := doAutoChat(t, app, `{"model":"auto","messages":[{"role":"user","content":"hello"}]}`)
+	if got := rec.Header().Get("X-llmRx-Routed-Model"); got != "gpt-4o" {
+		t.Errorf("small prompt routed = %q, want gpt-4o", got)
+	}
+
+	// 600k chars of filler ~= 150k tokens -> need 180k; gpt-4o
+	// (128k) and deepseek-chat (64k) are filtered, leaving
+	// claude-3-5-sonnet (unknown window, kept leniently).
+	filler := strings.Repeat("aaa ", 200000)
+	body, err := json.Marshal(map[string]any{
+		"model": "auto",
+		"messages": []map[string]string{
+			{"role": "user", "content": filler},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = doAutoChat(t, app, string(body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-llmRx-Routed-Model"); got != "claude-3-5-sonnet" {
+		t.Errorf("huge prompt routed = %q, want claude-3-5-sonnet (context budget)", got)
+	}
+}

@@ -617,7 +617,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		h.router.RecordFailure(route.Channel.ID)
+		h.router.RecordFailure(route.Channel.ID, statusCode)
 		observability.RecordUpstreamError(req.Model, statusCode)
 		writeError(w, statusCode, "upstream error: "+err.Error(), "upstream_error")
 		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
@@ -824,7 +824,7 @@ func (h *Handler) handleLoadBalanceCombo(w http.ResponseWriter, r *http.Request,
 	req.Model = originalModel
 
 	if err != nil {
-		h.router.RecordFailure(route.Channel.ID)
+		h.router.RecordFailure(route.Channel.ID, statusCode)
 		observability.RecordUpstreamError(originalModel, statusCode)
 		logging.Warn("combo.upstream_error",
 			logging.F("model_requested", originalModel),
@@ -873,7 +873,7 @@ func (h *Handler) handleSerialCombo(w http.ResponseWriter, r *http.Request, req 
 		duration := time.Since(start).Milliseconds()
 
 		if err != nil || statusCode >= 500 {
-			h.router.RecordFailure(route.Channel.ID)
+			h.router.RecordFailure(route.Channel.ID, statusCode)
 			observability.RecordUpstreamError(modelName, statusCode)
 			lastErr = fmt.Errorf("model %s: status=%d err=%w", modelName, statusCode, err)
 			logging.Debug("combo.serial.fail",
@@ -922,12 +922,15 @@ func (h *Handler) handleAutoCombo(w http.ResponseWriter, r *http.Request, req *p
 	tier := string(sc.Tier)
 
 	decision := &auto.Decision{Tier: tier, Score: sc.Score, Cause: sc.Cause}
-	order := h.autoAttemptOrder(combo, tier, &decision.Picked)
+	order := h.autoAttemptOrder(combo, tier, text, &decision.Picked)
 	decision.Candidates = tierCandidates(combo, tier)
 
 	opts := router.RouteOptions{Text: text}
 	var lastErr error
 	for _, m := range order {
+		// Safety net: fallback attempts bypass the circuit breaker —
+		// a degraded call beats a hard failure.
+		opts.SkipBreaker = !isTierCandidate(combo, tier, m)
 		route, routeErr := h.router.RouteWith(context.Background(), m, opts)
 		if routeErr != nil {
 			lastErr = routeErr
@@ -941,7 +944,7 @@ func (h *Handler) handleAutoCombo(w http.ResponseWriter, r *http.Request, req *p
 		duration := time.Since(start).Milliseconds()
 
 		if err != nil || statusCode >= 500 {
-			h.router.RecordFailure(route.Channel.ID)
+			h.router.RecordFailure(route.Channel.ID, statusCode)
 			if isTierCandidate(combo, tier, m) {
 				h.router.RecordArmFailure(auto.ArmKey(tier, m))
 			}
@@ -1002,12 +1005,13 @@ func (h *Handler) handleStreamAutoCombo(w http.ResponseWriter, r *http.Request, 
 	tier := string(sc.Tier)
 
 	decision := &auto.Decision{Tier: tier, Score: sc.Score, Cause: sc.Cause}
-	order := h.autoAttemptOrder(combo, tier, &decision.Picked)
+	order := h.autoAttemptOrder(combo, tier, text, &decision.Picked)
 	decision.Candidates = tierCandidates(combo, tier)
 
 	opts := router.RouteOptions{Text: text}
 	var lastErr error
 	for _, m := range order {
+		opts.SkipBreaker = !isTierCandidate(combo, tier, m)
 		route, routeErr := h.router.RouteWith(r.Context(), m, opts)
 		if routeErr != nil {
 			lastErr = routeErr
@@ -1051,9 +1055,10 @@ func (h *Handler) handleStreamAutoCombo(w http.ResponseWriter, r *http.Request, 
 // while the cold-start gate is on), then the remaining tier
 // candidates in cost order, then the combo's Fallback list. A
 // fallback model already present in the tier candidates is not
-// retried a second time.
-func (h *Handler) autoAttemptOrder(combo model.TokenComboModel, tier string, picked *auto.ArmSample) []string {
-	candidates := tierCandidates(combo, tier)
+// retried a second time. Tier candidates whose context window
+// cannot fit the prompt are filtered out before sampling.
+func (h *Handler) autoAttemptOrder(combo model.TokenComboModel, tier, text string, picked *auto.ArmSample) []string {
+	candidates := auto.FilterContextCandidates(tierCandidates(combo, tier), auto.TokenEstimate(text))
 	*picked = h.autoPool.Select(tier, candidates)
 	order := make([]string, 0, len(candidates)+len(combo.Fallback))
 	if picked.Model != "" {
@@ -1369,7 +1374,7 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 	tokenID := lookupTokenID(r.Context(), h.store)
 
 	if err != nil {
-		h.router.RecordFailure(route.Channel.ID)
+		h.router.RecordFailure(route.Channel.ID, statusCode)
 		observability.RecordUpstreamError(req.Model, statusCode)
 		writeError(w, statusCode, "upstream error: "+err.Error(), "upstream_error")
 		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
@@ -1424,7 +1429,7 @@ func (h *Handler) ImageGenerations(w http.ResponseWriter, r *http.Request) {
 	duration := time.Since(start).Milliseconds()
 	tokenID := lookupTokenID(r.Context(), h.store)
 	if err != nil {
-		h.router.RecordFailure(route.Channel.ID)
+		h.router.RecordFailure(route.Channel.ID, statusCode)
 		observability.RecordUpstreamError(req.Model, statusCode)
 		writeError(w, statusCode, "upstream error: "+err.Error(), "upstream_error")
 		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
@@ -1484,7 +1489,7 @@ func (h *Handler) AudioSpeech(w http.ResponseWriter, r *http.Request) {
 	duration := time.Since(start).Milliseconds()
 	tokenID := lookupTokenID(r.Context(), h.store)
 	if err != nil {
-		h.router.RecordFailure(route.Channel.ID)
+		h.router.RecordFailure(route.Channel.ID, statusCode)
 		observability.RecordUpstreamError(req.Model, statusCode)
 		writeError(w, statusCode, "upstream error: "+err.Error(), "upstream_error")
 		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
@@ -1568,7 +1573,7 @@ func (h *Handler) AudioTranscriptions(w http.ResponseWriter, r *http.Request) {
 	duration := time.Since(start).Milliseconds()
 	tokenID := lookupTokenID(r.Context(), h.store)
 	if err != nil {
-		h.router.RecordFailure(route.Channel.ID)
+		h.router.RecordFailure(route.Channel.ID, statusCode)
 		observability.RecordUpstreamError(req.Model, statusCode)
 		writeError(w, statusCode, "upstream error: "+err.Error(), "upstream_error")
 		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
@@ -1629,7 +1634,7 @@ func (h *Handler) Rerank(w http.ResponseWriter, r *http.Request) {
 	duration := time.Since(start).Milliseconds()
 	tokenID := lookupTokenID(r.Context(), h.store)
 	if err != nil {
-		h.router.RecordFailure(route.Channel.ID)
+		h.router.RecordFailure(route.Channel.ID, statusCode)
 		observability.RecordUpstreamError(req.Model, statusCode)
 		writeError(w, statusCode, "upstream error: "+err.Error(), "upstream_error")
 		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
@@ -1747,7 +1752,7 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 		// Emit a single error frame and bail.
 		fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", err.Error())
 		flusher.Flush()
-		h.router.RecordFailure(route.Channel.ID)
+		h.router.RecordFailure(route.Channel.ID, http.StatusBadGateway)
 		observability.RecordUpstreamError(req.Model, http.StatusBadGateway)
 		h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, nil,
 			time.Since(start).Milliseconds(), http.StatusBadGateway, true, h.clientIP(r))
@@ -1773,7 +1778,7 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 			if ctx.Err() == context.DeadlineExceeded {
 				reason = "stream timeout exceeded"
 			}
-			h.router.RecordFailure(route.Channel.ID)
+			h.router.RecordFailure(route.Channel.ID, http.StatusGatewayTimeout)
 			fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", reason)
 			flusher.Flush()
 			h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
@@ -1785,7 +1790,7 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 				goto done
 			}
 			if ev.Err != nil {
-				h.router.RecordFailure(route.Channel.ID)
+				h.router.RecordFailure(route.Channel.ID, http.StatusBadGateway)
 				observability.RecordUpstreamError(req.Model, http.StatusBadGateway)
 				fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", ev.Err.Error())
 				flusher.Flush()
@@ -1851,7 +1856,7 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 			if maxBody > 0 && bytesSent >= maxBody {
 				fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", "stream max body bytes exceeded")
 				flusher.Flush()
-				h.router.RecordFailure(route.Channel.ID)
+				h.router.RecordFailure(route.Channel.ID, http.StatusBadGateway)
 				h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
 					time.Since(start).Milliseconds(), http.StatusRequestEntityTooLarge, true, h.clientIP(r))
 				// Stop the upstream pump (same shape as the
@@ -1903,7 +1908,7 @@ done:
 		req.Messages = append(req.Messages, assistantMsg)
 		msgs, mcpUsage, loopErr := h.mcpLoop.ResolveTools(r.Context(), req, route.KeyValue, route.Channel.BaseURL)
 		if loopErr != nil {
-			h.router.RecordFailure(route.Channel.ID)
+			h.router.RecordFailure(route.Channel.ID, http.StatusBadGateway)
 			errMsg := fmt.Sprintf("event: error\ndata: {\"message\":%q}\n\n", loopErr.Error())
 			streamBuf.WriteString(errMsg)
 			w.Write([]byte(errMsg))
@@ -1920,7 +1925,7 @@ done:
 		req.Messages = msgs
 		ch2, err := sp.StreamChat(ctx, req, route.KeyValue, route.Channel.BaseURL)
 		if err != nil {
-			h.router.RecordFailure(route.Channel.ID)
+			h.router.RecordFailure(route.Channel.ID, http.StatusBadGateway)
 			errMsg := fmt.Sprintf("event: error\ndata: {\"message\":%q}\n\n", err.Error())
 			streamBuf.WriteString(errMsg)
 			w.Write([]byte(errMsg))
@@ -1938,7 +1943,7 @@ done:
 				if ctx.Err() == context.DeadlineExceeded {
 					reason = "stream timeout exceeded"
 				}
-				h.router.RecordFailure(route.Channel.ID)
+				h.router.RecordFailure(route.Channel.ID, http.StatusGatewayTimeout)
 				fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", reason)
 				flusher.Flush()
 				h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
@@ -1949,7 +1954,7 @@ done:
 					goto final
 				}
 				if ev.Err != nil {
-					h.router.RecordFailure(route.Channel.ID)
+					h.router.RecordFailure(route.Channel.ID, http.StatusBadGateway)
 					observability.RecordUpstreamError(req.Model, http.StatusBadGateway)
 					fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", ev.Err.Error())
 					flusher.Flush()
@@ -1988,7 +1993,7 @@ done:
 				if maxBody > 0 && bytesSent >= maxBody {
 					fmt.Fprintf(w, "event: error\ndata: {\"message\":%q}\n\n", "stream max body bytes exceeded")
 					flusher.Flush()
-					h.router.RecordFailure(route.Channel.ID)
+					h.router.RecordFailure(route.Channel.ID, http.StatusRequestEntityTooLarge)
 					h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
 						time.Since(start).Milliseconds(), http.StatusRequestEntityTooLarge, true, h.clientIP(r))
 					cancel()

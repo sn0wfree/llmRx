@@ -1910,7 +1910,7 @@ func (s *dbStore) validateCombo(c *model.TokenComboModel) error {
 	}
 	// strategy must be valid
 	switch c.Strategy {
-	case "", model.StrategyCheapest, model.StrategyFastest, model.StrategyBalanced:
+	case "", model.StrategyCheapest, model.StrategyFastest, model.StrategyBalanced, model.StrategyWeightedRandom:
 		// ok
 	default:
 		return fmt.Errorf("combo strategy %q must be empty, cheapest, fastest, or balanced", c.Strategy)

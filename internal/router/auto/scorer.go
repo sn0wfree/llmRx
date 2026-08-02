@@ -149,11 +149,12 @@ var (
 	closedQuestionPattern = regexp.MustCompile(`(?i)(is it|are there|do you|does it|can you|yes or no|true or false|is there|is this)`)
 )
 
-// tokenEstimate approximates token count: non-ASCII runes (CJK)
+// TokenEstimate approximates token count: non-ASCII runes (CJK)
 // count as one token each, ASCII text at ~4 chars/token. Without
 // a real tokenizer this gives Chinese prompts a fair length
-// signal instead of underweighting them.
-func tokenEstimate(text string) int {
+// signal instead of underweighting them. Shared with the context
+// budget filter (pool.go).
+func TokenEstimate(text string) int {
 	var ascii, other int
 	for _, r := range text {
 		if r < 128 {
@@ -184,11 +185,11 @@ func (h *heuristicScorer) Classify(text string) Score {
 	steps := clampRatio(count(multiStepPattern, text)+count(numberedListPattern, text), 3)
 
 	dims := Dims{
-		TokenCount: ramp(float64(tokenEstimate(text)), 20, 1200),
+		TokenCount: ramp(float64(TokenEstimate(text)), 20, 1200),
 		Code:       code,
 		Reasoning:  reason,
 		Technical:  tech,
-		Simple:     suppressSimple(simpleSignal(text, tokenEstimate(text)), code, reason, tech, steps),
+		Simple:     suppressSimple(simpleSignal(text, TokenEstimate(text)), code, reason, tech, steps),
 		MultiStep:  steps,
 		Question:   questionSignal(text),
 	}
