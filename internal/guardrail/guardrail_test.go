@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/sn0wfree/llmRx/internal/model"
@@ -483,4 +484,32 @@ func TestEvalCachedRule_BlockedWords_BadConfig(t *testing.T) {
 	if !evalCachedRule(cr, "anything") {
 		t.Fatal("bad config should fail open")
 	}
+}
+
+// TestEnsureLoaded_EmptyRulesLoadsOnce: with zero rules the store
+// must be queried exactly once — the per-request re-query bug
+// (len(rules)==0 treated as "not loaded") regresses this test.
+func TestEnsureLoaded_EmptyRulesLoadsOnce(t *testing.T) {
+	counting := &countingStore{inner: &mockStore{rules: nil}}
+	g2 := New(counting)
+	for i := 0; i < 100; i++ {
+		g2.CheckInput(context.Background(), []string{"hi"}, 1)
+	}
+	if calls := atomic.LoadInt32(&counting.calls); calls != 1 {
+		t.Fatalf("store queried %d times, want 1", calls)
+	}
+}
+
+type countingStore struct {
+	inner GuardrailStore
+	calls int32
+}
+
+func (c *countingStore) GetEnabledGuardrailRules() ([]model.GuardrailRule, error) {
+	atomic.AddInt32(&c.calls, 1)
+	return c.inner.GetEnabledGuardrailRules()
+}
+
+func (c *countingStore) CreateGuardrailEvent(e *model.GuardrailEvent) error {
+	return c.inner.CreateGuardrailEvent(e)
 }

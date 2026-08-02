@@ -26,9 +26,10 @@ type GuardrailEngine struct {
 	store GuardrailStore
 
 	// Cached rules with pre-compiled regex patterns.
-	rulesMu    sync.RWMutex
-	rules      []cachedRule
-	rulesEpoch uint64 // incremented on Reload
+	rulesMu     sync.RWMutex
+	rules       []cachedRule
+	initialized bool   // true once the cache has been loaded (even when empty)
+	rulesEpoch  uint64 // incremented on Reload
 }
 
 // cachedRule holds a guardrail rule with pre-parsed config.
@@ -68,15 +69,18 @@ func (g *GuardrailEngine) Reload() error {
 	}
 	g.rulesMu.Lock()
 	g.rules = cached
+	g.initialized = true
 	g.rulesMu.Unlock()
 	atomic.AddUint64(&g.rulesEpoch, 1)
 	return nil
 }
 
-// ensureLoaded lazily initializes the cache on first use.
+// ensureLoaded lazily initializes the cache on first use. The
+// initialized flag (not the rule count) gates the work: a store
+// with zero rules must not re-query the DB on every request.
 func (g *GuardrailEngine) ensureLoaded() {
 	g.rulesMu.RLock()
-	loaded := len(g.rules) > 0 || g.store == nil
+	loaded := g.initialized || g.store == nil
 	g.rulesMu.RUnlock()
 	if !loaded {
 		if err := g.Reload(); err != nil {
