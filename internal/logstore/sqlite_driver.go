@@ -216,15 +216,18 @@ func (d *SQLiteDriver) acquire(date string, seqHint int) (*dayFile, string, erro
 	key := date
 	if seqHint > 0 {
 		key = dayFileKey(date, seqHint)
-	} else if cur, ok := d.current[date]; ok {
-		// Steady state: reuse the active file's pool. Without this
-		// the slow path re-opened the same -N file on every call,
-		// leaking a pool (and its fds) per batch.
-		key = cur
 	}
 
 	// Fast path: file is in cache and below threshold.
 	d.mu.RLock()
+	if seqHint == 0 {
+		// Steady state: reuse the active file's pool. Without this
+		// the slow path re-opened the same -N file on every call,
+		// leaking a pool (and its fds) per batch.
+		if cur, ok := d.current[date]; ok {
+			key = cur
+		}
+	}
 	if df, ok := d.conns[key]; ok {
 		if atomic.LoadInt64(&df.bytesWritten) < MaxFileBytes {
 			d.mu.RUnlock()
