@@ -227,12 +227,26 @@ var boolColumns = []string{
 	"guardrail_events.verdict",
 }
 
+// timeColumns store unix-epoch seconds and need BIGINT on Postgres
+// (INTEGER would overflow in 2038). SQLite's INTEGER is 64-bit.
+var timeColumns = []string{
+	"created_at", "updated_at", "last_used_at", "last_fired_at",
+	"fired_at", "expires_at", "session_exp",
+}
+
 // RewriteDDL translates SQLite-form CREATE TABLE statements:
 //   - id INTEGER PRIMARY KEY AUTOINCREMENT -> id BIGSERIAL PRIMARY KEY
+//   - <timecol> INTEGER -> <timecol> BIGINT (per timeColumns)
 //   - <boolcol> INTEGER NOT NULL DEFAULT 1|0 -> <boolcol> BOOLEAN NOT
 //     NULL DEFAULT true|false (per boolColumns)
 func (Postgres) RewriteDDL(q string) string {
 	q = strings.Replace(q, "id INTEGER PRIMARY KEY AUTOINCREMENT", "id BIGSERIAL PRIMARY KEY", 1)
+	// SQLite REAL is 64-bit; Postgres REAL is float32 — use
+	// DOUBLE PRECISION so money/prices roundtrip exactly.
+	q = strings.Replace(q, " REAL", " DOUBLE PRECISION", -1)
+	for _, col := range timeColumns {
+		q = strings.Replace(q, col+" INTEGER", col+" BIGINT", 1)
+	}
 	for _, col := range boolColumns {
 		cn := col[strings.IndexByte(col, '.')+1:]
 		q = strings.Replace(q, cn+" INTEGER NOT NULL DEFAULT 1", cn+" BOOLEAN NOT NULL DEFAULT true", 1)

@@ -374,7 +374,7 @@ func (s *dbStore) migrate() error {
 	if err := s.addColumn("alerts", "disabled_reason", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := s.addColumn("token_combo_models", "is_default", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+	if err := s.addColumn("token_combo_models", "is_default", s.d.BoolColumn("INTEGER NOT NULL DEFAULT 0")); err != nil {
 		return err
 	}
 	if err := s.addColumn("mcp_servers", "transport", "TEXT NOT NULL DEFAULT 'http'"); err != nil {
@@ -399,7 +399,7 @@ func (s *dbStore) migrate() error {
 // is consistent with the new explicit default-flag semantics. Best
 // effort, errors are logged but never block startup.
 func (s *dbStore) migrateDefaultFlag() {
-	res, err := s.exec(`UPDATE token_combo_models SET is_default = 1 WHERE name = 'auto' AND is_default = 0`)
+	res, err := s.exec(`UPDATE token_combo_models SET is_default = ? WHERE name = 'auto' AND is_default = ?`, s.d.Bool(true), s.d.Bool(false))
 	if err != nil {
 		logging.Debug("migrate default flag: skipped", logging.F("err", err.Error()))
 		return
@@ -1102,8 +1102,7 @@ func (s *dbStore) RecordRequestSpend(tokenID, planID int64, amount float64) erro
 	// deferred fallback ensures cleanup on any error path.
 	defer func() { _ = tx.Rollback() }()
 
-	res, err := tx.Exec(
-		`UPDATE tokens SET used_usd = used_usd + ? WHERE id = ?`,
+	res, err := tx.Exec(s.d.RewriteQuery(`UPDATE tokens SET used_usd = used_usd + ? WHERE id = ?`),
 		amount, tokenID,
 	)
 	if err != nil {
@@ -1114,11 +1113,10 @@ func (s *dbStore) RecordRequestSpend(tokenID, planID int64, amount float64) erro
 	}
 
 	if planID > 0 {
-		res, err = tx.Exec(
-			`UPDATE plans
+		res, err = tx.Exec(s.d.RewriteQuery(`UPDATE plans
 			   SET used_usd = used_usd + ?
 			 WHERE id = ?
-			   AND (budget_usd = 0 OR used_usd + ? <= budget_usd)`,
+			   AND (budget_usd = 0 OR used_usd + ? <= budget_usd)`),
 			amount, planID, amount,
 		)
 		if err != nil {
@@ -1441,12 +1439,8 @@ func (s *dbStore) CreateAlert(a *model.Alert) error {
 }
 
 func (s *dbStore) UpdateAlert(a *model.Alert) error {
-	enabled := 0
-	if a.Enabled {
-		enabled = 1
-	}
 	_, err := s.exec(`UPDATE alerts SET name=?, type=?, threshold=?, window_sec=?, cooldown_sec=?, webhook_url=?, enabled=?, last_fired_at=? WHERE id=?`,
-		a.Name, string(a.Type), a.Threshold, a.WindowSec, a.CooldownSec, a.WebhookURL, enabled, a.LastFiredAt, a.ID)
+		a.Name, string(a.Type), a.Threshold, a.WindowSec, a.CooldownSec, a.WebhookURL, s.d.Bool(a.Enabled), a.LastFiredAt, a.ID)
 	return err
 }
 
@@ -1766,7 +1760,7 @@ func (s *dbStore) GetComboModel(id int64) (*model.TokenComboModel, error) {
 }
 
 func (s *dbStore) GetAllComboModels() ([]model.TokenComboModel, error) {
-	rows, err := s.query(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models WHERE enabled = 1 ORDER BY token_id, id`)
+	rows, err := s.query(`SELECT id, token_id, name, models, mode, strategy, enabled, is_default, created_at, updated_at FROM token_combo_models WHERE enabled = ? ORDER BY token_id, id`, s.d.Bool(true))
 	if err != nil {
 		return nil, err
 	}
@@ -1910,13 +1904,13 @@ func (s *dbStore) SetDefaultModelSet(tokenID, comboID int64) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(s.d.RewriteQuery(`UPDATE token_combo_models SET is_default = 0, updated_at = ? WHERE token_id = ? AND is_default = 1`),
-		time.Now().Unix(), tokenID); err != nil {
+	if _, err := tx.Exec(s.d.RewriteQuery(`UPDATE token_combo_models SET is_default = ?, updated_at = ? WHERE token_id = ? AND is_default = ?`),
+		s.d.Bool(false), time.Now().Unix(), tokenID, s.d.Bool(true)); err != nil {
 		return err
 	}
 	if comboID != 0 {
-		if _, err := tx.Exec(s.d.RewriteQuery(`UPDATE token_combo_models SET is_default = 1, updated_at = ? WHERE id = ? AND token_id = ?`),
-			time.Now().Unix(), comboID, tokenID); err != nil {
+		if _, err := tx.Exec(s.d.RewriteQuery(`UPDATE token_combo_models SET is_default = ?, updated_at = ? WHERE id = ? AND token_id = ?`),
+			s.d.Bool(true), time.Now().Unix(), comboID, tokenID); err != nil {
 			return err
 		}
 	}
@@ -1929,11 +1923,11 @@ func (s *dbStore) SetDefaultModelSet(tokenID, comboID int64) error {
 // 0 means "no exclusion".
 func (s *dbStore) clearDefaultFlag(tokenID, excludeID int64) error {
 	if excludeID == 0 {
-		_, err := s.exec(`UPDATE token_combo_models SET is_default = 0, updated_at = ? WHERE token_id = ?`,
+		_, err := s.exec(`UPDATE token_combo_models SET is_default = ?, updated_at = ? WHERE token_id = ?`, s.d.Bool(false),
 			time.Now().Unix(), tokenID)
 		return err
 	}
-	_, err := s.exec(`UPDATE token_combo_models SET is_default = 0, updated_at = ? WHERE token_id = ? AND id != ?`,
+	_, err := s.exec(`UPDATE token_combo_models SET is_default = ?, updated_at = ? WHERE token_id = ? AND id != ?`, s.d.Bool(false),
 		time.Now().Unix(), tokenID, excludeID)
 	return err
 }
@@ -1961,7 +1955,7 @@ func (s *dbStore) scanGuardrailRow(r interface{ Scan(dest ...any) error }) (*mod
 }
 
 func (s *dbStore) GetEnabledGuardrailRules() ([]model.GuardrailRule, error) {
-	rows, err := s.query(`SELECT id, name, description, type, hook, on_failure, config, priority, enabled, created_at, updated_at FROM guardrails WHERE enabled = 1 ORDER BY priority, id`)
+	rows, err := s.query(`SELECT id, name, description, type, hook, on_failure, config, priority, enabled, created_at, updated_at FROM guardrails WHERE enabled = ? ORDER BY priority, id`, s.d.Bool(true))
 	if err != nil {
 		return nil, err
 	}
@@ -2171,8 +2165,7 @@ func (s *dbStore) SetMCPTools(ctx context.Context, serverID int64, tools []MCPTo
 	}
 	for _, t := range tools {
 		t.ServerID = serverID
-		_, err := tx.Exec(
-			`INSERT INTO mcp_tools (server_id, name, description, input_schema_json) VALUES (?, ?, ?, ?)`,
+		_, err := tx.Exec(s.d.RewriteQuery(`INSERT INTO mcp_tools (server_id, name, description, input_schema_json) VALUES (?, ?, ?, ?)`),
 			serverID, t.Name, t.Description, t.InputSchemaJSON,
 		)
 		if err != nil {
@@ -2208,8 +2201,9 @@ func (s *dbStore) GetAllMCPTools(ctx context.Context) ([]MCPTool, error) {
 		`SELECT t.id, t.server_id, t.name, t.description, t.input_schema_json
 		 FROM mcp_tools t
 		 JOIN mcp_servers s ON s.id = t.server_id
-		 WHERE s.enabled = 1
+		 WHERE s.enabled = ?
 		 ORDER BY t.name`,
+		s.d.Bool(true),
 	)
 	if err != nil {
 		return nil, err
@@ -2227,7 +2221,7 @@ func (s *dbStore) GetAllMCPTools(ctx context.Context) ([]MCPTool, error) {
 }
 
 func (s *dbStore) GetEnabledMCPServers(ctx context.Context) ([]MCPServer, error) {
-	rows, err := s.queryContext(ctx, `SELECT id, name, url, auth_header, transport, command, oauth_config_json, token_json, enabled, created_at FROM mcp_servers WHERE enabled = 1 ORDER BY id`)
+	rows, err := s.queryContext(ctx, `SELECT id, name, url, auth_header, transport, command, oauth_config_json, token_json, enabled, created_at FROM mcp_servers WHERE enabled = ? ORDER BY id`, s.d.Bool(true))
 	if err != nil {
 		return nil, err
 	}

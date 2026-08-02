@@ -26,26 +26,41 @@ import (
 //	        return st
 //	    })
 //	}
-func RunSuite(t *testing.T, newStore func(t *testing.T) store.Store) {
-	t.Run("Ping", func(t *testing.T) { testPing(t, newStore) })
-	t.Run("Channels", func(t *testing.T) { testChannels(t, newStore) })
-	t.Run("Keys", func(t *testing.T) { testKeys(t, newStore) })
-	t.Run("Tokens", func(t *testing.T) { testTokens(t, newStore) })
-	t.Run("Plans", func(t *testing.T) { testPlans(t, newStore) })
-	t.Run("Users", func(t *testing.T) { testUsers(t, newStore) })
-	t.Run("Alerts", func(t *testing.T) { testAlerts(t, newStore) })
-	t.Run("Guardrails", func(t *testing.T) { testGuardrails(t, newStore) })
-	t.Run("BYOK", func(t *testing.T) { testBYOK(t, newStore) })
-	t.Run("Providers", func(t *testing.T) { testProviders(t, newStore) })
-	t.Run("Combos", func(t *testing.T) { testCombos(t, newStore) })
-	t.Run("Runtime", func(t *testing.T) { testRuntime(t, newStore) })
-	t.Run("Security", func(t *testing.T) { testSecurity(t, newStore) })
-	t.Run("MCP", func(t *testing.T) { testMCP(t, newStore) })
+//
+// Backends that share a physical database between groups (Postgres)
+// pass a reset function that empties all tables before each group.
+func RunSuite(t *testing.T, newStore func(t *testing.T) store.Store, reset ...func(t *testing.T, st store.Store)) {
+	var doReset func(t *testing.T, st store.Store)
+	if len(reset) > 0 {
+		doReset = reset[0]
+	}
+	run := func(name string, fn func(t *testing.T, st store.Store)) {
+		t.Run(name, func(t *testing.T) {
+			st := newStore(t)
+			if doReset != nil {
+				doReset(t, st)
+			}
+			fn(t, st)
+			_ = st.Close()
+		})
+	}
+	run("Ping", func(t *testing.T, st store.Store) { testPing(t, st) })
+	run("Channels", func(t *testing.T, st store.Store) { testChannels(t, st) })
+	run("Keys", func(t *testing.T, st store.Store) { testKeys(t, st) })
+	run("Tokens", func(t *testing.T, st store.Store) { testTokens(t, st) })
+	run("Plans", func(t *testing.T, st store.Store) { testPlans(t, st) })
+	run("Users", func(t *testing.T, st store.Store) { testUsers(t, st) })
+	run("Alerts", func(t *testing.T, st store.Store) { testAlerts(t, st) })
+	run("Guardrails", func(t *testing.T, st store.Store) { testGuardrails(t, st) })
+	run("BYOK", func(t *testing.T, st store.Store) { testBYOK(t, st) })
+	run("Providers", func(t *testing.T, st store.Store) { testProviders(t, st) })
+	run("Combos", func(t *testing.T, st store.Store) { testCombos(t, st) })
+	run("Runtime", func(t *testing.T, st store.Store) { testRuntime(t, st) })
+	run("Security", func(t *testing.T, st store.Store) { testSecurity(t, st) })
+	run("MCP", func(t *testing.T, st store.Store) { testMCP(t, st) })
 }
 
-func testPing(t *testing.T, newStore func(*testing.T) store.Store) {
-	st := newStore(t)
-	t.Cleanup(func() { _ = st.Close() })
+func testPing(t *testing.T, st store.Store) {
 	if err := st.Ping(context.Background()); err != nil {
 		t.Fatalf("Ping: %v", err)
 	}
@@ -53,10 +68,7 @@ func testPing(t *testing.T, newStore func(*testing.T) store.Store) {
 
 // ---------- Channels (6 methods) ----------
 
-func testChannels(t *testing.T, newStore func(*testing.T) store.Store) {
-	st := newStore(t)
-	t.Cleanup(func() { _ = st.Close() })
-
+func testChannels(t *testing.T, st store.Store) {
 	now := time.Now().UTC()
 	ch := &model.Channel{
 		Name:                "ch1",
@@ -169,10 +181,7 @@ func testChannels(t *testing.T, newStore func(*testing.T) store.Store) {
 
 // ---------- Keys (4 methods) ----------
 
-func testKeys(t *testing.T, newStore func(*testing.T) store.Store) {
-	st := newStore(t)
-	t.Cleanup(func() { _ = st.Close() })
-
+func testKeys(t *testing.T, st store.Store) {
 	now := time.Now().UTC()
 	ch := &model.Channel{Name: "kch", Provider: "openai", BaseURL: "x", CreatedAt: now, UpdatedAt: now}
 	if err := st.CreateChannel(ch); err != nil {
@@ -220,10 +229,7 @@ func testKeys(t *testing.T, newStore func(*testing.T) store.Store) {
 
 // ---------- Tokens (8 methods) ----------
 
-func testTokens(t *testing.T, newStore func(*testing.T) store.Store) {
-	st := newStore(t)
-	t.Cleanup(func() { _ = st.Close() })
-
+func testTokens(t *testing.T, st store.Store) {
 	now := time.Now().UTC()
 	tk := &model.Token{
 		Key:             "tok-secret-1",
@@ -292,10 +298,7 @@ func testTokens(t *testing.T, newStore func(*testing.T) store.Store) {
 
 // ---------- Plans (7 methods) ----------
 
-func testPlans(t *testing.T, newStore func(*testing.T) store.Store) {
-	st := newStore(t)
-	t.Cleanup(func() { _ = st.Close() })
-
+func testPlans(t *testing.T, st store.Store) {
 	now := time.Now().UTC()
 	p := &model.Plan{Name: "p1", BudgetUSD: 100, UsedUSD: 0, MarkupRatio: 1.2, Status: 1, CreatedAt: now, UpdatedAt: now}
 	if err := st.CreatePlan(p); err != nil {
@@ -355,10 +358,7 @@ func testPlans(t *testing.T, newStore func(*testing.T) store.Store) {
 
 // ---------- Users (7 methods) ----------
 
-func testUsers(t *testing.T, newStore func(*testing.T) store.Store) {
-	st := newStore(t)
-	t.Cleanup(func() { _ = st.Close() })
-
+func testUsers(t *testing.T, st store.Store) {
 	exp := time.Now().UTC().Add(time.Hour)
 	u := &model.User{Username: "alice", PasswordHash: "h1", Role: model.RoleAdmin, Status: 1, SessionToken: "sess-1", SessionExp: &exp, CreatedAt: time.Now().UTC()}
 	if err := st.CreateUser(u); err != nil {
@@ -405,10 +405,7 @@ func testUsers(t *testing.T, newStore func(*testing.T) store.Store) {
 
 // ---------- Alerts (10 methods) ----------
 
-func testAlerts(t *testing.T, newStore func(*testing.T) store.Store) {
-	st := newStore(t)
-	t.Cleanup(func() { _ = st.Close() })
-
+func testAlerts(t *testing.T, st store.Store) {
 	now := time.Now().UTC()
 	a := &model.Alert{
 		Name: "high-latency", Type: model.AlertP95Latency, Threshold: 2000,
@@ -479,10 +476,7 @@ func testAlerts(t *testing.T, newStore func(*testing.T) store.Store) {
 
 // ---------- Guardrails (8 methods) ----------
 
-func testGuardrails(t *testing.T, newStore func(*testing.T) store.Store) {
-	st := newStore(t)
-	t.Cleanup(func() { _ = st.Close() })
-
+func testGuardrails(t *testing.T, st store.Store) {
 	now := time.Now().UTC()
 	r := &model.GuardrailRule{
 		Name: "block-credit", Description: "no credit card numbers",
@@ -541,10 +535,7 @@ func testGuardrails(t *testing.T, newStore func(*testing.T) store.Store) {
 
 // ---------- BYOK (6 methods) ----------
 
-func testBYOK(t *testing.T, newStore func(*testing.T) store.Store) {
-	st := newStore(t)
-	t.Cleanup(func() { _ = st.Close() })
-
+func testBYOK(t *testing.T, st store.Store) {
 	now := time.Now().UTC()
 	ch := &model.BYOKChannel{Provider: "openai", KeyCiphertext: "enc", KeyMasked: "sk-…", OwnerIP: "1.2.3.4", OwnerEmail: "a@b.c", Status: 1, LastUsedAt: now, ExpiresAt: now.Add(24 * time.Hour), CreatedAt: now}
 	id, err := st.CreateBYOKChannel(context.Background(), ch)
@@ -586,10 +577,7 @@ func testBYOK(t *testing.T, newStore func(*testing.T) store.Store) {
 
 // ---------- Providers (3 methods) ----------
 
-func testProviders(t *testing.T, newStore func(*testing.T) store.Store) {
-	st := newStore(t)
-	t.Cleanup(func() { _ = st.Close() })
-
+func testProviders(t *testing.T, st store.Store) {
 	p := &model.ProviderDef{Name: "my-proxy", DisplayName: "My Proxy", Protocol: "openai", BaseURL: "https://proxy.example.com"}
 	if err := st.CreateProviderDef(p); err != nil {
 		t.Fatalf("CreateProviderDef: %v", err)
@@ -613,10 +601,7 @@ func testProviders(t *testing.T, newStore func(*testing.T) store.Store) {
 
 // ---------- Combos (8 methods) ----------
 
-func testCombos(t *testing.T, newStore func(*testing.T) store.Store) {
-	st := newStore(t)
-	t.Cleanup(func() { _ = st.Close() })
-
+func testCombos(t *testing.T, st store.Store) {
 	now := time.Now().UTC()
 	tk := &model.Token{Key: "tok-combo", Status: model.TokenActive, CreatedAt: now}
 	if err := st.CreateToken(tk); err != nil {
@@ -696,10 +681,7 @@ func testCombos(t *testing.T, newStore func(*testing.T) store.Store) {
 
 // ---------- Runtime (2 methods) ----------
 
-func testRuntime(t *testing.T, newStore func(*testing.T) store.Store) {
-	st := newStore(t)
-	t.Cleanup(func() { _ = st.Close() })
-
+func testRuntime(t *testing.T, st store.Store) {
 	payload := []byte(`{"routing_strategy": "cost"}`)
 	if err := st.SetRuntimeSettings(payload); err != nil {
 		t.Fatalf("SetRuntimeSettings: %v", err)
@@ -723,10 +705,7 @@ func testRuntime(t *testing.T, newStore func(*testing.T) store.Store) {
 
 // ---------- Security (3 methods) ----------
 
-func testSecurity(t *testing.T, newStore func(*testing.T) store.Store) {
-	st := newStore(t)
-	t.Cleanup(func() { _ = st.Close() })
-
+func testSecurity(t *testing.T, st store.Store) {
 	oldMgr, err := secrets.FromHexKey("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
 	if err != nil {
 		t.Fatalf("FromHexKey(old): %v", err)
@@ -790,10 +769,7 @@ func testSecurity(t *testing.T, newStore func(*testing.T) store.Store) {
 
 // ---------- MCP (11 methods) ----------
 
-func testMCP(t *testing.T, newStore func(*testing.T) store.Store) {
-	st := newStore(t)
-	t.Cleanup(func() { _ = st.Close() })
-
+func testMCP(t *testing.T, st store.Store) {
 	ctx := context.Background()
 	srv := &store.MCPServer{Name: "mcp-github", URL: "https://mcp.example.com", AuthHdr: "Bearer x", Transport: "http", Enabled: true}
 	if err := st.CreateMCPServer(ctx, srv); err != nil {

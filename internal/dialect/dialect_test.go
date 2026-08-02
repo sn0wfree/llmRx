@@ -8,16 +8,20 @@ func TestPostgresRewriteDDL(t *testing.T) {
 	in := `CREATE TABLE IF NOT EXISTS alerts (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
+			threshold REAL NOT NULL,
 			enabled INTEGER NOT NULL DEFAULT 1,
 			status INTEGER NOT NULL DEFAULT 1,
-			last_fired_at INTEGER NOT NULL DEFAULT 0
+			last_fired_at INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL
 		)`
 	want := `CREATE TABLE IF NOT EXISTS alerts (
 			id BIGSERIAL PRIMARY KEY,
 			name TEXT NOT NULL,
+			threshold DOUBLE PRECISION NOT NULL,
 			enabled BOOLEAN NOT NULL DEFAULT true,
 			status INTEGER NOT NULL DEFAULT 1,
-			last_fired_at INTEGER NOT NULL DEFAULT 0
+			last_fired_at BIGINT NOT NULL DEFAULT 0,
+			created_at BIGINT NOT NULL
 		)`
 	if got := (Postgres{}).RewriteDDL(in); got != want {
 		t.Fatalf("RewriteDDL:\n got: %s\nwant: %s", got, want)
