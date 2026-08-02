@@ -209,6 +209,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **覆盖率**：`internal/mcp` 46% → 77.1%（目标 ≥70%），
   `internal/sse` 44.3% → 81.8%。
 
+#### P11.5 MCP stdio + OAuth（收尾）
+- **stdio transport**：`Client` 抽 transport 接口；`stdioTransport`
+  以 `sh -c` 启动本地 sidecar，支持 newline-delimited JSON 与
+  Content-Length 双帧格式；请求串行化、context 取消杀进程、失败
+  自动重启；`MCPServer.Transport/Command` + Web UI 传输类型选择。
+- **MCP client OAuth**：`OAuthManager` 实现 RFC 8414 发现（含
+  `.mcp` 变体）+ RFC 7591 动态注册 + RFC 8628 设备码流 + token
+  刷新；token 经 secrets manager 加密落库；HTTP transport 支持
+  tokenProvider 注入与 401 重试；Web UI 提供授权码展示页与轮询。
+- **覆盖率**：`internal/mcp` 74.2%（目标 ≥70%）。
+
 #### CI
 - `test.yml` coverage gate raised from 55% → 60% → still ~65% after
   hardening. New optional step builds the L4 cdylib when `cargo`
