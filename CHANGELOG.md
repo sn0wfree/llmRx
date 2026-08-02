@@ -209,6 +209,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **覆盖率**：`internal/mcp` 46% → 77.1%（目标 ≥70%），
   `internal/sse` 44.3% → 81.8%。
 
+#### P12 M5 无状态集群部署 + 运维文档
+- Helm `cluster.enabled`：PG 模式自动渲染 database/logstore/cache
+  配置，数据卷切 emptyDir（持久化在 PG），replicaCount>1 + HPA 解锁。
+- OPERATIONS.md 第 10 章重写：集群拓扑、进程内状态审计表（共享 vs
+  节点本地）、故障降级行为、Helm 部署、SQLite→PG 迁移路径。
+
 #### P12 M4 日志聚合（共享 logs 表）
 - `PostgresDriver` 实现 logstore Driver 全契约（单表 + created_at/
   token_id/channel_id 索引）；`logstore_backend` 配置（sqlite |
