@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -21,7 +22,9 @@ func (h *Handler) MCPServersPage(w http.ResponseWriter, r *http.Request) {
 	}
 	type serverWithTools struct {
 		store.MCPServer
-		Tools []toolWithPricing
+		Tools      []toolWithPricing
+		OAuthReady bool
+		OAuthState string
 	}
 	rows := make([]serverWithTools, 0, len(servers))
 	for _, s := range servers {
@@ -31,7 +34,14 @@ func (h *Handler) MCPServersPage(w http.ResponseWriter, r *http.Request) {
 			p, _ := h.store.GetMCPToolPricing(r.Context(), t.ID)
 			twp = append(twp, toolWithPricing{MCPTool: t, Pricing: p})
 		}
-		rows = append(rows, serverWithTools{MCPServer: s, Tools: twp})
+		row := serverWithTools{MCPServer: s, Tools: twp}
+		if h.oauth != nil && h.oauth.NeedsOAuth(&s) {
+			if st, err := h.oauth.Status(r.Context(), s.ID); err == nil {
+				row.OAuthReady = st.Status == "ready"
+				row.OAuthState = st.Status
+			}
+		}
+		rows = append(rows, row)
 	}
 	data := map[string]any{
 		"Body":    "mcp_servers_list_body",
@@ -39,10 +49,69 @@ func (h *Handler) MCPServersPage(w http.ResponseWriter, r *http.Request) {
 		"User":    userToView(getUser(r)),
 		"Active":  "mcp-servers",
 		"Servers": rows,
+		"HasOAuth": h.oauth != nil,
 	}
 	if err := h.renderer.Render(w, "mcp_servers_list_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+// MCPOAuthAuthorize starts the OAuth device flow for a server and
+// renders the user_code + verification URI page.
+func (h *Handler) MCPOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || h.oauth == nil {
+		http.Error(w, "bad id or oauth unavailable", http.StatusBadRequest)
+		return
+	}
+	st, err := h.oauth.Authorize(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	data := map[string]any{
+		"Body":         "mcp_oauth_authorize_body",
+		"Title":        "OAuth 授权",
+		"User":         userToView(getUser(r)),
+		"Active":       "mcp-servers",
+		"State":        st,
+		"ServerID":     id,
+	}
+	if err := h.renderer.Render(w, "mcp_oauth_authorize_body", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// MCPOAuthPoll checks whether the device flow completed.
+func (h *Handler) MCPOAuthPoll(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || h.oauth == nil {
+		http.Error(w, "bad id or oauth unavailable", http.StatusBadRequest)
+		return
+	}
+	st, err := h.oauth.Poll(r.Context(), id)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": st.Status == "ready", "status": st.Status})
+}
+
+// MCPOAuthClear removes the persisted token (re-authorize).
+func (h *Handler) MCPOAuthClear(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || h.oauth == nil {
+		http.Error(w, "bad id or oauth unavailable", http.StatusBadRequest)
+		return
+	}
+	if err := h.oauth.Clear(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/admin/mcp-servers", http.StatusSeeOther)
 }
 
 // MCPServerCreate handles the form submission to add an MCP server.
@@ -59,6 +128,7 @@ func (h *Handler) MCPServerCreate(w http.ResponseWriter, r *http.Request) {
 	url := r.FormValue("url")
 	command := r.FormValue("command")
 	authHeader := r.FormValue("auth_header")
+	oauthConfig := r.FormValue("oauth_config")
 	if name == "" {
 		http.Error(w, "name is required", http.StatusBadRequest)
 		return
@@ -73,13 +143,22 @@ func (h *Handler) MCPServerCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "url is required for http servers", http.StatusBadRequest)
 		return
 	}
+	if oauthConfig != "" {
+		// Validate it parses as JSON.
+		var probe map[string]any
+		if err := json.Unmarshal([]byte(oauthConfig), &probe); err != nil {
+			http.Error(w, "oauth_config must be valid JSON", http.StatusBadRequest)
+			return
+		}
+	}
 	s := &store.MCPServer{
-		Name:      name,
-		URL:       url,
-		AuthHdr:   authHeader,
-		Transport: transport,
-		Command:   command,
-		Enabled:   true,
+		Name:            name,
+		URL:             url,
+		AuthHdr:         authHeader,
+		Transport:       transport,
+		Command:         command,
+		OAuthConfigJSON: oauthConfig,
+		Enabled:         true,
 	}
 	if err := h.store.CreateMCPServer(r.Context(), s); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

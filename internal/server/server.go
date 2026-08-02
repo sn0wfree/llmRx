@@ -30,6 +30,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/requestid"
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/runtime"
+	"github.com/sn0wfree/llmRx/internal/secrets"
 	"github.com/sn0wfree/llmRx/internal/store"
 	"github.com/sn0wfree/llmRx/internal/tokencache"
 	"github.com/sn0wfree/llmRx/internal/observability"
@@ -140,6 +141,12 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 
 	// Initialize MCP components.
 	s.mcpClientMgr = mcp.NewClientManager(s.store)
+	var oauthSec *secrets.Manager
+	if sp, ok := s.store.(store.SecretsProvider); ok {
+		oauthSec = sp.SecretsManager()
+	}
+	oauthMgr := mcp.NewOAuthManager(s.store, oauthSec)
+	s.mcpClientMgr.SetOAuthManager(oauthMgr)
 	mcpHandler := mcpToolHandler(s.pool, s.router)
 	s.mcpServer = mcp.NewServer(mcp.DefaultTools(), mcpHandler)
 	mcpLoop := mcp.NewAgenticLoop(s.mcpClientMgr, s.store, provider.NewOpenAIProvider())
@@ -195,6 +202,7 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 		webUI.SetCache(responseCache)
 	}
 	webUI.SetMCPClientManager(s.mcpClientMgr)
+	webUI.SetOAuthManager(oauthMgr)
 	s.engine.Mount("/admin", webUI.Routes())
 	s.engine.Mount("/admin/api/v1", adminHandler.Routes())
 }

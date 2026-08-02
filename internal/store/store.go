@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"github.com/sn0wfree/llmRx/internal/secrets"
 )
 
 type MCPServer struct {
@@ -16,6 +18,14 @@ type MCPServer struct {
 	// Command is the shell command for stdio servers
 	// (e.g. "npx @modelcontextprotocol/server-github").
 	Command   string    `json:"command"`
+	// OAuthConfigJSON holds the OAuth client config
+	// ({"client_id":...,"client_secret":...,"scopes":[...]}). Empty
+	// means the server requires no OAuth (static auth_header only).
+	OAuthConfigJSON string `json:"oauth_config_json"`
+	// TokenJSON stores the persisted OAuth token set, encrypted via
+	// the secrets manager when one is attached. Empty when not
+	// authorized.
+	TokenJSON string    `json:"token_json"`
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -68,6 +78,12 @@ type Store interface {
 	RawQueryRow(query string, args ...any) *sql.Row
 	RawQuery(query string, args ...any) (*sql.Rows, error)
 	RawDB() *sql.DB
+}
+
+// SecretsProvider is implemented by stores that expose their secrets
+// manager (SQLite). Other backends may return nil.
+type SecretsProvider interface {
+	SecretsManager() *secrets.Manager
 }
 
 type DrainedChannel struct {

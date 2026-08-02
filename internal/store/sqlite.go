@@ -47,6 +47,10 @@ type SQLite struct {
 //     migration landed.
 func (s *SQLite) SetSecrets(m *secrets.Manager) { s.Secrets = m }
 
+// Secrets returns the attached secrets manager (nil when unset).
+// Satisfies store.SecretsProvider.
+func (s *SQLite) SecretsManager() *secrets.Manager { return s.Secrets }
+
 // Ping verifies the underlying database connection is responsive.
 // Returns nil when the connection is healthy.
 func (s *SQLite) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
@@ -340,6 +344,12 @@ func (s *SQLite) migrate() error {
 		return err
 	}
 	if err := s.addColumnIfMissing("mcp_servers", "command", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing("mcp_servers", "oauth_config_json", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing("mcp_servers", "token_json", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	s.migrateAutoCombos()
@@ -2040,7 +2050,7 @@ func (s *SQLite) GetGuardrailEvents(tokenID int64, limit int) ([]model.Guardrail
 }
 
 func (s *SQLite) GetMCPServers(ctx context.Context) ([]MCPServer, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, url, auth_header, transport, command, enabled, created_at FROM mcp_servers ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, url, auth_header, transport, command, oauth_config_json, token_json, enabled, created_at FROM mcp_servers ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -2050,7 +2060,7 @@ func (s *SQLite) GetMCPServers(ctx context.Context) ([]MCPServer, error) {
 		var srv MCPServer
 		var created int64
 		var enabled int
-		if err := rows.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.AuthHdr, &srv.Transport, &srv.Command, &enabled, &created); err != nil {
+		if err := rows.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.AuthHdr, &srv.Transport, &srv.Command, &srv.OAuthConfigJSON, &srv.TokenJSON, &enabled, &created); err != nil {
 			return nil, err
 		}
 		srv.Enabled = enabled == 1
@@ -2061,11 +2071,11 @@ func (s *SQLite) GetMCPServers(ctx context.Context) ([]MCPServer, error) {
 }
 
 func (s *SQLite) GetMCPServer(ctx context.Context, id int64) (*MCPServer, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, name, url, auth_header, transport, command, enabled, created_at FROM mcp_servers WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, name, url, auth_header, transport, command, oauth_config_json, token_json, enabled, created_at FROM mcp_servers WHERE id = ?`, id)
 	var srv MCPServer
 	var created int64
 	var enabled int
-	if err := row.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.AuthHdr, &srv.Transport, &srv.Command, &enabled, &created); err != nil {
+	if err := row.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.AuthHdr, &srv.Transport, &srv.Command, &srv.OAuthConfigJSON, &srv.TokenJSON, &enabled, &created); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -2086,8 +2096,8 @@ func (s *SQLite) CreateMCPServer(ctx context.Context, srv *MCPServer) error {
 		srv.Transport = "http"
 	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO mcp_servers (name, url, auth_header, transport, command, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		srv.Name, srv.URL, srv.AuthHdr, srv.Transport, srv.Command, enabled, now,
+		`INSERT INTO mcp_servers (name, url, auth_header, transport, command, oauth_config_json, token_json, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		srv.Name, srv.URL, srv.AuthHdr, srv.Transport, srv.Command, srv.OAuthConfigJSON, srv.TokenJSON, enabled, now,
 	)
 	if err != nil {
 		return err
@@ -2106,8 +2116,8 @@ func (s *SQLite) UpdateMCPServer(ctx context.Context, srv *MCPServer) error {
 		srv.Transport = "http"
 	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE mcp_servers SET name=?, url=?, auth_header=?, transport=?, command=?, enabled=? WHERE id=?`,
-		srv.Name, srv.URL, srv.AuthHdr, srv.Transport, srv.Command, enabled, srv.ID,
+		`UPDATE mcp_servers SET name=?, url=?, auth_header=?, transport=?, command=?, oauth_config_json=?, token_json=?, enabled=? WHERE id=?`,
+		srv.Name, srv.URL, srv.AuthHdr, srv.Transport, srv.Command, srv.OAuthConfigJSON, srv.TokenJSON, enabled, srv.ID,
 	)
 	return err
 }
@@ -2204,7 +2214,7 @@ func (s *SQLite) GetAllMCPTools(ctx context.Context) ([]MCPTool, error) {
 }
 
 func (s *SQLite) GetEnabledMCPServers(ctx context.Context) ([]MCPServer, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, url, auth_header, transport, command, enabled, created_at FROM mcp_servers WHERE enabled = 1 ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, url, auth_header, transport, command, oauth_config_json, token_json, enabled, created_at FROM mcp_servers WHERE enabled = 1 ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -2214,7 +2224,7 @@ func (s *SQLite) GetEnabledMCPServers(ctx context.Context) ([]MCPServer, error) 
 		var srv MCPServer
 		var created int64
 		var enabled int
-		if err := rows.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.AuthHdr, &srv.Transport, &srv.Command, &enabled, &created); err != nil {
+		if err := rows.Scan(&srv.ID, &srv.Name, &srv.URL, &srv.AuthHdr, &srv.Transport, &srv.Command, &srv.OAuthConfigJSON, &srv.TokenJSON, &enabled, &created); err != nil {
 			return nil, err
 		}
 		srv.Enabled = true

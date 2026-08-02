@@ -37,6 +37,12 @@
       <input type="text" name="auth_header" placeholder="Bearer ghp_xxx"
              class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
     </div>
+    <div class="col-span-4">
+      <label class="block text-sm font-medium text-gray-700">OAuth 配置 (JSON, 可选)</label>
+      <input type="text" name="oauth_config" placeholder='{"client_id":"","client_secret":"","scopes":["repo"]}'
+             class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono">
+      <p class="text-xs text-gray-400 mt-1">留空 client_id 时使用动态注册；留空则使用认证头直传</p>
+    </div>
     <div class="flex items-end">
       <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium w-full">添加</button>
     </div>
@@ -67,6 +73,22 @@ document.getElementById('mcp-transport').addEventListener('change', function (e)
         </span>
       </div>
       <div class="flex items-center gap-2">
+        {{if and $.HasOAuth (eq .Transport "http")}}
+          {{if .OAuthReady}}
+          <span class="px-2 py-1 text-xs rounded bg-green-100 text-green-800">OAuth 已授权</span>
+          <form method="POST" action="/admin/mcp-servers/{{.ID}}/oauth/clear" style="display:inline">
+            <button type="submit" class="px-2 py-1 text-xs bg-yellow-50 text-yellow-700 rounded hover:bg-yellow-100">解除</button>
+          </form>
+          {{else if eq .OAuthState "authorizing"}}
+          <form method="POST" action="/admin/mcp-servers/{{.ID}}/oauth/authorize" style="display:inline">
+            <button type="submit" class="px-2 py-1 text-xs bg-purple-50 text-purple-700 rounded hover:bg-purple-100">查看授权码</button>
+          </form>
+          {{else}}
+          <form method="POST" action="/admin/mcp-servers/{{.ID}}/oauth/authorize" style="display:inline">
+            <button type="submit" class="px-2 py-1 text-xs bg-purple-50 text-purple-700 rounded hover:bg-purple-100">OAuth 授权</button>
+          </form>
+          {{end}}
+        {{end}}
         <form method="POST" action="/admin/mcp-servers/{{.ID}}/refresh" style="display:inline">
           <button type="submit" class="px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200">刷新工具</button>
         </form>

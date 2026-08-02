@@ -23,6 +23,9 @@ type httpTransport struct {
 	baseURL    string
 	authHdr    string
 	httpClient *http.Client
+	// tokenProvider, when set, supplies the Authorization Bearer
+	// token per request (OAuth). Takes precedence over authHdr.
+	tokenProvider func(ctx context.Context) (string, error)
 }
 
 // Client is the MCP client facade used by the agentic loop. It
@@ -33,7 +36,7 @@ type Client struct {
 }
 
 func NewClient(baseURL, authHdr string) *Client {
-	return &Client{tr: &httpTransport{
+	return NewClientWithTransport(&httpTransport{
 		baseURL: baseURL,
 		authHdr: authHdr,
 		httpClient: &http.Client{
@@ -43,7 +46,7 @@ func NewClient(baseURL, authHdr string) *Client {
 				IdleConnTimeout: 60 * time.Second,
 			},
 		},
-	}}
+	})
 }
 
 // NewClientWithTransport builds a Client around a custom transport
@@ -88,6 +91,8 @@ func (c *Client) Close() error {
 }
 
 // rpc sends one JSON-RPC request over HTTP and decodes the result.
+// When a tokenProvider is set, the request is retried once after a
+// 401 in case the provider can refresh the access token.
 func (t *httpTransport) rpc(ctx context.Context, method string, params map[string]any) (json.RawMessage, error) {
 	req := &Request{
 		JSONRPC: Version,
@@ -99,27 +104,43 @@ func (t *httpTransport) rpc(ctx context.Context, method string, params map[strin
 	if err != nil {
 		return nil, fmt.Errorf("mcp: marshal request: %w", err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("mcp: create request: %w", err)
+	for attempt := 0; attempt < 2; attempt++ {
+		authHdr := t.authHdr
+		if t.tokenProvider != nil {
+			tok, terr := t.tokenProvider(ctx)
+			if terr != nil {
+				return nil, fmt.Errorf("mcp: token: %w", terr)
+			}
+			authHdr = "Bearer " + tok
+		}
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("mcp: create request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if authHdr != "" {
+			httpReq.Header.Set("Authorization", authHdr)
+		}
+		httpResp, err := t.httpClient.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("mcp: http do: %w", err)
+		}
+		respBody, err := io.ReadAll(httpResp.Body)
+		httpResp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("mcp: read body: %w", err)
+		}
+		if httpResp.StatusCode != http.StatusOK {
+			// Retry once on 401 when we have a token provider; the
+			// provider may refresh and the second attempt succeeds.
+			if httpResp.StatusCode == http.StatusUnauthorized && t.tokenProvider != nil && attempt == 0 {
+				continue
+			}
+			return nil, fmt.Errorf("mcp: http %d: %s", httpResp.StatusCode, string(respBody))
+		}
+		return decodeResponse(respBody)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if t.authHdr != "" {
-		httpReq.Header.Set("Authorization", t.authHdr)
-	}
-	httpResp, err := t.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("mcp: http do: %w", err)
-	}
-	defer httpResp.Body.Close()
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("mcp: read body: %w", err)
-	}
-	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("mcp: http %d: %s", httpResp.StatusCode, string(respBody))
-	}
-	return decodeResponse(respBody)
+	return nil, fmt.Errorf("mcp: auth retry exhausted")
 }
 
 // decodeResponse parses a JSON-RPC response payload, returning the

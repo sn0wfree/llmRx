@@ -1,0 +1,65 @@
+{{define "mcp_oauth_authorize_body"}}
+<div class="mb-6 flex items-center justify-between">
+  <div>
+    <a href="/admin/mcp-servers" class="text-sm text-gray-500 hover:text-gray-700">← MCP 服务器</a>
+    <h1 class="text-2xl font-bold text-gray-900 mt-2">OAuth 授权</h1>
+    <p class="text-sm text-gray-500 mt-1">服务器 {{.State.ServerName}}</p>
+  </div>
+</div>
+
+{{if eq .State.Status "authorizing"}}
+<div class="bg-white shadow rounded-lg p-6 mb-6 max-w-xl">
+  <h2 class="text-lg font-medium text-gray-900 mb-2">打开以下地址并输入授权码</h2>
+  <div class="bg-gray-50 rounded-md p-4 mb-4">
+    <div class="text-xs text-gray-500 mb-1">授权地址</div>
+    <a href="{{.State.VerificationURI}}" target="_blank" rel="noopener"
+       class="text-blue-600 hover:underline break-all font-mono text-sm">{{.State.VerificationURI}}</a>
+    <div class="text-xs text-gray-500 mt-4 mb-1">授权码（user code）</div>
+    <div class="text-4xl font-mono font-bold tracking-widest text-gray-900 select-all">{{.State.UserCode}}</div>
+    <div class="text-xs text-gray-400 mt-3">授权码在 {{.State.ExpiresIn}} 秒后过期</div>
+  </div>
+  <button onclick="pollOAuth({{.ServerID}})"
+          class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">
+    我已授权，检查状态
+  </button>
+  <span id="oauth-result" class="ml-3 text-sm"></span>
+</div>
+{{else if eq .State.Status "ready"}}
+<div class="bg-white shadow rounded-lg p-6 mb-6 max-w-xl">
+  <div class="flex items-center gap-2 text-green-700">
+    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+    <span class="font-medium">授权完成</span>
+  </div>
+  <p class="text-sm text-gray-500 mt-2">可以返回 MCP 服务器页面刷新工具。</p>
+  <a href="/admin/mcp-servers" class="mt-4 inline-block px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">返回</a>
+</div>
+{{else}}
+<div class="bg-white shadow rounded-lg p-6 mb-6 max-w-xl">
+  <div class="flex items-center gap-2 text-red-700">
+    <span class="font-medium">授权失败</span>
+  </div>
+  <p class="text-sm text-gray-500 mt-2">{{.State.Error}}</p>
+  <a href="/admin/mcp-servers" class="mt-4 inline-block px-4 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 text-sm font-medium">返回</a>
+</div>
+{{end}}
+
+<script>
+function pollOAuth(id) {
+  var el = document.getElementById('oauth-result');
+  el.textContent = '检查中…';
+  fetch('/admin/mcp-servers/' + id + '/oauth/poll', {method: 'POST'})
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (d.ok) {
+        el.textContent = '✓ 授权成功，正在刷新页面…';
+        setTimeout(function () { location.reload(); }, 800);
+      } else if (d.status === 'authorizing') {
+        el.textContent = '尚未完成授权，请先输入授权码…';
+      } else {
+        el.textContent = '授权失败: ' + (d.error || d.status);
+      }
+    })
+    .catch(function (e) { el.textContent = '请求失败: ' + e; });
+}
+</script>
+{{end}}

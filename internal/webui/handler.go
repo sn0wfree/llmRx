@@ -27,6 +27,7 @@ type Handler struct {
 	prober     *prober.Cache
 	responseCache cache.Cache
 	mcpClientMgr  *mcp.ClientManager
+	oauth     *mcp.OAuthManager
 }
 
 // New creates a web UI handler. adminAPI provides the legacy
@@ -55,6 +56,8 @@ func (h *Handler) SetProber(p *prober.Cache) { h.prober = p }
 func (h *Handler) SetCache(c cache.Cache) { h.responseCache = c }
 
 func (h *Handler) SetMCPClientManager(m *mcp.ClientManager) { h.mcpClientMgr = m }
+
+func (h *Handler) SetOAuthManager(o *mcp.OAuthManager) { h.oauth = o }
 
 // Routes returns the http handler that serves /admin/*.
 func (h *Handler) Routes() http.Handler {
@@ -136,6 +139,9 @@ func (h *Handler) Routes() http.Handler {
 		r.Post("/mcp-servers/{id}/refresh", h.MCPServerRefresh)
 		r.Post("/mcp-servers/{id}/pricing", h.MCPServerPricingUpdate)
 		r.Delete("/mcp-servers/{id}", h.MCPServerDelete)
+		r.Post("/mcp-servers/{id}/oauth/authorize", h.MCPOAuthAuthorize)
+		r.Post("/mcp-servers/{id}/oauth/poll", h.MCPOAuthPoll)
+		r.Post("/mcp-servers/{id}/oauth/clear", h.MCPOAuthClear)
 
 		r.Get("/guardrails", h.GuardrailsPage)
 		r.Post("/guardrails", h.GuardrailRuleCreate)

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -27,6 +28,7 @@ type ClientManager struct {
 	mu      sync.RWMutex
 	clients map[int64]*Client
 	repo    store.MCPRepository
+	oauth   *OAuthManager // optional; nil = no OAuth support
 }
 
 func NewClientManager(repo store.MCPRepository) *ClientManager {
@@ -35,6 +37,13 @@ func NewClientManager(repo store.MCPRepository) *ClientManager {
 		repo:    repo,
 	}
 }
+
+// SetOAuthManager attaches the OAuth manager used to supply tokens
+// for OAuth-configured MCP servers.
+func (m *ClientManager) SetOAuthManager(o *OAuthManager) { m.oauth = o }
+
+// OAuth returns the attached OAuth manager (may be nil).
+func (m *ClientManager) OAuth() *OAuthManager { return m.oauth }
 
 func (m *ClientManager) GetClient(ctx context.Context, serverID int64) (*Client, error) {
 	m.mu.RLock()
@@ -60,6 +69,13 @@ func (m *ClientManager) GetClient(ctx context.Context, serverID int64) (*Client,
 			return nil, fmt.Errorf("mcp: stdio server %s has empty command", srv.Name)
 		}
 		c = NewStdioClient(srv.Command)
+	} else if m.oauth != nil && m.oauth.NeedsOAuth(srv) {
+		tr := &httpTransport{
+			baseURL:    srv.URL,
+			httpClient: &http.Client{Timeout: 30 * time.Second},
+		}
+		tr.tokenProvider = m.oauth.TokenProvider(srv.ID)
+		c = NewClientWithTransport(tr)
 	} else {
 		c = NewClient(srv.URL, srv.AuthHdr)
 	}
