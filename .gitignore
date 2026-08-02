@@ -51,3 +51,9 @@ data.bak*/
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
+
+# build artifacts
+build/
+
+# graphify knowledge-graph cache
+graphify-out/
