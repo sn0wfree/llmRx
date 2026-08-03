@@ -813,6 +813,22 @@ heap profile 显示 `io.ReadAll` 贡献 5M allocs/1.7 GB（30s），`strings.Bui
 | `strings.Builder.grow` | 3.2M | 248 MB | 预分配后 −3.0M，−200 MB |
 | `streamBuf` | 0.5M | 64 MB | 缓存禁用时 −100% |
 
+#### P1 补充（Round-7b）
+
+1. **KeyMasked 缓存** — `secrets.Mask()` 每请求调用移入 `keyEntry` 构建时，消除 NextKey 路径的字符串分配。（−1.7M allocs/30s）
+
+2. **`encoding/json` → `goccy/go-json`** — 迁移 `sse/sse.go`、`middleware/auth.go`、`logging/logging.go` 三个遗留文件，消除反射开销。
+
+3. **`toolCallAcc` 预分配 + 池化** — `make(map[int]*toolCallAccum, 4)` 避免 map growth；`sync.Pool` 复用 `toolCallAccum` 结构体，Reset 保留下层 buffer。
+
+#### 实测
+
+| Benchmark | Before (R7) | After (R7b) | 变化 |
+|-----------|:----------:|:----------:|:----:|
+| NonStreaming allocs/op | 91 | **90** | **−1** |
+| Streaming allocs/op | 121 | **120** | **−1** |
+| NonStreaming B/op | 10,640 | **10,620** | **−20** |
+
 ### 7. 后续候选
 
 - **Round-7**：fasthttp server（chi 替换）— 预期 +15–25% rps
