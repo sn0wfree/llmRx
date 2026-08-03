@@ -213,7 +213,17 @@ func (b *CircuitBreaker) resolveDefaults() breakerCfg {
 }
 
 func (b *CircuitBreaker) getEntry(channelID int64) *breakerEntry {
-	actual, _ := b.entries.LoadOrStore(channelID, &breakerEntry{})
+	// Fast path: load without allocating. After warmup, every
+	// channel has an entry and this is a lock-free sync.Map read.
+	if v, ok := b.entries.Load(channelID); ok {
+		return v.(*breakerEntry)
+	}
+	// Slow path: first-time lookup for this channel. Allocate
+	// the entry and try to publish; if another goroutine beat us
+	// to it, LoadOrStore returns the existing one and our
+	// freshly-allocated entry is dropped (garbage-collected).
+	entry := &breakerEntry{}
+	actual, _ := b.entries.LoadOrStore(channelID, entry)
 	return actual.(*breakerEntry)
 }
 
