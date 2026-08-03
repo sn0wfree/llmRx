@@ -28,9 +28,10 @@ type channelEntry struct {
 }
 
 type keyEntry struct {
-	DBID   int64
-	Key    string
-	Status model.KeyStatus
+	DBID       int64
+	Key        string
+	KeyMasked  string
+	Status     model.KeyStatus
 }
 
 func NewChannelPool() *ChannelPool {
@@ -82,7 +83,9 @@ func (p *ChannelPool) LoadFromStore(st store.Store) error {
 		dbids := make([]int64, 0, len(keys))
 		for j := range keys {
 			k := &keys[j]
-			entries = append(entries, &keyEntry{DBID: k.ID, Key: k.Key, Status: k.Status})
+			entries = append(entries, &keyEntry{
+				DBID: k.ID, Key: k.Key, KeyMasked: secrets.Mask(k.Key), Status: k.Status,
+			})
 			dbids = append(dbids, k.ID)
 		}
 		ce := &channelEntry{Channel: ch, Keys: entries}
@@ -112,7 +115,9 @@ func (p *ChannelPool) UpsertChannel(ch *model.Channel, keys []model.Key) {
 	dbids := make([]int64, 0, len(keys))
 	for i := range keys {
 		k := &keys[i]
-		entries = append(entries, &keyEntry{DBID: k.ID, Key: k.Key, Status: k.Status})
+		entries = append(entries, &keyEntry{
+			DBID: k.ID, Key: k.Key, KeyMasked: secrets.Mask(k.Key), Status: k.Status,
+		})
 		dbids = append(dbids, k.ID)
 	}
 	p.mu.Lock()
@@ -181,7 +186,7 @@ func (p *ChannelPool) NextKey(channelID int64) (*model.Key, error) {
 			ID:        ke.DBID,
 			ChannelID: channelID,
 			Key:       ke.Key,
-			KeyMasked: secrets.Mask(ke.Key),
+			KeyMasked: ke.KeyMasked,
 			Status:    ke.Status,
 		}, nil
 	}

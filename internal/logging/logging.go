@@ -16,12 +16,13 @@ package logging
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/goccy/go-json"
 )
 
 // Level matches the global runtime.Defaults log level (0=debug..3=error).

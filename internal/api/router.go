@@ -116,6 +116,10 @@ type toolCallAccum struct {
 	Arguments strings.Builder
 }
 
+var toolCallAccumPool = sync.Pool{
+	New: func() any { return &toolCallAccum{} },
+}
+
 type Handler struct {
 	router     *router.RouterEngine
 	pool       *pool.ChannelPool
@@ -1847,7 +1851,8 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 	// toolCallAcc accumulates streaming delta.tool_calls keyed by
 	// Index. When finish_reason with tool_calls is seen, the
 	// accumulator is used to build the full assistant message.
-	toolCallAcc := map[int]*toolCallAccum{}
+	var toolCallAcc map[int]*toolCallAccum
+	toolCallAcc = make(map[int]*toolCallAccum, 4)
 	for {
 		select {
 		case <-ctx.Done():
@@ -1887,11 +1892,15 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 						continue
 					}
 					idx := *tc.Index
-					acc, ok := toolCallAcc[idx]
-					if !ok {
-						acc = &toolCallAccum{Index: idx}
-						toolCallAcc[idx] = acc
-					}
+acc, ok := toolCallAcc[idx]
+				if !ok {
+					acc = toolCallAccumPool.Get().(*toolCallAccum)
+					acc.Index = idx
+					acc.ID = ""
+					acc.Name.Reset()
+					acc.Arguments.Reset()
+					toolCallAcc[idx] = acc
+				}
 					if tc.ID != "" {
 						acc.ID = tc.ID
 					}
@@ -1975,6 +1984,9 @@ done:
 					Arguments: acc.Arguments.String(),
 				},
 			})
+		}
+		for _, acc := range toolCallAcc {
+			toolCallAccumPool.Put(acc)
 		}
 
 		// Emit agentic-loop SSE event.

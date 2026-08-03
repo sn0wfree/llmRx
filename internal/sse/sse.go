@@ -7,12 +7,13 @@ package sse
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/goccy/go-json"
 )
 
 // Writer serializes events onto an http.ResponseWriter. Concurrent

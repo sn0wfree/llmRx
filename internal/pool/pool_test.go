@@ -100,7 +100,7 @@ func TestPool_MaskedKeyFormat(t *testing.T) {
 	p.channels[1] = &channelEntry{
 		Channel: &model.Channel{ID: 1, Name: "c1"},
 		Keys: []*keyEntry{
-			{Key: "sk-abcdefghijklmnop", Status: model.KeyActive},
+			{Key: "sk-abcdefghijklmnop", KeyMasked: "sk-a***mnop", Status: model.KeyActive},
 		},
 	}
 	k, _ := p.NextKey(1)
