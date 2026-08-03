@@ -35,6 +35,15 @@ type ServerConfig struct {
 	// of the last ~1s of logs for ~2-5x write throughput (Redis AOF
 	// everysec semantics); only meaningful for logstore_backend=sqlite.
 	LogstoreSynchronous string `yaml:"logstore_synchronous"`
+	// LogSampleRate is the 1-in-N sampling rate for the
+	// "chat.completed" Info log line. The rate only affects the
+	// stdout/JSON log line — the persisted logstore row, broker
+	// publish, metrics, and spend ledger still run for every
+	// request. 1 (= default) logs every request; 100 logs ~1%; 0
+	// disables the chat.completed line entirely. Reflected in
+	// docs/PERFORMANCE.md as the single biggest controllable hot
+	// spot (Round-3 pprof: ~18% of handleAutoCombo CPU).
+	LogSampleRate int `yaml:"log_sample_rate"`
 	// MaxInflightRequests caps concurrently in-flight requests
 	// (unset/0 = default 10000; negative = disable). Beyond the cap
 	// new requests get an immediate 503, protecting the process

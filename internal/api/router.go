@@ -153,7 +153,7 @@ func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st 
 		limits:     lim,
 		guardrails: guardrail.New(st),
 		costCalc:   cc,
-		emitter:    NewLogEmitter(ls, lb, st, lim, cc),
+		emitter:    NewLogEmitter(ls, lb, st, lim, cc, cfg.Server.LogSampleRate),
 		autoPool:   auto.NewPool(eng.Thompson()),
 		autoScorer: buildAutoScorer(cfg),
 		autoStats:  auto.NewStats(),

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/logging"
@@ -23,16 +24,69 @@ type LogEmitter struct {
 	store     store.Store
 	limits    *ratelimit.Limiter
 	costCalc  *CostCalculator
+
+	// chatLogCount is a monotonic counter used by the chat.completed
+	// sampling hook. Accessed via sync/atomic.AddUint64; padded to
+	// its own cache line (chatLogSampleRate sits adjacent) so the
+	// counter hot-path doesn't share a line with the rate field.
+	chatLogCount      uint64
+	chatLogSampleRate uint64 // 1 = every; 0 = disabled; N = 1-in-N
 }
 
-func NewLogEmitter(ls *logstore.Manager, lb *broker.Broker[*model.Log], st store.Store, lim *ratelimit.Limiter, cc *CostCalculator) *LogEmitter {
-	return &LogEmitter{
-		logStore:  ls,
-		logBroker: lb,
-		store:     st,
-		limits:    lim,
-		costCalc:  cc,
+func NewLogEmitter(ls *logstore.Manager, lb *broker.Broker[*model.Log], st store.Store, lim *ratelimit.Limiter, cc *CostCalculator, sampleRate int) *LogEmitter {
+	rate := uint64(sampleRate)
+	if rate > 1 {
+		// Valid N>1: keep as-is.
+	} else if rate == 1 {
+		// Default: every request.
+	} else {
+		// 0 or negative: disable the chat.completed line entirely.
+		rate = 0
 	}
+	return &LogEmitter{
+		logStore:          ls,
+		logBroker:         lb,
+		store:             st,
+		limits:            lim,
+		costCalc:          cc,
+		chatLogSampleRate: rate,
+	}
+}
+
+// SetChatLogSampleRate atomically swaps the sampling rate. Pass 1
+// to log every request, 0 to disable, or N>=2 to log 1-in-N.
+// The change is picked up by the next Emit call. Hot path skips
+// the atomic when rate is 1 (the default).
+func (e *LogEmitter) SetChatLogSampleRate(n int) {
+	var rate uint64
+	switch {
+	case n > 1:
+		rate = uint64(n)
+	case n == 1:
+		rate = 1
+	default:
+		rate = 0
+	}
+	atomic.StoreUint64(&e.chatLogSampleRate, rate)
+	// Reset the counter so the next sampled call still emits at the
+	// start of a new window instead of waiting for the next %N==0.
+	atomic.StoreUint64(&e.chatLogCount, 0)
+}
+
+// emitChatCompletedSamples decides whether to emit the chat.completed
+// Info log line for this request. Returns true when the line should
+// be emitted. The persisted logstore/broker/metrics/spend paths run
+// for every request regardless of this decision.
+func (e *LogEmitter) emitChatCompletedSamples() bool {
+	rate := atomic.LoadUint64(&e.chatLogSampleRate)
+	if rate == 1 {
+		return true
+	}
+	if rate == 0 {
+		return false
+	}
+	n := atomic.AddUint64(&e.chatLogCount, 1)
+	return n%rate == 0
 }
 
 func (e *LogEmitter) Emit(ctx context.Context, tokenID int64, modelName string, route *router.RouteResult, usage *provider.Usage, durationMs int64, statusCode int, failed bool, ip string) {
@@ -49,20 +103,23 @@ func (e *LogEmitter) Emit(ctx context.Context, tokenID int64, modelName string, 
 	if failed {
 		status = "fail"
 	}
-	logging.Info("chat.completed",
-		logging.F("status", status),
-		logging.F("model", modelName),
-		logging.F("channel", route.Channel.Name),
-		logging.F("key", route.Key.KeyMasked),
-		logging.F("prompt", promptTokens(usage)),
-		logging.F("completion", completionTokens(usage)),
-		logging.F("cached", cached),
-		logging.F("real_usd", real),
-		logging.F("billed_usd", billed),
-		logging.F("duration_ms", durationMs),
-		logging.F("code", statusCode),
-		logging.F("path", route.RouterLog),
-	)
+	if e.emitChatCompletedSamples() {
+		logging.Info("chat.completed",
+			logging.F("status", status),
+			logging.F("model", modelName),
+			logging.F("channel", route.Channel.Name),
+			logging.F("key", route.Key.KeyMasked),
+			logging.F("prompt", promptTokens(usage)),
+			logging.F("completion", completionTokens(usage)),
+			logging.F("cached", cached),
+			logging.F("real_usd", real),
+			logging.F("billed_usd", billed),
+			logging.F("duration_ms", durationMs),
+			logging.F("code", statusCode),
+			logging.F("path", route.RouterLog),
+			logging.F("sample_rate", atomic.LoadUint64(&e.chatLogSampleRate)),
+		)
+	}
 	entry := &model.Log{
 		TokenID:          tokenID,
 		ChannelID:        route.Channel.ID,
