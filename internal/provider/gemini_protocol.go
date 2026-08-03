@@ -3,12 +3,13 @@ package provider
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/goccy/go-json"
 )
 
 func init() {

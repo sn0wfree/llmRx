@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/goccy/go-json"
 )
 
 // ErrStreamUnsupported is returned by providers that don't implement
