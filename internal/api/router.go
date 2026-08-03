@@ -55,6 +55,36 @@ func putChunkBuf(buf *bytes.Buffer) {
 	}
 }
 
+// bodyBufMaxBytes caps the request body buffer returned to the pool.
+// A 256 KiB cap keeps the pool from pinning oversized uploads.
+const bodyBufMaxBytes = 256 * 1024
+
+var bodyBufPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
+
+func putBodyBuf(buf *bytes.Buffer) {
+	if buf.Cap() <= bodyBufMaxBytes {
+		buf.Reset()
+		bodyBufPool.Put(buf)
+	}
+}
+
+// streamBufMaxBytes caps the stream buffer returned to the pool.
+// 512 KiB accommodates most cached SSE responses.
+const streamBufMaxBytes = 512 * 1024
+
+var streamBufPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
+
+func putStreamBuf(buf *bytes.Buffer) {
+	if buf.Cap() <= streamBufMaxBytes {
+		buf.Reset()
+		streamBufPool.Put(buf)
+	}
+}
+
 var (
 	dataPrefix  = []byte("data: ")
 	dataSuffix  = []byte("\n\n")
@@ -439,13 +469,20 @@ func writeJSON(w http.ResponseWriter, data interface{}) {
 // can still read from r.Body if needed.
 func readBody(r *http.Request, limit int64) ([]byte, error) {
 	r.Body = http.MaxBytesReader(nil, r.Body, limit)
-	b, err := io.ReadAll(r.Body)
+	buf := bodyBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	_, err := buf.ReadFrom(r.Body)
 	r.Body.Close()
 	if err != nil {
+		putBodyBuf(buf)
 		return nil, err
 	}
-	r.Body = io.NopCloser(bytes.NewReader(b))
-	return b, nil
+	b := buf.Bytes()
+	body := make([]byte, len(b))
+	copy(body, b)
+	putBodyBuf(buf)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	return body, nil
 }
 
 // mustMarshalJSON marshals v to JSON, panicking on error. Used
@@ -1799,13 +1836,18 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 		flushed        = 0
 		bytesSent      = int64(0)
 		contentBuilder strings.Builder
-		streamBuf      bytes.Buffer
-		// toolCallAcc accumulates streaming delta.tool_calls keyed by
-		// Index. When finish_reason with tool_calls is seen, the
-		// accumulator is used to build the full assistant message.
-		toolCallAcc  = map[int]*toolCallAccum{}
-		hasToolCalls bool
+		hasToolCalls   bool
 	)
+	contentBuilder.Grow(4096)
+	var streamBuf *bytes.Buffer
+	if h.responseCache != nil {
+		streamBuf = streamBufPool.Get().(*bytes.Buffer)
+		streamBuf.Reset()
+	}
+	// toolCallAcc accumulates streaming delta.tool_calls keyed by
+	// Index. When finish_reason with tool_calls is seen, the
+	// accumulator is used to build the full assistant message.
+	toolCallAcc := map[int]*toolCallAccum{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -1880,7 +1922,9 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 				buf.Write(dataSuffix)
 			}
 			chunkBytes := buf.Bytes()
-			streamBuf.Write(chunkBytes)
+			if streamBuf != nil {
+				streamBuf.Write(chunkBytes)
+			}
 			n, werr := w.Write(chunkBytes)
 			putChunkBuf(buf)
 			bytesSent += int64(n)
@@ -1935,7 +1979,9 @@ done:
 
 		// Emit agentic-loop SSE event.
 		agenticEvent := []byte("event: agentic-loop\ndata: {}\n\n")
-		streamBuf.Write(agenticEvent)
+		if streamBuf != nil {
+			streamBuf.Write(agenticEvent)
+		}
 		w.Write(agenticEvent)
 		flusher.Flush()
 
@@ -1945,7 +1991,9 @@ done:
 		if loopErr != nil {
 			h.router.RecordFailure(route.Channel.ID, http.StatusBadGateway)
 			errMsg := fmt.Sprintf("event: error\ndata: {\"message\":%q}\n\n", loopErr.Error())
-			streamBuf.WriteString(errMsg)
+			if streamBuf != nil {
+				streamBuf.WriteString(errMsg)
+			}
 			w.Write([]byte(errMsg))
 			flusher.Flush()
 			h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
@@ -1962,7 +2010,9 @@ done:
 		if err != nil {
 			h.router.RecordFailure(route.Channel.ID, http.StatusBadGateway)
 			errMsg := fmt.Sprintf("event: error\ndata: {\"message\":%q}\n\n", err.Error())
-			streamBuf.WriteString(errMsg)
+			if streamBuf != nil {
+				streamBuf.WriteString(errMsg)
+			}
 			w.Write([]byte(errMsg))
 			flusher.Flush()
 			h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
@@ -2017,7 +2067,9 @@ done:
 					buf.Write(dataSuffix)
 				}
 				chunkBytes := buf.Bytes()
-				streamBuf.Write(chunkBytes)
+				if streamBuf != nil {
+					streamBuf.Write(chunkBytes)
+				}
 				n, werr := w.Write(chunkBytes)
 				putChunkBuf(buf)
 				bytesSent += int64(n)
@@ -2055,11 +2107,19 @@ final:
 			return
 		}
 	}
-	streamBuf.Write(donePayload)
+	if streamBuf != nil {
+		streamBuf.Write(donePayload)
+	}
 	w.Write(donePayload)
 	flusher.Flush()
 	h.router.RecordSuccess(route.Channel.ID)
-	h.tryCacheStream(r.Context(), req, route, usage, streamBuf.Bytes())
+	if streamBuf != nil {
+		body := streamBuf.Bytes()
+		bodyCopy := make([]byte, len(body))
+		copy(bodyCopy, body)
+		putStreamBuf(streamBuf)
+		h.tryCacheStream(r.Context(), req, route, usage, bodyCopy)
+	}
 	h.emitLog(r.Context(), lookupTokenID(r.Context(), h.store), req.Model, route, usage,
 		time.Since(start).Milliseconds(), http.StatusOK, false, h.clientIP(r))
 }
