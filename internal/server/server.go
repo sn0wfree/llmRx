@@ -159,6 +159,13 @@ func (w *loggingResponseWriter) Flush() {
 	}
 }
 
+func (w *loggingResponseWriter) CloseNotify() <-chan bool {
+	if cn, ok := w.ResponseWriter.(http.CloseNotifier); ok {
+		return cn.CloseNotify()
+	}
+	return nil
+}
+
 // inflightLimit resolves the configured max-inflight guard: unset
 // (0) means the 10000 default; a negative value explicitly disables
 // the guard.

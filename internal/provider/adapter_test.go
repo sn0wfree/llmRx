@@ -142,8 +142,8 @@ func TestAnthropicProvider_Chat(t *testing.T) {
 
 func TestGeminiProvider_Chat(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.RawQuery, "key=") {
-			t.Errorf("missing key= query param: %s", r.URL.RawQuery)
+		if r.Header.Get("x-goog-api-key") == "" {
+			t.Errorf("missing x-goog-api-key header")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"hi from gemini"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":4,"totalTokenCount":11}}`)

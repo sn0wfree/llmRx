@@ -21,7 +21,7 @@ import (
 // don't have to coordinate.
 type Writer struct {
 	w  http.ResponseWriter
-	fl interface{ Flush() }
+	fl http.Flusher
 	mu sync.Mutex
 }
 
@@ -35,10 +35,11 @@ func New(w http.ResponseWriter) (*Writer, error) {
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	fl, _ := w.(interface{ Flush() })
-	if fl != nil {
-		fl.Flush()
+	fl, ok := w.(http.Flusher)
+	if !ok {
+		return nil, fmt.Errorf("sse: ResponseWriter does not implement http.Flusher")
 	}
+	fl.Flush()
 	return &Writer{w: w, fl: fl}, nil
 }
 

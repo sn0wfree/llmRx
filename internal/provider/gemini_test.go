@@ -50,10 +50,10 @@ func TestGeminiChat_AssistantRoleTranslatedToModel(t *testing.T) {
 	assertStrContains(t, string(captured), `"role":"model"`)
 }
 
-func TestGeminiChat_AuthViaQueryParams(t *testing.T) {
-	var query string
+func TestGeminiChat_AuthViaHeader(t *testing.T) {
+	var gotKey string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		query = r.URL.RawQuery
+		gotKey = r.Header.Get("x-goog-api-key")
 		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
 	}))
 	defer srv.Close()
@@ -61,8 +61,8 @@ func TestGeminiChat_AuthViaQueryParams(t *testing.T) {
 	_, _, _ = NewGeminiProvider().Chat(context.Background(), &ChatRequest{
 		Model: "gemini-pro", Messages: []Message{{Role: "user", Content: "hi"}},
 	}, "gem-key-123", srv.URL)
-	if !strings.Contains(query, "key=gem-key-123") {
-		t.Fatalf("query missing key: %s", query)
+	if gotKey != "gem-key-123" {
+		t.Fatalf("x-goog-api-key = %q, want gem-key-123", gotKey)
 	}
 }
 

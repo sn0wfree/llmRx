@@ -97,13 +97,14 @@ func (p *GeminiProvider) Chat(ctx context.Context, req *ChatRequest, apiKey, bas
 	if err != nil {
 		return nil, 0, err
 	}
-	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent?key=%s",
-		strings.TrimRight(baseURL, "/"), req.Model, apiKey)
+	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent",
+		strings.TrimRight(baseURL, "/"), req.Model)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-goog-api-key", apiKey)
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
 		return nil, 0, err

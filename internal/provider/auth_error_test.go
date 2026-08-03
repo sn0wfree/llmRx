@@ -130,7 +130,7 @@ func TestAnthropicProvider_Chat_Non200(t *testing.T) {
 func TestGeminiProvider_Chat_QueryKey(t *testing.T) {
 	var gotKey, gotModel string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotKey = r.URL.Query().Get("key")
+		gotKey = r.Header.Get("x-goog-api-key")
 		gotModel = extractGeminiModel(r.URL.Path)
 		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"hi"}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`))
 	}))
@@ -138,7 +138,7 @@ func TestGeminiProvider_Chat_QueryKey(t *testing.T) {
 	p := NewGeminiProvider()
 	_, _, _ = p.Chat(context.Background(), &ChatRequest{Model: "gemini-1.5-pro"}, "sk-gemini-key", srv.URL)
 	if gotKey != "sk-gemini-key" {
-		t.Errorf("?key= = %q, want sk-gemini-key", gotKey)
+		t.Errorf("x-goog-api-key = %q, want sk-gemini-key", gotKey)
 	}
 	if gotModel != "gemini-1.5-pro" {
 		t.Errorf("model in path = %q, want gemini-1.5-pro", gotModel)

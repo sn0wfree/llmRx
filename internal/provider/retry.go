@@ -120,11 +120,20 @@ func (r *RetryingProvider) StreamChat(ctx context.Context, req *ChatRequest, api
 	if r.config.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, r.config.Timeout)
-		// Note: cancel is intentionally not deferred — the caller
-		// reads from the channel until it closes, which signals
-		// completion. The context will be garbage-collected when
-		// the channel consumer returns.
-		_ = cancel
+		ch, err := sp.StreamChat(ctx, req, apiKey, baseURL)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		out := make(chan StreamEvent, 8)
+		go func() {
+			defer cancel()
+			defer close(out)
+			for ev := range ch {
+				out <- ev
+			}
+		}()
+		return out, nil
 	}
 	return sp.StreamChat(ctx, req, apiKey, baseURL)
 }
