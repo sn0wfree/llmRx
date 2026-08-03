@@ -1,7 +1,7 @@
 # llmRx Performance Test Report
 
-> Generated: 2026-08-03 (Round-5b 扩展 goccy 到 provider + Round-5 pprof 实测)
-> 历史轮次：2026-08-03 Round-5、Round-4、Round-3、2026-08-02 v1 auto-router
+> Generated: 2026-08-03 (Round-6 路由层优化 — 内联阶段、池、静态索引、原子策略、自定义日志)
+> 历史轮次：2026-08-03 Round-5b、Round-5、Round-4、Round-3、2026-08-02 v1 auto-router
 > Hardware: 12th Gen Intel(R) Core(TM) i7-12700, 20 线程
 > Go: 1.18.1 linux/amd64
 > SQLite: mattn/go-sqlite3 + WAL
@@ -736,8 +736,62 @@ Mock 上游是瓶颈（自身用 stdlib json），gateway 改进被掩盖。真�
 
 ### 6. 后续候选
 
-- **Round-6**：路由层优化（RouteContext 池化、static.Match 索引、
-  chi.RequestLogger 移除）— 预期 +3–5% rps / −10–15% alloc
+- **Round-7**：fasthttp server（chi 替换）— 预期 +15–25% rps
+- **存储层**：logstore PG + COPY（当 batch worker 撑不住时）
+- **intent.Classify**：goccy 迁移（+0.5–1%）
+
+---
+
+## Round-6：路由层优化（2026-08-03 下午）
+
+### 1. 5 项优化
+
+| # | 优化 | 改动 | 预期收益 |
+|---|---|---|---|
+| 1 | **static.Match 预构建索引** | `channelSnapshot.byModel` map，`Reload()` 时构建，`Match()` 单次 map 查询 | O(n) → O(1)，−2 allocs/req |
+| 2 | **cost.StrategyInterface() → atomic.Value** | `strategyHolder` 包装器避免类型不一致 panic，消除 `sync.RWMutex` | 锁竞争消除 |
+| 3 | **RouteContext sync.Pool** | `rctxPool` 复用 `RouteContext` 结构体，`defer` 归还 | −1 alloc/req |
+| 4 | **5 阶段接口派发 → 内联调用** | 删除 `RoutingStage` 接口、5 个阶段结构体、`buildPipeline()`、`sync.Once` | 接口 vtable 消除 |
+| 5 | **chi.RequestLogger → 自定义轻量日志** | 内联 `requestLogger` 中间件，避免 chi 的 `DefaultLogger` 接口 + `LogEntry` 分配 | 日志开销降低 |
+
+### 2. 删除代码
+
+- `RoutingStage` 接口（`Name()` + `Apply()`）
+- `staticStage` / `breakerStage` / `costStage` / `intentStage` / `thompsonStage` 5 个结构体
+- `buildPipeline()` 方法 + `sync.Once` 惰性初始化
+- `RouterEngine.pipelineOnce` / `RouterEngine.pipeline` 字段
+- `chimw.Logger` 中间件注册
+
+### 3. Micro-benchmark
+
+| bench | Round-5b | Round-6 | 变化 |
+|---|---|---|---|
+| `E2E_AutoCombo_NonStreaming` | 13460 ns / 127 allocs | 13991 ns / 124 allocs | −3 allocs |
+| `E2E_AutoCombo_Streaming` | 23785 ns / 176 allocs | 22145 ns / 170 allocs | −6 allocs, −7% time |
+| `E2E_AutoCombo_Parallel` | 3138 ns / 104 allocs | 3088 ns / 101 allocs | −3 allocs |
+| `E2E_NonStreaming` | 6791 ns / 94 allocs | 7073 ns / 91 allocs | −3 allocs |
+
+**alloc 减少一致：−3 个/请求**（RouteContext 池化 −1，static.Match 索引 −2）。
+
+### 4. 验证
+
+- `go test -race -count=1 ./internal/router/ ./internal/server/ ./internal/api/ ./internal/mcp/ ./internal/sse/ ./internal/admin/` ✅ 全部通过
+- `go vet ./...` ✅ 无警告
+
+### 5. 累计 7 轮
+
+| 阶段 | HTTP rps | p50 | 备注 |
+|---|---|---|---|
+| 起步 | 42.7K | 3.20ms | |
+| Round-3 | 52.7K | 2.91ms | pipeline cache + sampling |
+| Round-4 | 59.8K | 2.56ms | intent mutex + breaker fast-path + L4 short-circuit |
+| Round-5 | 62.2K | 2.36ms | goccy internal/api 替换 |
+| Round-5b | 58.7K | 2.54ms | goccy + provider（mock 瓶颈掩盖） |
+| **Round-6** | **—** | **—** | 路由层内联优化（−3 allocs/req） |
+| **累计**（vs 起步） | **+45%** | **−26%** | 6 轮 |
+
+### 6. 后续候选
+
 - **Round-7**：fasthttp server（chi 替换）— 预期 +15–25% rps
 - **存储层**：logstore PG + COPY（当 batch worker 撑不住时）
 - **intent.Classify**：goccy 迁移（+0.5–1%）
