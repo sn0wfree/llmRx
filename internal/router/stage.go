@@ -25,13 +25,20 @@ type RoutingStage interface {
 }
 
 func (e *RouterEngine) buildPipeline() []RoutingStage {
-	return []RoutingStage{
-		&staticStage{static: e.static, extraChannels: e.extraChannels},
-		&breakerStage{breaker: e.breaker},
-		&costStage{cost: e.cost},
-		&intentStage{intent: e.intent},
-		&thompsonStage{sampler: e.thompson},
-	}
+	// Cache the pipeline slice: stages are wired once at engine
+	// construction and never change, but the literal in the old
+	// code allocated a 5-element slice every request.
+	// sync.Once makes the lazy init goroutine-safe under -race.
+	e.pipelineOnce.Do(func() {
+		e.pipeline = []RoutingStage{
+			&staticStage{static: e.static, extraChannels: e.extraChannels},
+			&breakerStage{breaker: e.breaker},
+			&costStage{cost: e.cost},
+			&intentStage{intent: e.intent},
+			&thompsonStage{sampler: e.thompson},
+		}
+	})
+	return e.pipeline
 }
 
 func (e *RouterEngine) routeWithPipeline(ctx context.Context, modelName string, opts RouteOptions) (*RouteResult, error) {

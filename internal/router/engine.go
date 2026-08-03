@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"sync"
 
 	"github.com/sn0wfree/llmRx/internal/intent"
 	"github.com/sn0wfree/llmRx/internal/model"
@@ -26,6 +27,8 @@ type RouterEngine struct {
 	store         store.Store
 	extraChannels []func() []*model.Channel // BYOK hook (Phase 1.5 reserved)
 	trafficObs    []TrafficObserver         // optional real-traffic observers (prober etc.)
+	pipelineOnce  sync.Once                 // guards lazy init of pipeline
+	pipeline      []RoutingStage            // cached buildPipeline (stages are immutable after construction)
 }
 
 // TrafficObserver is the pluggable hook RouterEngine invokes on
