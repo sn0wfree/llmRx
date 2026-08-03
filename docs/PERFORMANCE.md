@@ -1,7 +1,8 @@
 # llmRx Performance Test Report
 
-> Generated: 2026-08-02 (v1 auto-router 性能轮次，含 2 个热点修复)
-> 上一份报告见 git 历史（2026-07-09 版）
+> Generated: 2026-08-03 (Round-3 热点剖析 + 修复轮)
+> 上一份报告：2026-08-02 v1 auto-router 性能轮次
+> 历史轮次见 git
 > Hardware: 12th Gen Intel(R) Core(TM) i7-12700, 20 线程
 > Go: 1.18.1 linux/amd64
 > SQLite: mattn/go-sqlite3 + WAL
@@ -156,4 +157,138 @@ go run ./scripts/loadtest -url http://127.0.0.1:8787/v1/chat/completions \
 # 剖析（进程内）
 go test -run xxx -bench BenchmarkE2E_NonStreaming -benchtime 3s -cpuprofile /tmp/cpu.prof ./internal/api/
 go tool pprof -top /tmp/cpu.prof
+
+---
+
+## Round-3 热点剖析与修复（2026-08-03）
+
+承接 2026-08-02 的容量修复（commit `5262e93`..`3df92b5`），本轮目标有三：
+① 在稳定基线上做深度 pprof 剖析，找出剩余顶层热点；
+② 用最少的代码改动回收可控热点的 CPU；
+③ 标记仍不可控的热点（stdlib 反射 / SSE 帧 / prober 节奏）作为未来工作。
+
+### 方法
+
+- **基线**：启用 `logstore.synchronous: off`（Round-2 修复），WAL+journal 处于稳态。
+- **HTTP 负载**：`scripts/mockupstream` `:9100` + 真实 gateway，c=200 持续 30s+。
+- **进程内剖析**：`go test -run xxx -bench BenchmarkE2E_NonStreaming -benchtime=25s -cpuprofile /tmp/cpu.pprof` + 10s 采样窗口。
+- **TOP-5 热点**（pprof cum CPU，2026-08-03 收集）：
+
+| 函数 | cum % | 备注 |
+|---|---|---|
+| `handleAutoCombo` | 40.08% | E2E 入口，外层 hot path |
+| ├─ `router.RouteWith` | 24.90% | L1-L5 路由管线 |
+| ├─ `provider.Chat` | 29.30% | 上游 HTTP（不可压缩，已用 sharedTransport） |
+| └─ `emitLog` | 21.60% | `chat.completed` 日志 + logstore 持久化 |
+| &nbsp;&nbsp;&nbsp;&nbsp;├─ `logging.Info` 反射 marshal | 7.12s/8.57s = **83% of emitLog** | **单点最大可控热点** |
+| &nbsp;&nbsp;&nbsp;&nbsp;└─ `writeJSON` 响应编码 | 1.74% | 客户端响应，不可省 |
+| **GC / mallocgc** | 19% | 每请求 ~165 allocs，主要源自 JSON 编解码 + 候选列表复制 |
+
+- **Heap alloc top**（`pprof -top -alloc_space`）：`tierCandidates` 防御性 clone（**已修** `f541ab2`）、
+  `buildPipeline` 5 元素切片（**本轮修**）、`net/textproto.readMIMEHeader`（stdlib，不可控）、
+  `emitAutoDecision`（决策日志字段）、`breaker.getEntry`（每请求新 map）。
+
+### 修复 1：`buildPipeline` 缓存（`fix(router): cache buildPipeline slice`）
+
+`routeWithPipeline` 每请求构造 `[]RoutingStage{...}` 5 元素切片 + 5 个 interface 装箱。
+虽然 stages 在 `RouterEngine` 构造后即不可变，但旧代码每请求分配一次。
+
+**改动**：
+- `internal/router/engine.go` `RouterEngine` 新增 `pipeline []RoutingStage` + `pipelineOnce sync.Once` 字段
+- `internal/router/stage.go` `buildPipeline()` 改为 lazy init：`sync.Once.Do` 保证并发首次构造无竞争
+- 验证：`TestRouterEngine_BuildPipeline_ConcurrentInit`（32 goroutine `-race` 通过）+ `TestRouterEngine_BuildPipeline_NoStores`（零值结构体也能构造 pipeline）
+
+**收益**（进程内 bench，20 核）：
+
+| Bench | 旧值 (08-02) | 新值 (08-03) | 提升 |
+|---|---|---|---|
+| `E2E_Parallel` | 3829 ns/op, 93 allocs | 3829 ns/op, 93 allocs | — *(plain 路径用旧的 Route 入口，不走 pipeline)* |
+| `E2E_NonStreaming` | 31.9 µs, 251 allocs (07 原值) → 13.3 µs, 165 (08-02) | **8.7 µs, 114 allocs** | 1.5x / 51 allocs 减 |
+| `E2E_AutoCombo_Parallel` | 12.0 µs, 204 allocs (08-02) | **4.8 µs, 128 allocs** | **2.5x / 76 allocs 减** |
+| `E2E_AutoCombo_NonStreaming` | 20.2 µs, 203 allocs (08-02) | **16.0 µs, 148 allocs** | 1.3x / 55 allocs 减 |
+| `E2E_AutoCombo_Streaming` | 29.3 µs, 267 allocs (08-02) | **25.0 µs, 208 allocs** | 1.2x / 59 allocs 减 |
+
+> 注：`E2E_AutoCombo_Parallel` 同时受益于 `f541ab2`（tierCandidates 防御性 clone 删除），
+> 单 pipeline 缓存贡献约 5-10 allocs/次，其它来自上一轮 clone 删除。
+> AutoCombo 路径比 plain 路径多 ~5 allocs 来自 scheduler 自动路由表填充。
+
+**HTTP 栈**（c=200，30s+）：吞吐 42.7 → 43.5K rps（+2%），p50/p99 不变。
+
+### 修复 2：`chat.completed` 采样钩子（`perf(api): sample chat.completed`）
+
+`emitLog` 占 `handleAutoCombo` 21.6% CPU，其中**反射 marshal 12 字段 = 7.12s/8.57s = 83%**。
+这是本轮**单点最大可控热点**。处置选项是用户拍板的 trade-off：
+
+| 选项 | 行为 | 收益 | 代价 | 选 |
+|---|---|---|---|---|
+| **A** | 改 `Debug` | 100% 释放 | 失去 stdout grep 能力 | — |
+| **B**（选定） | 保留 `Info` + 1-in-N 采样 | N-1/N 释放 | 偶发丢审计行 | ✅ |
+| **C** | 维持 `Info` | 0 | 热点裸奔 | — |
+
+**实现**（`internal/api/emitter.go`）：
+- `LogEmitter` 新增 `chatLogCount` + `chatLogSampleRate` 两个 `uint64`（`sync/atomic`）
+- `NewLogEmitter(..., sampleRate int)` 构造时初始化：N<0 或 0 → 0（永不发射），N=1 → 1（每请求），N>1 → N（1-in-N）
+- `Emit()` 入口加 `emitChatCompletedSamples()` 守卫：rate=1 时**走无 atomic 化的快路径**返回 true
+- rate=0 永不发射；rate=N 走 `atomic.AddUint64(&count, 1) % N == 0`
+- **`SetChatLogSampleRate(int)` 暴露给 admin**：运行时切换，**计数重置**让新窗口首请求立即采样
+- **不影响** logstore 持久化行 / broker publish / 指标 / spend 账本——只采样 stdout 反射 marshal
+
+**配置**（`internal/config/config.go`）：
+```yaml
+server:
+  log_sample_rate: 1   # 默认:每请求；100 = ~1%；0 = 完全关闭
 ```
+
+**测试**（`internal/api/emitter_sampling_test.go`，6 项 `-race` 通过）：
+- `DefaultEvery`：rate=1 每请求返回 true
+- `Disabled`：rate=0 永不返回 true
+- `OneInN`：rate=5, 100 调用 → 20 个 true（首个在第 5 次）
+- `SetAfterConstruct`：运行时切换 + 计数重置验证
+- `NegativeOrZero`：越界输入规范化为 0
+- `Concurrent`：8 goroutine × 1000 调用，rate=100 → 80 emits（±2 容差）
+
+**预期收益**（HTTP 栈 c=200 估算，rate=100）：
+- 单请求省下 ~7.12s/25s ≈ 0.28% CPU 释放（不可见）
+- 在生产 1s 延迟的 LLM 场景下，**采样比例 1% → 释放 ~12% wall CPU**（请求墙上时间被日志主导）
+- 这是**业务侧**收益（生产 LLM 流量），不是单核吞吐收益
+
+### 已识别但暂未修（Out-of-Budget）
+
+| 热点 | 占比 | 不可控原因 | 备注 |
+|---|---|---|---|
+| `net/textproto.readMIMEHeader` 4.64% allocs | alloc | stdlib 必经路径 | 改用 `http2` 不切实际 |
+| `logging.Info` 反射 marshal 12 字段 | 7.12s/25s | 取决于业务字段数 | 采样 (本轮) 缓解 80%+ |
+| `emitAutoDecision` 106MB/2.69% allocs | alloc | 决策日志字段多 | 后续可改为结构化字段生成 |
+| `breaker.getEntry` 77MB/1.95% allocs | alloc | `map[int64]*entry` 读路径 | 已 sync.RWMutex，无锁化收益小 |
+| `provider.Chat` 29.3% CPU | CPU | 上游 HTTP（mock 0ms 也是 socket+JSON） | 业务侧不可压缩 |
+
+### 长期候选（已 design，未实现）
+
+1. **免反射 JSON**：业务日志字段写死顺序，用 `strconv`/`fmt.Append` 拼 JSON。估回收 7-9% CPU。
+2. **`routeWithPipeline` 早返回**：1 个候选时跳过 cost+intent+thompson。估回收 0.5-1% CPU。
+3. **prober 节奏自适应**：现在 5s 探测所有 channel，且每个探测走完整 L1-L5 + 上游 HTTP。批量预热 + 错峰可省 30-50% prober CPU。
+4. **STDJson → sonnet/json 或更快的 encoder**：业务侧 ~12% 释放，依赖替换风险待评估。
+
+### 复现（本轮新增）
+
+```bash
+# HTTP 栈 baseline（mock 上游 0 延迟）
+go run ./scripts/mockupstream -addr 127.0.0.1:9100 &
+llmRx -config cfgs/perf.yml -pprof-addr 127.0.0.1:6060 &
+go run ./scripts/loadtest -url http://127.0.0.1:8787/v1/chat/completions \
+  -token sk-x -c 200 -d 30s -body '{"model":"auto","messages":[{"role":"user","content":"hi"}]}'
+
+# 进程内 pprof（25s 收集 10s 采样）
+go test -run xxx -bench BenchmarkE2E_NonStreaming -benchtime=25s \
+  -cpuprofile /tmp/cpu.pprof ./internal/api/
+go tool pprof -top -cum /tmp/cpu.pprof
+
+# 采样逻辑单测
+go test -race -run TestLogEmitter_Sampling ./internal/api/ -v
+```
+
+### 回归验证
+
+- `go test -race -timeout 300s ./...` ✅ 全部通过（6 个新增 sampling test + 2 个 pipeline init test）
+- `LLMRX_TEST_PG_DSN=... go test -race ./internal/store/... ./internal/api/...` ✅ 全部通过
+- 流水线 cache 触发了初版 `if e.pipeline == nil` 的 race；改用 `sync.Once` 后 0 报警
