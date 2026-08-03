@@ -153,6 +153,12 @@ func (w *loggingResponseWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
+func (w *loggingResponseWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // inflightLimit resolves the configured max-inflight guard: unset
 // (0) means the 10000 default; a negative value explicitly disables
 // the guard.
