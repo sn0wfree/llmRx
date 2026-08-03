@@ -1118,13 +1118,15 @@ func containsString(xs []string, s string) bool {
 
 // tierCandidates returns the tier's model list in cost order, or
 // nil when the combo has no entry for the tier (the fallback list
-// then takes over).
+// then takes over). The slice is the combo's backing storage —
+// callers must not mutate it (they don't: it's read for sampling,
+// context-budget filtering, and the response decision header).
 func tierCandidates(combo model.TokenComboModel, tier string) []string {
 	cfg, ok := combo.Tiers[tier]
 	if !ok || len(cfg.Models) == 0 {
 		return nil
 	}
-	return append([]string(nil), cfg.Models...)
+	return cfg.Models
 }
 
 // isTierCandidate reports whether m belongs to the tier's candidate
