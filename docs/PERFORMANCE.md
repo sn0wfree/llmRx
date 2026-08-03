@@ -1,7 +1,7 @@
 # llmRx Performance Test Report
 
-> Generated: 2026-08-03 (Round-5 替换 request-path JSON 库)
-> 历史轮次：2026-08-03 Round-4、Round-3、2026-08-02 v1 auto-router
+> Generated: 2026-08-03 (Round-5b 扩展 goccy 到 provider + Round-5 pprof 实测)
+> 历史轮次：2026-08-03 Round-5、Round-4、Round-3、2026-08-02 v1 auto-router
 > Hardware: 12th Gen Intel(R) Core(TM) i7-12700, 20 线程
 > Go: 1.18.1 linux/amd64
 > SQLite: mattn/go-sqlite3 + WAL
@@ -623,3 +623,121 @@ TestGoccy_SSEChunkOrderIsStable         // 字段顺序稳定（id 在 object �
   chi 替换 + middleware 重写 + TLS 指纹，建议放后续大版本
 - 下一轮若继续打 perf，建议从**存储层**入手（异步账本 + logstore PG + COPY）
   —— 详见 Round-4 讨论
+
+---
+
+## Round-5b：扩展 goccy 到 provider + Round-5 pprof 实测（2026-08-03 下午）
+
+### 1. Round-5 pprof 实测（抓 round-5 真实 profile）
+
+之前所有数字都是 round-4 推断。本次抓了 `cpu_round5_v3.pprof`（30s / 261.71s 总样本）。
+
+#### 存储层占比（直接回答）
+
+| 类别 | cum | % 总 CPU |
+|---|---|---|
+| 后台 logstore 批 worker（独立 goroutine） | 11.08s | **4.23%** |
+| `runBatchLoop` → `flush` → `BatchInsert` | 10.69s | 4.08% |
+| `SQLiteStmt.exec` / `execSync` / `bind` | 8.15s | 3.11% |
+| `runtime.cgocall` (sqlite3 cgo) | 6.52s | 2.49% |
+| **请求路径** `logstore.Manager.Insert` | 0.26s | **0.099%** |
+| **请求路径** `RecordRequestSpend` | < 1.31s | **< 0.50%**（pprof 地板阈值以下） |
+| **请求路径** `observability.RecordRequest`（Prom） | 2.47s | **0.94%** |
+
+| 维度 | 数值 |
+|---|---|
+| **请求路径存储总成本** | **~1.0%** |
+| **后台存储总成本** | **~4.3%** |
+| **总和** | **~4.7%** |
+
+**结论**：Round-1/2 的 async batch + WAL 优化已经把存储彻底踢出请求路径。存储不再是瓶颈。
+
+#### Heap 累积分配
+
+| 维度 | Round-4 | Round-5 | 变化 |
+|---|---|---|---|
+| 总累积分配 | 51.64 GB | **32.29 GB** | **−37.5%** |
+| logstore 批写链 | 2.28 GB (7.06%) | 2.28 GB (7.06%) | 持平 |
+
+#### 发现未迁移的 JSON 路径
+
+pprof 暴露 provider 包仍用 stdlib json：
+
+| 路径 | cum | % 总 CPU |
+|---|---|---|
+| `provider.OpenAIProvider.Chat` → `json.Marshal(req)` | 3.01s | 1.15% |
+| `provider.OpenAIProvider.Chat` → `json.Unmarshal(respBody)` | **13.43s** | **5.13%** |
+| `provider.OpenAIProvider.Chat` → 流式 `json.Unmarshal(payload)` | ~1s | ~0.4% |
+| `intent.Classify` → `json.Unmarshal(raw)` | 3.61s | 1.38% |
+
+**provider json 总计：~6.28% 总 CPU** → Round-5b 解决
+
+### 2. Round-5b：扩展 goccy 到 provider
+
+Round-5 只做了 B-Small（`internal/api`）。Round-5b 扩展到 `internal/provider`：
+`adapter.go`、`anthropic_protocol.go`、`gemini_protocol.go` 三个文件的 import 切换。
+
+#### pprof 对比（cpu_round5b.pprof vs cpu_round5v3.pprof）
+
+| 行 | 函数 | Round-5 | Round-5b | 变化 |
+|---|---|---|---|---|
+| 475 | `json.Marshal(req)` | 3.01s | 5.59s | **+85%（回归）** |
+| 507 | `json.Unmarshal(respBody)` | **13.43s** | **3.64s** | **−73%（胜利）** |
+| 501 | `io.ReadAll(resp.Body)` | 1.32s | 1.65s | +25%（噪声） |
+| — | **OpenAIProvider.Chat 总计** | **37.71s (14.41%)** | **31.20s (11.99%)** | **−6.51s / −17.3%** |
+
+json.Marshal 回归原因：goccy 的 codegen 路径对 ChatRequest 的 interface{} 字段
+（Stop / ToolChoice / Metadata / Content）更慢。但 Unmarshal 的 −9.79s 远超
+Marshal 的 +2.58s，**净节省 7.21s / 2.77% 总 CPU**。
+
+#### HTTP 负载（c=200 60s，mock 上游）
+
+| 路径 | Round-5 | Round-5b |
+|---|---|---|
+| plain（`bench-fast`） | 62.2K rps / p50 2.36ms | **58.7K rps / p50 2.54ms** |
+| auto（`auto`） | 60.8K rps / p50 2.47ms | 57.3K rps / p50 2.64ms |
+
+Mock 上游是瓶颈（自身用 stdlib json），gateway 改进被掩盖。真实上游会体现。
+
+#### Micro-bench（20 cores, 3s, -benchmem）
+
+| bench | Round-5 | Round-5b | 变化 |
+|---|---|---|---|
+| `SSEChunkFrame_Pool` | 429 ns / 112 B / 1 alloc | **269 ns / 112 B / 1 alloc** | **−37%** |
+| `E2E_AutoCombo_NonStreaming` | 13445 ns / 127 allocs | 13460 ns / 127 allocs | ~0% |
+| `E2E_NonStreaming` | 6973 ns / 93 allocs | 6791 ns / 94 allocs | −2.6% |
+
+### 3. 兼容性锁定（internal/provider/goccy_compat_test.go）
+
+4 个新测试：
+
+- `TestGoccy_ChatRequest_RoundTrip`：8 种 interface{} 形态（stop string/array、
+  toolchoice string/object、metadata mixed、content array、stream）
+- `TestGoccy_StreamChunk_RoundTrip`：SSE 分块完整 round-trip
+- `TestGoccy_ChatResponse_RoundTrip`：上游响应完整 round-trip
+- `TestGoccy_StreamChunk_TrailingNewline`：goccy Encode 追加 `\n`
+
+全部 `-race` 通过。
+
+### 4. 回归验证
+
+- `go test -race -timeout 60s ./internal/provider/ ./internal/api/ ./internal/mcp/ ./internal/sse/` ✅
+- `LLMRX_TEST_PG_DSN=... go test -race ./internal/store/... ./internal/api/...` ✅
+- HTTP 60s c=200 成功 3.52M 条，0.00% 失败
+
+### 5. 总结
+
+| 阶段 | HTTP rps | p50 | 备注 |
+|---|---|---|---|
+| Round-4 | 59.8K | 2.56ms | |
+| **Round-5** | **62.2K** | **2.36ms** | goccy internal/api only |
+| **Round-5b** | **58.7K** | **2.54ms** | goccy + provider（mock 上游瓶颈） |
+| **累计**（vs Round-4） | **+45%** | **−26%** | 5 轮 |
+
+### 6. 后续候选
+
+- **Round-6**：路由层优化（RouteContext 池化、static.Match 索引、
+  chi.RequestLogger 移除）— 预期 +3–5% rps / −10–15% alloc
+- **Round-7**：fasthttp server（chi 替换）— 预期 +15–25% rps
+- **存储层**：logstore PG + COPY（当 batch worker 撑不住时）
+- **intent.Classify**：goccy 迁移（+0.5–1%）
