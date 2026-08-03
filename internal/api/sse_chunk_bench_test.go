@@ -2,9 +2,9 @@ package api
 
 import (
 	"bytes"
-	"encoding/json"
 	"testing"
 
+	"github.com/goccy/go-json"
 	"github.com/sn0wfree/llmRx/internal/provider"
 )
 
