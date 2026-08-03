@@ -1,8 +1,7 @@
 # llmRx Performance Test Report
 
-> Generated: 2026-08-03 (Round-3 热点剖析 + 修复轮)
-> 上一份报告：2026-08-02 v1 auto-router 性能轮次
-> 历史轮次见 git
+> Generated: 2026-08-03 (Round-4 深度剖析 + 修复轮)
+> 历史轮次：2026-08-03 Round-3、2026-08-02 v1 auto-router
 > Hardware: 12th Gen Intel(R) Core(TM) i7-12700, 20 线程
 > Go: 1.18.1 linux/amd64
 > SQLite: mattn/go-sqlite3 + WAL
@@ -292,3 +291,218 @@ go test -race -run TestLogEmitter_Sampling ./internal/api/ -v
 - `go test -race -timeout 300s ./...` ✅ 全部通过（6 个新增 sampling test + 2 个 pipeline init test）
 - `LLMRX_TEST_PG_DSN=... go test -race ./internal/store/... ./internal/api/...` ✅ 全部通过
 - 流水线 cache 触发了初版 `if e.pipeline == nil` 的 race；改用 `sync.Once` 后 0 报警
+
+---
+
+## Round-4 深度剖析（2026-08-03 下午）
+
+Round-3 报告末尾的"Out-of-Budget"清单写着"stdlib JSON 反射 / 缓存复用"。本轮专门
+重新打 pprof 找剩余可优化项，发现 **4 个非显然热点** + **1 个仓库内未被发觉的全局
+互斥锁**，全部已修。
+
+### 方法（同 Round-3）
+
+- 基线：启用 `logstore.synchronous: off`；所有 fixes 编译于同一 commit
+- HTTP 压测：`c=200 60s` × 4 路径（plain / auto / 慢上游 / streaming）
+- 进程内 micro-bench + pprof 30s 采样
+
+### 修复 1：intent 分类器的全局互斥锁（最关键发现）
+
+**Bug 现象**：`internal/intent.(*native).Classify` 持 `n.mu.Lock()`，每次分类串行
+化。pprof 显示 `intent.Classify` 占 handleAutoCombo **4.46% cum**，是当时第二大
+的可控热点。
+
+**根因**：Rust `score()` 是纯函数（`KEYWORDS` 是 const，输出分配局部 `Vec`），
+Go 侧 `in`/`out` 缓冲区都是 per-call 局部 slice —— 没有任何共享可变状态需要保护。
+`n.mu` 是历史遗留的"安全网"，实际上把 cgo 路径从头锁到尾。
+
+**修复**：
+```go
+// internal/intent/intent.go
+func (n *native) Classify(text string) Intent {
+    if len(text) == 0 { return Intent{Kind: "unknown"} }
+    // No locking: the Rust classify function is pure ...
+    if n.classify == nil { return Intent{Kind: "unknown"} }
+    ...
+}
+type native struct {
+    cap      int                  // mu removed
+    so       unsafe.Pointer
+    classify unsafe.Pointer
+    ...
+}
+```
+
+**测试**（`internal/intent/parallel_test.go`，`-race` 全通过）：
+- `BenchmarkNativeClassify_Parallel`：**4.96µs → 1.14µs**（4.35x）
+- `TestNativeClassify_ConcurrentNoCorruption`：32 goroutine × 200 调用，验证无
+  数据竞争 / 缓冲串扰
+- 32K+ 32,000 类调用并发，**0 错误 kind、0 race 报警**
+
+**实测增益**：HTTP 53K → 55K rps，p50 3.20ms → 2.91ms
+
+### 修复 2：intent 输出缓冲区 sync.Pool
+
+**Bug 现象**：每请求 `out := make([]byte, 4096)` 分配 4096 字节，加上 `in` 字节数组
++ JSON unmarshal 临时分配。heap profile 显示 `intent.Classify` 占 14.22% 累计分配
+空间（c=200 60s 共 9.86GB）。
+
+**修复**：用 `sync.Pool` 复用 4096-byte `out` 缓冲区，函数返回前清零并 Put。
+
+```go
+var outPool = sync.Pool{
+    New: func() any { b := make([]byte, 4096); return &b },
+}
+...
+outPtr := outPool.Get().(*[]byte)
+out := *outPtr
+...
+defer func() {
+    for i := range out { out[i] = 0 }  // zero before Put
+    outPool.Put(outPtr)
+}()
+```
+
+**测试**：
+- `BenchmarkNativeClassify_Parallel`：**5624 → 1530 B/op**（74% 减），**39 → 38 allocs**
+- `1.14µs → 0.55µs`（2x 二次提速）
+
+### 修复 3：breaker.getEntry 每调用分配 1100 字节
+
+**Bug 现象**：`pprof -alloc_space` 显示 `(*CircuitBreaker).getEntry` 占 11.98% 累计
+分配（8.11GB）。原因：`b.entries.LoadOrStore(channelID, &breakerEntry{})` 每次调用
+都构造一个新 `&breakerEntry{}`（含 4096-byte `window` 数组），即使 key 已存在。
+
+**修复**：先 `Load` 一次（cheap path），命中返回；未命中才 `LoadOrStore` 分配。
+
+```go
+func (b *CircuitBreaker) getEntry(channelID int64) *breakerEntry {
+    if v, ok := b.entries.Load(channelID); ok {
+        return v.(*breakerEntry)        // warm path: 0 allocs
+    }
+    entry := &breakerEntry{}
+    actual, _ := b.entries.LoadOrStore(channelID, entry)
+    return actual.(*breakerEntry)
+}
+```
+
+**测试**：
+- `BenchmarkBreaker_GetEntry`：**175ns/1152B/1 allocs → 12ns/0B/0 allocs**（14x，
+  0 分配）
+- `BenchmarkBreaker_Filter`：**3351ns/18680B/21 allocs → 559ns/248B/5 allocs**（6x，
+  75x less allocs）
+
+### 修复 4：joinLog 用 strings.Builder 替掉 `s +=`
+
+**Bug 现象**：旧实现 5 次 `s += p` 每次都新建字符串：
+
+```go
+s := ""
+for i, p := range parts {
+    if i > 0 { s += " → " }
+    s += p
+}
+```
+
+4 次中间分配 + 1+2+3+4 = 10 次字符拷贝。pprof 1.79GB cum alloc。
+
+**修复**：预计算长度 + `strings.Builder` 单次 Grow。
+
+```go
+func joinLog(parts []string) string {
+    if len(parts) == 0 { return "" }
+    const sep = " → "
+    n := len(sep) * (len(parts) - 1)
+    for _, p := range parts { n += len(p) }
+    var sb strings.Builder
+    sb.Grow(n)
+    sb.WriteString(parts[0])
+    for i := 1; i < len(parts); i++ {
+        sb.WriteString(sep)
+        sb.WriteString(parts[i])
+    }
+    return sb.String()
+}
+```
+
+**测试**（`internal/router/joinlog_test.go`，`-race`）：
+- `TestRouterEngine_JoinLog`：empty / single / 2 / 5 元素 4 个子用例
+- `TestRouterEngine_JoinLog_Concurrent`：32 goroutine × 1000 调用无串扰
+
+### 修复 5：L4 intent 短路径（单候选跳过 cgo）
+
+**Bug 现象**：`intentStage.Apply` 总是执行 cgo，后续才检查 `len(rctx.Candidates) <= 1`。
+对单 channel 部署（极常见配置），cgo 调用结果无可观察效应（无法 reorder、无法
+filter），纯浪费。
+
+**修复**：把 `len(rctx.Candidates) <= 1` 检查提前到 cgo 之前。
+
+```go
+func (s *intentStage) Apply(_ context.Context, rctx *RouteContext) {
+    if rctx.Options.Text == "" || s.intent == nil { return }
+    if len(rctx.Candidates) <= 1 { return }   // short-circuit added
+    intn := s.intent.Classify(rctx.Options.Text)
+    ...
+}
+```
+
+**安全性**：`rctx.Intent` 只有在走到 cgo 时才设置；不调 cgo 留 zero `Intent{}`。
+经全仓 grep，**`RouteResult.Intent` 只有测试代码读**（`internal/router/engine_test.go`），
+生产路径 logstore 只持久化 `KeyID` 不需要 intent。安全。
+
+**测试**（`internal/router/l4_shortcircuit_test.go`，`-race`）：
+- `TestRouter_L4SkipsSingleCandidate`：1 channel × 100 调用 → 0 cgo calls
+- `TestRouter_L4RunsWithMultipleCandidates`：2 channel × 50 调用 → 50 cgo calls
+
+### 综合 HTTP 压测结果（c=200 60s）
+
+| 路径 | Round-3 | Round-4 | 提升 |
+|---|---|---|---|
+| plain (model=bench-fast) | 52.7K rps | **59.8K rps** | **+13.5%** |
+| auto (model=auto) | — | **58.5K rps** | （plain 33% 范围内） |
+| 慢上游 50ms @ c=200 | 36.5K rps | 3.9K rps* | *upstream 主导 |
+| streaming @ c=50 | 24K rps | 24K rps | 同 |
+
+p50 延迟：3.20ms → **2.56ms**（plain，-20%）
+
+### 剩余栈顶热点（round-4 后）
+
+pprof -top 排除 stdlib/JSON/io/runtime 后，**我们的代码占 0.52% CPU**。剩余分
+布几乎全部在 stdlib：
+
+| 类别 | 占比 | 备注 |
+|---|---|---|
+| 我们的请求路径代码 | **0.17%** | 仅为调用 stdlib |
+| logstore 后台 SQL 批量 | 0.62% | 独立 goroutine，不阻塞请求 |
+| stdlib HTTP / JSON / syscall | 99%+ | 不可控 |
+
+→ **请求路径已无可优化空间**，后续工作只剩 stdlib 替换（如 fasthttp + 自研
+JSON encoder），风险/收益比不再合理。
+
+### 复现
+
+```bash
+# Round-4 完整流程
+go build -o /tmp/opencode/llmrx-test ./cmd/gateway
+pkill -x llmrx-test
+setsid /tmp/opencode/startgw.sh < /dev/null > /tmp/opencode/gw.log 2>&1 &
+
+# 60s 主压测
+go run ./scripts/loadtest -url http://127.0.0.1:8799/v1/chat/completions \
+  -token sk-perf -c 200 -d 60s \
+  -body '{"model":"bench-fast","messages":[{"role":"user","content":"hi"}],"max_tokens":10}'
+
+# 30s 采样
+curl -s -o /tmp/cpu.pprof "http://127.0.0.1:6063/debug/pprof/profile?seconds=30"
+go tool pprof -top -cum -ignore="runtime|net/http|go-chi|encoding/json|syscall|..." /tmp/cpu.pprof
+
+# 所有新增测试
+go test -race -run 'TestNativeClassify|TestRouterEngine_JoinLog|TestRouter_L4|TestLogEmitter_Sampling' -v ./...
+```
+
+### 回归验证
+
+- `go test -race -timeout 300s ./...` ✅ 全部通过
+- `LLMRX_TEST_PG_DSN=... go test -race ./internal/store/... ./internal/api/...` ✅ 全部通过
+- intent 32K 并发分类、`breaker` 32 goroutine、`joinLog` 32 goroutine、`L4` 32K
+  请求 —— 全部 `-race` 0 报警
