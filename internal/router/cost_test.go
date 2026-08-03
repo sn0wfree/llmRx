@@ -11,7 +11,7 @@ func mk(name string, priority int, in, out float64) *model.Channel {
 }
 
 func TestCostCheapest(t *testing.T) {
-	r := &CostRouter{strategy: CheapestStrategy{}}
+	r := NewCostRouter()
 	in := []*model.Channel{
 		mk("a", 1, 10, 10), // 20
 		mk("b", 1, 1, 1),   // 2 (cheapest)
@@ -27,7 +27,8 @@ func TestCostCheapest(t *testing.T) {
 }
 
 func TestCostFastest(t *testing.T) {
-	r := &CostRouter{strategy: FastestStrategy{}}
+	r := NewCostRouter()
+	r.SetStrategyInterface(FastestStrategy{})
 	in := []*model.Channel{
 		mk("low", 1, 100, 100),
 		mk("hi", 10, 100, 100),
@@ -40,7 +41,8 @@ func TestCostFastest(t *testing.T) {
 }
 
 func TestCostBalanced(t *testing.T) {
-	r := &CostRouter{strategy: BalancedStrategy{}}
+	r := NewCostRouter()
+	r.SetStrategyInterface(BalancedStrategy{})
 	in := []*model.Channel{
 		mk("cheap-low-prio", 1, 1, 1),
 		mk("cheap-hi-prio", 10, 1, 1),
@@ -54,7 +56,7 @@ func TestCostBalanced(t *testing.T) {
 }
 
 func TestCostEmptyAndSingle(t *testing.T) {
-	r := &CostRouter{strategy: CheapestStrategy{}}
+	r := NewCostRouter()
 	if got := r.Sort(nil); got != nil {
 		t.Fatalf("empty: got %v", got)
 	}
@@ -69,7 +71,7 @@ func TestCostEmptyAndSingle(t *testing.T) {
 }
 
 func TestCostDoesNotMutateInput(t *testing.T) {
-	r := &CostRouter{strategy: CheapestStrategy{}}
+	r := NewCostRouter()
 	in := []*model.Channel{
 		mk("a", 1, 10, 10),
 		mk("b", 1, 1, 1),
@@ -81,7 +83,7 @@ func TestCostDoesNotMutateInput(t *testing.T) {
 }
 
 func TestCostStableForTies(t *testing.T) {
-	r := &CostRouter{strategy: CheapestStrategy{}}
+	r := NewCostRouter()
 	in := []*model.Channel{
 		mk("first", 1, 5, 5),
 		mk("second", 1, 5, 5),

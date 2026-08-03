@@ -16,18 +16,24 @@ var (
 	ErrNoKey     = errors.New("no available key")
 )
 
+// channelSnapshot is the immutable cache that Match/MatchAny read
+// lock-free. Contains both the raw channel slice and a pre-built
+// model-name → channel index for O(1) L1 lookups.
+type channelSnapshot struct {
+	channels []model.Channel
+	byModel  map[string][]*model.Channel
+}
+
 // StaticRouter performs L1 model-name -> channel lookup. Channels
 // are cached in memory and refreshed on demand via Reload(). The
-// hot path (Match/MatchAny) is allocation-light and lock-free after
-// the cache is populated.
+// hot path (Match/MatchAny) is a single atomic load + map lookup.
 type StaticRouter struct {
 	store store.Store
 
-	// channelsSnapshot is a frozen, sorted-by-priority slice of enabled
-	// channels read from the store. The atomic pointer lets Match()
-	// read the snapshot without a lock; Reload() swaps the pointer
-	// under channelsMu.
-	channelsSnapshot atomic.Value // holds *[]model.Channel
+	// channelsSnapshot holds a *channelSnapshot. The atomic pointer
+	// lets Match() read the index without a lock; Reload() builds
+	// a new snapshot and swaps the pointer under channelsMu.
+	channelsSnapshot atomic.Value // holds *channelSnapshot
 	channelsMu       sync.Mutex   // serializes Reload() calls
 }
 
@@ -38,8 +44,8 @@ func NewStaticRouter(st store.Store) *StaticRouter {
 }
 
 // Reload re-reads the enabled channel list from the store and
-// rebuilds the snapshot. Safe to call concurrently; the most recent
-// winner is observed by Match()/MatchAny().
+// rebuilds the snapshot + model index. Safe to call concurrently;
+// the most recent winner is observed by Match()/MatchAny().
 //
 // Returns the new channel count so callers (e.g. tests) can assert.
 func (r *StaticRouter) Reload() int {
@@ -60,74 +66,68 @@ func (r *StaticRouter) Reload() int {
 	})
 	snapshot := make([]model.Channel, len(enabled))
 	copy(snapshot, enabled)
+
+	// Build the model-name → channel index.
+	byModel := make(map[string][]*model.Channel, len(snapshot))
+	for i := range snapshot {
+		ch := &snapshot[i]
+		for _, m := range ch.Models {
+			byModel[m] = append(byModel[m], ch)
+		}
+	}
+
 	r.channelsMu.Lock()
-	r.channelsSnapshot.Store(&snapshot)
+	r.channelsSnapshot.Store(&channelSnapshot{channels: snapshot, byModel: byModel})
 	r.channelsMu.Unlock()
 	return len(snapshot)
 }
 
-// snapshot returns the current enabled-channel snapshot. Callers
-// receive pointers into the immutable snapshot; the snapshot is
-// never mutated after Store(), so concurrent reads are safe.
-func (r *StaticRouter) snapshot() []*model.Channel {
+// snapshot returns the current channel snapshot. Callers
+// receive the pre-built model index and channel pointers into
+// the immutable snapshot.
+func (r *StaticRouter) snapshot() *channelSnapshot {
 	v := r.channelsSnapshot.Load()
 	if v == nil {
 		return nil
 	}
-	snap := v.(*[]model.Channel)
-	out := make([]*model.Channel, len(*snap))
-	for i := range *snap {
-		out[i] = &(*snap)[i]
-	}
-	return out
+	return v.(*channelSnapshot)
 }
 
 func (r *StaticRouter) Match(modelName string) []*model.Channel {
 	snap := r.ensureLoaded()
-	if len(snap) == 0 {
+	if snap == nil {
 		return nil
 	}
-	var candidates []*model.Channel
-	for _, ch := range snap {
-		for _, m := range ch.Models {
-			if m == modelName {
-				candidates = append(candidates, ch)
-				break
-			}
-		}
-	}
-	return candidates
+	return snap.byModel[modelName]
 }
 
 // MatchAny returns enabled channels that serve any of the given
-// model names. Used by combo load_balance mode to expand a pool of
-// underlying models into a candidate set. The result is sorted by
-// descending priority, same as Match.
+// model names. Uses the pre-built index for O(1) per-model lookup,
+// deduplicating by channel pointer. The result is sorted by
+// descending priority (same as the index order).
 func (r *StaticRouter) MatchAny(models []string) []*model.Channel {
 	snap := r.ensureLoaded()
-	if len(snap) == 0 {
+	if snap == nil || len(models) == 0 {
 		return nil
 	}
-	modelSet := make(map[string]bool, len(models))
-	for _, m := range models {
-		modelSet[m] = true
-	}
+	seen := make(map[*model.Channel]struct{}, len(models))
 	var candidates []*model.Channel
-	for _, ch := range snap {
-		for _, m := range ch.Models {
-			if modelSet[m] {
-				candidates = append(candidates, ch)
-				break
+	for _, m := range models {
+		for _, ch := range snap.byModel[m] {
+			if _, ok := seen[ch]; ok {
+				continue
 			}
+			seen[ch] = struct{}{}
+			candidates = append(candidates, ch)
 		}
 	}
 	return candidates
 }
 
-// ensureLoaded returns the snapshot, lazily calling Reload() on a
-// cache miss so callers that constructed the router before any
-// channel existed (or before a test seeded one) still see data.
-func (r *StaticRouter) ensureLoaded() []*model.Channel {
+// ensureLoaded returns the channel snapshot, lazily calling
+// Reload() on a cache miss so callers that constructed the router
+// before any channel existed still see data.
+func (r *StaticRouter) ensureLoaded() *channelSnapshot {
 	if r.channelsSnapshot.Load() == nil {
 		r.Reload()
 	}

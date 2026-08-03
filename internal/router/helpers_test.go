@@ -51,7 +51,7 @@ func TestBreaker_SetDefaultsNil(t *testing.T) {
 }
 
 func TestCostRouter_SetStrategyUnknown(t *testing.T) {
-	r := &CostRouter{strategy: CheapestStrategy{}}
+	r := NewCostRouter()
 	r.SetStrategy("unknown_strategy")
 	if r.Strategy() != model.StrategyCheapest {
 		t.Fatalf("unknown strategy should fall back to cheapest, got %s", r.Strategy())
@@ -59,7 +59,8 @@ func TestCostRouter_SetStrategyUnknown(t *testing.T) {
 }
 
 func TestCostRouter_SetStrategyEmpty(t *testing.T) {
-	r := &CostRouter{strategy: BalancedStrategy{}}
+	r := NewCostRouter()
+	r.SetStrategyInterface(BalancedStrategy{})
 	r.SetStrategy("")
 	if r.Strategy() != model.StrategyCheapest {
 		t.Fatalf("empty strategy should fall back to cheapest, got %s", r.Strategy())

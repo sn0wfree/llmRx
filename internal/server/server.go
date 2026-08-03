@@ -110,7 +110,7 @@ func New(cfg *config.Config, cfgPath string, eng *router.RouterEngine, cp *pool.
 
 func (s *Server) registerMiddleware() {
 	s.engine.Use(requestid.Middleware)
-	s.engine.Use(chimw.Logger)
+	s.engine.Use(requestLogger)
 	s.engine.Use(chimw.Recoverer)
 	s.engine.Use(chimw.RealIP)
 	s.engine.Use(chimw.Timeout(120 * time.Second))
@@ -126,6 +126,31 @@ func (s *Server) registerMiddleware() {
 	if len(s.cfg.Server.CORSAllowedOrigins) > 0 {
 		s.engine.Use(cors.Handler(s.corsOptions()))
 	}
+}
+
+// requestLogger is a lightweight replacement for chimw.Logger.
+// It logs every request as "METHOD /path STATUS DURATION" to
+// stdout without the Apache combined format overhead.
+func requestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		lw := &loggingResponseWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(lw, r)
+		fmt.Fprintf(os.Stdout, "%s %s %d %s\n",
+			r.Method, r.URL.Path, lw.status, time.Since(start))
+	})
+}
+
+// loggingResponseWriter wraps http.ResponseWriter to capture the
+// status code written by the next handler.
+type loggingResponseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *loggingResponseWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
 }
 
 // inflightLimit resolves the configured max-inflight guard: unset
