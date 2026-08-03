@@ -1,7 +1,7 @@
 # llmRx Performance Test Report
 
-> Generated: 2026-08-03 (Round-6 路由层优化 — 内联阶段、池、静态索引、原子策略、自定义日志)
-> 历史轮次：2026-08-03 Round-5b、Round-5、Round-4、Round-3、2026-08-02 v1 auto-router
+> Generated: 2026-08-03 (Round-7 内存优化 — body/stream buffer 池化、KeyMasked 缓存、goccy 全量迁移)
+> 历史轮次：2026-08-03 Round-7b、Round-7、Round-6、Round-5b、Round-5、Round-4、Round-3、2026-08-02 v1 auto-router
 > Hardware: 12th Gen Intel(R) Core(TM) i7-12700, 20 线程
 > Go: 1.18.1 linux/amd64
 > SQLite: mattn/go-sqlite3 + WAL
@@ -788,7 +788,8 @@ Mock 上游是瓶颈（自身用 stdlib json），gateway 改进被掩盖。真�
 | Round-5 | 62.2K | 2.36ms | goccy internal/api 替换 |
 | Round-5b | 58.7K | 2.54ms | goccy + provider（mock 瓶颈掩盖） |
 | **Round-6** | **—** | **—** | 路由层内联优化（−3 allocs/req） |
-| **Round-7** | **—** | **—** | 内存：body/stream buffer 复用 + contentBuilder 预分配 |
+| **Round-7** | **—** | **—** | 内存 P0：body/stream buffer 池化 + contentBuilder 预分配 |
+| **Round-7b** | **—** | **—** | 内存 P1：KeyMasked 缓存 + goccy 全量 + toolCallAcc 池化 |
 | **累计**（vs 起步） | **+45%** | **−26%** | 7 轮 |
 
 ### 6. Round-7 — 内存分配优化
@@ -829,8 +830,23 @@ heap profile 显示 `io.ReadAll` 贡献 5M allocs/1.7 GB（30s），`strings.Bui
 | Streaming allocs/op | 121 | **120** | **−1** |
 | NonStreaming B/op | 10,640 | **10,620** | **−20** |
 
+#### 调研：LogEmitter.Emit 池化（已放弃）
+
+`LogEmitter.Emit` 每请求分配 `model.Log`（~160 字节，1.6M allocs/30s）。调研后发现
+**不安全**：同一个 `*model.Log` 指针被发送到两个异步消费者：
+1. `logStore.Insert` → async channel (buf=2000) → batch worker（指针驻留最长 100ms）
+2. `logBroker.Publish` → subscriber channels (buf=256 per sub)（指针驻留无限）
+
+任何池化方案都需要深拷贝，收益抵消。**跳过。**
+
+#### 调研：fasthttp 迁移（已放弃）
+
+chi 全量审计：43 个文件、150+ handler、48 处 `chi.URLParam`、14 层中间件、
+SSE 流式 ~30 处 `Flush()`。迁移成本极高，且 Round-5b 证明 mock 上游 stdlib json
+是瓶颈，gateway 的 net/http 开销在真实上游延迟下被掩盖。**跳过。**
+
 ### 7. 后续候选
 
-- **Round-7**：fasthttp server（chi 替换）— 预期 +15–25% rps
 - **存储层**：logstore PG + COPY（当 batch worker 撑不住时）
 - **intent.Classify**：goccy 迁移（+0.5–1%）
+- **P2 内存**：`readErrorSnippet` 栈上 buffer、`RecordRequest` Prometheus label currying
