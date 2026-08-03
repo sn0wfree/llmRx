@@ -788,9 +788,32 @@ Mock 上游是瓶颈（自身用 stdlib json），gateway 改进被掩盖。真�
 | Round-5 | 62.2K | 2.36ms | goccy internal/api 替换 |
 | Round-5b | 58.7K | 2.54ms | goccy + provider（mock 瓶颈掩盖） |
 | **Round-6** | **—** | **—** | 路由层内联优化（−3 allocs/req） |
-| **累计**（vs 起步） | **+45%** | **−26%** | 6 轮 |
+| **Round-7** | **—** | **—** | 内存：body/stream buffer 复用 + contentBuilder 预分配 |
+| **累计**（vs 起步） | **+45%** | **−26%** | 7 轮 |
 
-### 6. 后续候选
+### 6. Round-7 — 内存分配优化
+
+#### 动机
+
+heap profile 显示 `io.ReadAll` 贡献 5M allocs/1.7 GB（30s），`strings.Builder.grow` 贡献 3.2M allocs/248 MB。两者均在请求热路径上。
+
+#### 改动
+
+1. **bodyBufPool** — `readBody()` 改用 `bytes.Buffer` 池，避免 `io.ReadAll` 的中间增长分配（512→1024→2048→...）。请求体读入池化 buffer 后拷贝出稳定 `[]byte`，buffer 放回池。池内 buffer 预置 4 KB 初始容量，覆盖大部分请求。
+
+2. **streamBufPool** — SSE 流缓存 buffer 仅在 `h.responseCache != nil` 时分配。缓存禁用时 7 处 `streamBuf.Write` 全部跳过（零分配）。缓存启用时从池中取/还，500 KB cap 防止大响应驻留池中。
+
+3. **contentBuilder.Grow(4096)** — 预分配 `strings.Builder` 内部 buffer，消除 `contentBuilder.WriteString` 的中间增长。
+
+#### 预期收益
+
+| 调用点 | 原 allocs/30s | 原空间 | 预期 |
+|--------|:------------:|:------:|:----:|
+| `io.ReadAll` | 5.0M | 1.7 GB | 池化后 −4.5M，−1.5 GB |
+| `strings.Builder.grow` | 3.2M | 248 MB | 预分配后 −3.0M，−200 MB |
+| `streamBuf` | 0.5M | 64 MB | 缓存禁用时 −100% |
+
+### 7. 后续候选
 
 - **Round-7**：fasthttp server（chi 替换）— 预期 +15–25% rps
 - **存储层**：logstore PG + COPY（当 batch worker 撑不住时）
