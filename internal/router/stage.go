@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/intent"
@@ -100,15 +101,29 @@ func (e *RouterEngine) routeWithPipeline(ctx context.Context, modelName string, 
 	return result, nil
 }
 
+// joinLog concatenates parts into a single "a → b → c" form. The
+// previous implementation used repeated `+=` which allocates an
+// intermediate string per append; for 5 parts that's 4 alloc +
+// 4 copies. strings.Builder follows the standard pre-size pattern
+// (sum of len(part) + 3*(n-1) separator bytes) so the final
+// String() never grows.
 func joinLog(parts []string) string {
-	s := ""
-	for i, p := range parts {
-		if i > 0 {
-			s += " → "
-		}
-		s += p
+	if len(parts) == 0 {
+		return ""
 	}
-	return s
+	const sep = " → "
+	n := len(sep) * (len(parts) - 1)
+	for _, p := range parts {
+		n += len(p)
+	}
+	var sb strings.Builder
+	sb.Grow(n)
+	sb.WriteString(parts[0])
+	for i := 1; i < len(parts); i++ {
+		sb.WriteString(sep)
+		sb.WriteString(parts[i])
+	}
+	return sb.String()
 }
 
 // splitByIntent partitions channels in place so that channels whose
@@ -197,9 +212,16 @@ func (s *intentStage) Apply(_ context.Context, rctx *RouteContext) {
 	if rctx.Options.Text == "" || s.intent == nil {
 		return
 	}
+	// Short-circuit: when there's only one candidate, the cgo
+	// call can't reorder anything and the result is discarded.
+	// The plain path (specific model, single channel) hits this
+	// every time and saves a ~1µs cgo round-trip per request.
+	if len(rctx.Candidates) <= 1 {
+		return
+	}
 	intn := s.intent.Classify(rctx.Options.Text)
 	rctx.Intent = intn
-	if intn.Kind == "unknown" || intn.Kind == "general" || len(rctx.Candidates) <= 1 {
+	if intn.Kind == "unknown" || intn.Kind == "general" {
 		return
 	}
 	n := splitByIntent(rctx.Candidates, intn.Kind)
