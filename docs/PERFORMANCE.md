@@ -1,7 +1,7 @@
 # llmRx Performance Test Report
 
-> Generated: 2026-08-03 (Round-4 深度剖析 + 修复轮)
-> 历史轮次：2026-08-03 Round-3、2026-08-02 v1 auto-router
+> Generated: 2026-08-03 (Round-5 替换 request-path JSON 库)
+> 历史轮次：2026-08-03 Round-4、Round-3、2026-08-02 v1 auto-router
 > Hardware: 12th Gen Intel(R) Core(TM) i7-12700, 20 线程
 > Go: 1.18.1 linux/amd64
 > SQLite: mattn/go-sqlite3 + WAL
@@ -506,3 +506,120 @@ go test -race -run 'TestNativeClassify|TestRouterEngine_JoinLog|TestRouter_L4|Te
 - `LLMRX_TEST_PG_DSN=... go test -race ./internal/store/... ./internal/api/...` ✅ 全部通过
 - intent 32K 并发分类、`breaker` 32 goroutine、`joinLog` 32 goroutine、`L4` 32K
   请求 —— 全部 `-race` 0 报警
+
+---
+
+## Round-5 JSON 库替换（2026-08-03 下午）
+
+Round-4 报告的"std-lib 99 %"提醒我：剩下的优化几乎都在 stdlib 自己。
+本轮专门攻 request-path 上的 JSON 编解码。计划分 A 和 B 两步：先流式解码
+（`io.ReadAll` → `json.NewDecoder`），再换 JSON 库（`encoding/json` →
+`goccy/go-json`）。**A 那步实际上是个 regression**，已 revert。下面重点
+记录 B 的实测。
+
+### A. 流式解码尝试（reverted）
+
+**目标**：把 `io.ReadAll(r.Body) + json.Unmarshal(rawBody, &req)` 换成
+`json.NewDecoder(r.Body).Decode(&req)`，砍掉 `io.ReadAll` 那 2.6 GB flat 累积分配。
+
+**实测**（`go test -bench=BenchmarkE2E_AutoCombo_ -benchmem`，3 s 取样）：
+
+| bench | 改动前 | io.TeeReader + bytes.Buffer | bytes.Buffer.ReadFrom |
+|---|---|---|---|
+| `_NonStreaming` | 14353 ns / 13739 B / 136 allocs | 14713 ns / 14342 B / 142 allocs | 15185 ns / 15281 B / 137 allocs |
+| `_Parallel`      |  4198 ns / 12777 B / 113 allocs |  4491 ns / 13416 B / 120 allocs |  4641 ns / 14381 B / 115 allocs |
+
+两个变体都比 baseline 慢 2.5 %–7 %。原因：
+
+1. `cache.ParseCacheControl(rawBody)` 在 handler 中调用 3 次（cache 读 + cache 写）。
+   流式解码后丢了 rawBody，要么用 `io.TeeReader` 跟踪字节、要么把 cache 字段
+   提到 `provider.ChatRequest`。
+2. `io.TeeReader` 每次 Read 都包成 `Write` 调用，多 6 allocs/op 不可压缩。
+3. `bytes.Buffer.ReadFrom` 直接 grow 也比 `io.ReadAll` 的 `[2x]` 切片更慢，
+   触发了 Buffer 内部的二次拷贝。
+
+**结论**：在当前架构下 rawBody 是 cache-control 三次调用必传的，无法避免
+分配。**A 步 revert**，保留原 `io.ReadAll + json.Unmarshal` 形式。
+
+### B. goccy/go-json 替换（落地）
+
+**目标**：`internal/api/router.go` 全替换 import `encoding/json` →
+`github.com/goccy/go-json v0.10.6`。
+
+**为什么 goccy**：
+
+- drop-in 兼容（`Marshal` / `Unmarshal` / `NewEncoder` / `NewDecoder` /
+  `RawMessage` / `Number` 签名一致）
+- 编码路径不依赖反射（编译期 codegen 算偏移）
+- decodeState.object 反射内层展开被去掉
+- 全部在 stdlib 之上换一个包，零迁移成本
+
+**改动**：
+
+```diff
+- "encoding/json"
++ "github.com/goccy/go-json"
+```
+
+全文件语法不变。该文件所有 `json.Marshal` / `json.Unmarshal` /
+`json.NewEncoder` / `json.NewDecoder` 自动改为 goccy 实现。
+
+**范围**：B-Small (`internal/api/router.go` only)：
+- `internal/cache` 保留 `encoding/json`（持久化的 `json.RawMessage` Body）
+- `internal/mcp` 保留 `encoding/json`（公开 JSON-RPC 接口）
+- `internal/modelmeta` 保留 `encoding/json`（`json.Number` 类型 switch）
+
+**bench 截图**（20 cores, 3 s 取样, -benchmem）：
+
+| bench | Round-4 | Round-5 (goccy) | Δ |
+|---|---:|---:|---:|
+| `BenchmarkE2E_AutoCombo_NonStreaming` | 14353 ns / 13739 B / 136 allocs | **13445 ns / 13310 B / 127 allocs** | **−6.3 % 时间, −9 allocs** |
+| `BenchmarkE2E_AutoCombo_Streaming`    | 23558 ns / 28999 B / 185 allocs | **21750 ns / 28694 B / 176 allocs** | **−7.7 % 时间, −9 allocs** |
+| `BenchmarkE2E_AutoCombo_Parallel`     |  4198 ns / 12777 B / 113 allocs |  **3149 ns / 12274 B / 104 allocs** | **−25.0 % 时间, −9 allocs** |
+| `BenchmarkSSEChunkFrame_Pool`         |   509 ns /   112 B /   1 allocs |   **491 ns /   112 B /   1 allocs** | −3.5 % 时间 |
+
+**HTTP 压测**（c=200 60s，0 ms upstream，`synchronous: off`）：
+
+| 路径 | Round-4 | Round-5 | Δ |
+|---|---:|---:|---:|
+| plain (`bench-fast`)  | 59.8K rps / p50 2.56 ms | **62.2K rps / p50 2.36 ms** | **+4 % rps, −8 % p50** |
+| auto (`auto`)         | 58.5K rps / p50 2.65 ms | 60.8K rps / p50 2.47 ms | +4 % rps, −7 % p50 |
+
+**总和**（Round-1 → Round-5）：
+
+| 阶段 | HTTP rps | p50 | 备注 |
+|---|---:|---:|---|
+| 起步（plain，无 auto） | 42.7K | 3.20 ms | 容量+fd+泄漏修完 |
+| Round-3（chat sample + pipeline cache） | 52.7K | 2.91 ms | |
+| Round-4（intent/breaker/joinLog） | 59.8K | 2.56 ms | |
+| **Round-5（goccy）** | **62.2K** | **2.36 ms** | **+45 % 总吞吐, −26 % p50** |
+
+### 兼容性锁定（新测试 `internal/api/goccy_compat_test.go`）
+
+```go
+TestGoccy_StreamChunk_TrailingNewline   // goccy Encode 仍然追加 '\n'
+TestGoccy_InterfaceFields_RoundTrip     // Stop / ToolChoice / Content / Metadata 6 种形态
+TestGoccy_SSEChunkOrderIsStable         // 字段顺序稳定（id 在 object 之前）
+```
+
+`TestChat_StreamingEndpoint` 和 `TestChat_StreamingUpstreamError` 间接保证
+`data: {json}\n\n` 的 SSE 帧格式不变；HTTP 客户端（OpenAI SDK、anyscale、curl）
+的 wire format 兼容性已在 60s / 1.77M + 60s / 3.73M 请求的真实 mock 上游
+压测中验证。
+
+### 回归验证
+
+- `go test -race -count=1 -timeout 300s ./...` ✅ 全部通过（含 3 个新 goccy 测试）
+- `LLMRX_TEST_PG_DSN=... go test -race ./internal/store/... ./internal/api/...` ✅ 全部通过
+- HTTP 60s c=200 成功 3.73M 条，0.01 % 失败（全是 client context deadline，非服务端）
+
+### 后续候选
+
+经过本轮：
+
+- 实战可控的 stdlib 优化已经**全部找完**（Round-3 + Round-4 + Round-5）
+- 剩余优化只能在 stdlib 内部（HTTP / JSON / syscall），需要换库
+- **fasthttp + sonic 全栈** 替换是唯一仍有 10–15 % 收益的路径，但涉及
+  chi 替换 + middleware 重写 + TLS 指纹，建议放后续大版本
+- 下一轮若继续打 perf，建议从**存储层**入手（异步账本 + logstore PG + COPY）
+  —— 详见 Round-4 讨论
