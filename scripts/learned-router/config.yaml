@@ -1,0 +1,53 @@
+# learned-router training configuration
+
+# Data export
+export:
+  db_path: ~/.local/share/opencode/opencode.db
+  output_dir: data/learned-router/
+  max_prompt_length: 2000
+  min_prompt_length: 10
+  sample_rate: 1.0
+  anonymize: true
+  exclude_models:
+    - auto
+
+# LLM labeling
+judge:
+  api_base: http://localhost:8080/v1
+  api_key: sk-placeholder
+  judge_model: deepseek-v4-flash
+  candidate_models:
+    - deepseek-v4-flash
+    - mimo-v2.5
+    - MiniMax-M3
+  max_workers: 4
+  max_samples: 0  # 0 = all
+  timeout: 30
+
+# Training
+train:
+  max_tfidf_features: 3000
+  min_tfidf_df: 2
+  test_size: 0.2
+  random_state: 42
+
+# Evaluation
+evaluate:
+  api_base: http://localhost:8080/v1
+  api_key: sk-placeholder
+  judge_model: deepseek-v4-flash
+  candidate_models:
+    - deepseek-v4-flash
+    - mimo-v2.5
+    - MiniMax-M3
+  output: data/learned-router/eval_report.json
+
+# Online inference (Go side reads this)
+inference:
+  enabled: false
+  model_path: data/learned-router/router_model.json
+  weights:
+    ts: 0.4
+    learned: 0.4
+    cost: 0.2
+  fallback: true
