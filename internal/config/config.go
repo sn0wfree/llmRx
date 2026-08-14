@@ -187,6 +187,23 @@ type AutoRouterConfig struct {
 	// tier verdict (1.5s budget); any failure falls back to the
 	// heuristic scorer.
 	LLMClassifier LLMClassifierConfig `yaml:"llm_classifier"`
+	// LearnedRouter configures the trained ML model that predicts
+	// the best model for a given prompt. When enabled and a model
+	// file is loaded, the learned prior is blended with TS bandit
+	// and cost weights in SelectWithLearned.
+	LearnedRouter LearnedRouterConfig `yaml:"learned_router"`
+}
+
+// LearnedRouterConfig configures the learned router (trained ML model).
+type LearnedRouterConfig struct {
+	Enabled         bool    `yaml:"enabled"`
+	ModelPath       string  `yaml:"model_path"`
+	VocabPath       string  `yaml:"vocab_path"`
+	FeatureStatsPath string `yaml:"feature_stats_path"`
+	WeightTs        float64 `yaml:"weight_ts"`
+	WeightLearned   float64 `yaml:"weight_learned"`
+	WeightCost      float64 `yaml:"weight_cost"`
+	Fallback        bool    `yaml:"fallback"`
 }
 
 // LLMClassifierConfig describes the optional OpenAI-compatible

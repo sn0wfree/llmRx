@@ -29,4 +29,8 @@ type Decision struct {
 	// combo's ContextFallback list after every tier candidate was
 	// filtered out for a too-small context window.
 	ContextEscalation bool `json:"context_escalation"`
+
+	// LearnedUsed indicates the learned router prior was applied
+	// to this request's model selection.
+	LearnedUsed bool `json:"learned_used,omitempty"`
 }

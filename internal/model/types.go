@@ -265,3 +265,16 @@ type TokenComboModel struct {
 	CreatedAt time.Time             `json:"created_at"`
 	UpdatedAt time.Time             `json:"updated_at"`
 }
+
+// LearnedRouterConfig holds configuration for the learned router
+// (trained ML model that predicts best model for a prompt).
+type LearnedRouterConfig struct {
+	Enabled         bool    `yaml:"enabled" json:"enabled"`
+	ModelPath       string  `yaml:"model_path" json:"model_path"`
+	VocabPath       string  `yaml:"vocab_path" json:"vocab_path"`
+	FeatureStatsPath string `yaml:"feature_stats_path" json:"feature_stats_path"`
+	WeightTs        float64 `yaml:"weight_ts" json:"weight_ts"`
+	WeightLearned   float64 `yaml:"weight_learned" json:"weight_learned"`
+	WeightCost      float64 `yaml:"weight_cost" json:"weight_cost"`
+	Fallback        bool    `yaml:"fallback" json:"fallback"` // fallback to TS when model unavailable
+}

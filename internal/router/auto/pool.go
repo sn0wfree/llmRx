@@ -169,3 +169,151 @@ func (p *Pool) Select(tier string, candidates []string) ArmSample {
 	}
 	return ArmSample{Model: model, Key: top.Arm, Score: top.Score}
 }
+
+// FusionWeights controls the blend between TS bandit, learned
+// prior, and cost in SelectWithLearned.
+type FusionWeights struct {
+	Ts      float64 // weight for TS bandit θ scores (default 0.4)
+	Learned float64 // weight for learned prior scores (default 0.4)
+	Cost    float64 // weight for cost normalization (default 0.2)
+}
+
+// DefaultFusionWeights returns the balanced default.
+func DefaultFusionWeights() FusionWeights {
+	return FusionWeights{Ts: 0.4, Learned: 0.4, Cost: 0.2}
+}
+
+// SelectWithLearned blends Thompson sampling, learned prior, and
+// cost normalization to select the best model. The learned router
+// is optional; when nil or not loaded, falls back to plain TS
+// selection (same as Select). candidates must be in cost order.
+func (p *Pool) SelectWithLearned(
+	tier string,
+	candidates []string,
+	learned LearnedRouter,
+	prompt string,
+	needs Needs,
+	weights FusionWeights,
+) ArmSample {
+	if len(candidates) == 0 {
+		return ArmSample{}
+	}
+
+	// 1. TS scores
+	keys := make([]string, len(candidates))
+	for i, m := range candidates {
+		keys[i] = ArmKey(tier, m)
+	}
+	ranked := p.sampler.SampleArms(keys)
+	tsScores := make(map[string]float64, len(candidates))
+	for _, r := range ranked {
+		tierName, model := ParseArmKey(r.Arm)
+		if tierName == tier {
+			tsScores[model] = r.Score
+		}
+	}
+
+	// 2. Learned prior scores (if available)
+	var learnedScores map[string]float64
+	if learned != nil && learned.Loaded() {
+		learnedScores = learned.Infer(prompt, candidates, needs)
+	}
+
+	// 3. Cost normalization (cheapest = highest score)
+	costScores := normalizeCosts(candidates)
+
+	// 4. Blend
+	finalScores := make(map[string]float64, len(candidates))
+	for _, m := range candidates {
+		ts := tsScores[m]
+		ls := 0.5 // neutral default when no learned scores
+		if learnedScores != nil {
+			if s, ok := learnedScores[m]; ok {
+				ls = s
+			}
+		}
+		cs := costScores[m]
+		finalScores[m] = weights.Ts*ts + weights.Learned*ls + weights.Cost*cs
+	}
+
+	// 5. Pick highest
+	bestModel := candidates[0]
+	bestScore := finalScores[bestModel]
+	for _, m := range candidates[1:] {
+		if finalScores[m] > bestScore {
+			bestModel = m
+			bestScore = finalScores[m]
+		}
+	}
+
+	// Find the TS arm key for the chosen model
+	chosenKey := ArmKey(tier, bestModel)
+	return ArmSample{Model: bestModel, Key: chosenKey, Score: bestScore}
+}
+
+// normalizeCosts returns a map of model -> normalized cost score
+// in [0, 1] where cheaper = higher score. Uses the modelmeta
+// input price as the cost metric; unknown models get 0.5.
+func normalizeCosts(candidates []string) map[string]float64 {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	// Gather known costs
+	type mc struct {
+		model string
+		cost  float64
+	}
+	var known []mc
+	var unknowns []string
+	for _, m := range candidates {
+		meta, ok := modelmeta.Get(m)
+		if ok && meta.InputPrice > 0 {
+			known = append(known, mc{m, meta.InputPrice})
+		} else {
+			unknowns = append(unknowns, m)
+		}
+	}
+
+	out := make(map[string]float64, len(candidates))
+
+	if len(known) == 0 {
+		// No cost data — uniform
+		for _, m := range candidates {
+			out[m] = 0.5
+		}
+		return out
+	}
+
+	// Find min/max cost
+	minCost := known[0].cost
+	maxCost := known[0].cost
+	for _, mc := range known[1:] {
+		if mc.cost < minCost {
+			minCost = mc.cost
+		}
+		if mc.cost > maxCost {
+			maxCost = mc.cost
+		}
+	}
+
+	// Normalize: cheaper = higher score
+	rangeCost := maxCost - minCost
+	if rangeCost <= 0 {
+		// All same cost
+		for _, mc := range known {
+			out[mc.model] = 0.5
+		}
+	} else {
+		for _, mc := range known {
+			out[mc.model] = 1.0 - (mc.cost-minCost)/rangeCost
+		}
+	}
+
+	// Unknown models get neutral score
+	for _, m := range unknowns {
+		out[m] = 0.5
+	}
+
+	return out
+}
