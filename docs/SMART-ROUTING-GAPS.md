@@ -1,6 +1,6 @@
 # 智能路由：补业界差距
 
-> 状态：**规划完成，实施中** (2026-08-14)
+> 状态：**全部实施完成** (2026-08-14，4 个 commit 已合入分支 feat/smart-routing-gaps)
 > 前置：v1 智能路由已完成 (见 [AUTO-ROUTING.md](AUTO-ROUTING.md))
 > 调研背景：见 [RESEARCH-ROUTING.md](RESEARCH-ROUTING.md)
 
@@ -256,10 +256,10 @@ session_affinity:
 ## 5. 实施顺序
 
 ```
-Commit 1: Prober L2 集成     (~50 行, 最小改动最高 ROI)
-Commit 2: Latency-Aware      (~200 行, 中等复杂度)
-Commit 3: Context Fallback    (~100 行, 防止超长失败)
-Commit 4: Session Affinity    (~230 行, 提升缓存命中)
+Commit 1: Prober L2 集成     ✅ 811ea07  (~50 行, 最小改动最高 ROI)
+Commit 2: Latency-Aware      ✅ b42c59a  (~200 行, 中等复杂度)
+Commit 3: Context Fallback    ✅ 4125aee  (~100 行, 防止超长失败)
+Commit 4: Session Affinity    ✅ 0d9d0b1  (~230 行, 提升缓存命中)
 ```
 
 ## 6. 风险与注意
