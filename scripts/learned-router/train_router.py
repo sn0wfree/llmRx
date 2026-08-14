@@ -204,9 +204,18 @@ def load_data(labels_path: str, samples_path: Optional[str] = None):
 
 def build_features_and_labels(data: list):
     """Build feature matrix and label vector from data."""
+    # Filter out classes with < 2 samples first
+    from collections import Counter
+    models_raw = [d.get("best_model", d.get("model_used", "")) for d in data]
+    model_counts = Counter(models_raw)
+    valid_models = {m for m, c in model_counts.items() if c >= 2}
+    data = [d for d in data if d.get("best_model", d.get("model_used", "")) in valid_models]
+    if len(data) < len(models_raw):
+        print(f"Filtered to {len(data)} samples (removed classes with < 2 members)")
+
     # TF-IDF
     texts = [d.get("prompt", "") for d in data]
-    tfidf = SimpleTfidf(max_features=3000, min_df=2)
+    tfidf = SimpleTfidf(max_features=500, min_df=3)
     tfidf.fit(texts)
     X_tfidf = tfidf.transform(texts)
 
@@ -270,14 +279,13 @@ def train_lightgbm(X, y, unique_models):
         "num_leaves": 31,
         "max_depth": 6,
         "learning_rate": 0.1,
-        "n_estimators": 200,
         "min_child_samples": 20,
         "verbose": -1,
     }
 
     model = lgb.train(
         params, train_data,
-        num_boost_round=200,
+        num_boost_round=100,
         valid_sets=[test_data],
         callbacks=[lgb.log_evaluation(50)],
     )
