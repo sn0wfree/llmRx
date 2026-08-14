@@ -4,44 +4,52 @@ export_samples.py — Extract training samples from opencode SQLite.
 
 Usage:
     python scripts/learned-router/export_samples.py \
-        --db ~/.local/share/opencode/opencode.db \
-        --output data/learned-router/samples.jsonl
+        --db <backup.db> \
+        --output data/learned-router/samples.jsonl \
+        --workers 8
 
 Reads session + message + part tables, extracts user prompts with
-metadata (model used, tokens, cost, finish reason, agent mode, etc.)
-and writes one JSONL line per sample.
+metadata, rebuilds the FULL conversation context (bounded by
+compaction epochs), and writes one JSONL line per sample.
+
+Performance:
+  - read-only SQLite connections, one per worker
+  - sessions sharded across a multiprocessing Pool (no shared state)
+  - per-message part summaries parsed once per worker
+  - compaction boundaries locate each sample's epoch
+
+Context reconstruction:
+  - opencode compaction parts carry a tail_start_id pointing at the
+    first message of a new epoch; a sample's context is every message
+    since the most recent compaction before it.
+  - Tool calls are replayed as OpenAI-style assistant tool_calls +
+    role=tool result messages so candidates see the real scene.
+  - The historical actual reply is captured as actual_reply.
 """
 import argparse
 import json
 import os
 import re
 import sqlite3
+import statistics
 import sys
-from pathlib import Path
+from collections import defaultdict
+from multiprocessing import Pool
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
-DEFAULT_MAX_PROMPT_LEN = 2000
-DEFAULT_MIN_PROMPT_LEN = 10
 DEFAULT_OUTPUT_DIR = "data/learned-router"
 
-# Regex patterns for feature extraction
 CODE_KEYWORDS = re.compile(
-    r'\b(function|class|def|import|from|const|let|var|return|if|else|for|while|'
-    r'interface|struct|enum|type|func|package|module|require|export|async|await|'
-    r'try|catch|throw|new|this|self)\b',
+    r"\b(function|class|def|import|from|const|let|var|return|if|else|for|while|"
+    r"interface|struct|enum|type|func|package|module|require|export|async|await|"
+    r"try|catch|throw|new|this|self)\b",
     re.IGNORECASE,
 )
-IMAGE_PATTERN = re.compile(r'!\[.*?\]\(.*?\)|<img|image_url|base64', re.IGNORECASE)
-MULTI_LANG = re.compile(r'[\u4e00-\u9fff]+.*[a-zA-Z]+|[a-zA-Z]+.*[\u4e00-\u9fff]+')
+IMAGE_PATTERN = re.compile(r"!\[.*?\]\(.*?\)|<img|image_url|base64", re.IGNORECASE)
 
 
 def detect_language(text: str) -> str:
-    """Detect whether prompt is English, Chinese, or mixed."""
-    has_cn = bool(re.search(r'[\u4e00-\u9fff]', text))
-    has_en = bool(re.search(r'[a-zA-Z]{3,}', text))
+    has_cn = bool(re.search(r"[\u4e00-\u9fff]", text))
+    has_en = bool(re.search(r"[a-zA-Z]{3,}", text))
     if has_cn and has_en:
         return "mixed"
     if has_cn:
@@ -49,221 +57,389 @@ def detect_language(text: str) -> str:
     return "english"
 
 
-def sanitize_prompt(text: str, max_len: int, anonymize: bool) -> str:
-    """Truncate and optionally anonymize prompt text."""
+def sanitize_text(text: str) -> str:
+    """Anonymize paths and emails. No truncation — full fidelity."""
     if not text:
         return ""
-    text = text[:max_len]
-    if anonymize:
-        # Remove home directory paths
-        text = re.sub(r'/home/[^/\s]+', '/home/**', text)
-        text = re.sub(r'/Users/[^/\s]+', '/Users/**', text)
-        # Remove email addresses
-        text = re.sub(r'\S+@\S+\.\S+', '[email]', text)
+    text = re.sub(r"/home/[^\s]+", "/home/**", text)
+    text = re.sub(r"/Users/[^\s]+", "/Users/**", text)
+    text = re.sub(r"\S+@\S+\.\S+", "[email]", text)
     return text
 
 
-def extract_sample(session_row, message_row, part_text, turn_index):
-    """Build one training sample dict from raw rows."""
-    session_id, title, directory, agent = session_row
-    (
-        msg_id, provider, model, tokens_in, tokens_out,
-        tokens_reasoning, cost, finish_reason, mode, time_created, time_completed
-    ) = message_row
+def normalize_prompt(prompt: str) -> str:
+    s = prompt.lower()
+    return re.sub(r"[\s\W_]+", "", s)
 
-    prompt = part_text or ""
-    prompt_len = len(prompt)
-    word_count = len(prompt.split())
 
-    has_tools = False  # will be enriched later if needed
-    has_code = bool(CODE_KEYWORDS.search(prompt))
-    has_image = bool(IMAGE_PATTERN.search(prompt))
-    language = detect_language(prompt)
+def connect_ro(db_path: str) -> sqlite3.Connection:
+    uri = f"file:{db_path}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-    return {
-        "session_id": session_id,
-        "session_title": title or "",
-        "project_dir": directory or "",
-        "agent": agent or "",
-        "message_id": msg_id,
-        "prompt": sanitize_prompt(prompt, DEFAULT_MAX_PROMPT_LEN, True),
-        "prompt_length": prompt_len,
-        "word_count": word_count,
-        "model_used": model or "",
-        "provider_used": provider or "",
-        "tokens_in": tokens_in or 0,
-        "tokens_out": tokens_out or 0,
-        "tokens_reasoning": tokens_reasoning or 0,
-        "cost": cost or 0.0,
-        "finish_reason": finish_reason or "",
-        "mode": mode or "",
-        "has_code": has_code,
-        "has_image": has_image,
-        "language": language,
-        "conversation_turns": turn_index,
-        "latency_ms": (time_completed - time_created) if time_created and time_completed else 0,
-        "success": finish_reason in ("stop", "tool-calls", ""),
-    }
 
+# ---------------------------------------------------------------------------
+# Worker: process a shard of sessions in one read-only connection
+# ---------------------------------------------------------------------------
+
+def _process_shard(args):
+    db_path, session_ids, min_prompt, exclude_models, dedup_keep = args
+    conn = connect_ro(db_path)
+    try:
+        return process_sessions(conn, session_ids, min_prompt, exclude_models, dedup_keep)
+    finally:
+        conn.close()
+
+
+def process_sessions(conn, session_ids, min_prompt, exclude_models, dedup_keep):
+    """Process a subset of sessions; returns list of sample dicts."""
+    if not session_ids:
+        return []
+
+    # -- sessions metadata ---------------------------------------------------
+    cur = conn.cursor()
+    placeholders = ",".join("?" * len(session_ids))
+    cur.execute(f"SELECT id, title, directory, agent FROM session WHERE id IN ({placeholders})", session_ids)
+    sessions = {row["id"]: (row["title"] or "", row["directory"] or "", row["agent"] or "") for row in cur.fetchall()}
+
+    # -- messages for these sessions (pre-sorted) ------------------------------
+    cur.execute(
+        f"SELECT id, session_id, time_created, data FROM message "
+        f"WHERE session_id IN ({placeholders}) ORDER BY time_created",
+        session_ids,
+    )
+    msgs_by_session = defaultdict(list)
+    for row in cur.fetchall():
+        try:
+            d = json.loads(row["data"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        model_ref = d.get("model")
+        if isinstance(model_ref, dict):
+            provider = model_ref.get("providerID", "")
+            model = model_ref.get("modelID", "")
+        else:
+            provider = d.get("providerID", "")
+            model = d.get("modelID", "")
+        tokens = d.get("tokens") if isinstance(d.get("tokens"), dict) else {}
+        tm = d.get("time") if isinstance(d.get("time"), dict) else {}
+        msgs_by_session[row["session_id"]].append({
+            "id": row["id"],
+            "time_created": row["time_created"],
+            "role": d.get("role", ""),
+            "provider": provider,
+            "model": model,
+            "tokens_in": tokens.get("input") or 0,
+            "tokens_out": tokens.get("output") or 0,
+            "tokens_reasoning": tokens.get("reasoning") or 0,
+            "cost": d.get("cost") or 0.0,
+            "finish": d.get("finish") or "",
+            "mode": d.get("mode") or "",
+            "time_completed": tm.get("completed") or 0,
+        })
+
+    # -- part summaries for these sessions -------------------------------------
+    cur.execute(
+        f"SELECT session_id, message_id, data FROM part "
+        f"WHERE session_id IN ({placeholders})",
+        session_ids,
+    )
+    sums = {}
+    for row in cur.fetchall():
+        try:
+            d = json.loads(row["data"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        ptype = d.get("type", "")
+        if ptype not in ("text", "tool", "patch", "file", "compaction", "reasoning"):
+            continue
+        s = sums.get(row["message_id"])
+        if s is None:
+            s = {"text": "", "tools": [], "files": [], "reasoning": "", "compaction": False, "tail_id": ""}
+            sums[row["message_id"]] = s
+        if ptype == "text":
+            t = d.get("text", "")
+            if t:
+                s["text"] = (s["text"] + "\n" if s["text"] else "") + t
+        elif ptype == "reasoning":
+            t = d.get("text", "")
+            if t:
+                s["reasoning"] = (s["reasoning"] + "\n" if s["reasoning"] else "") + t
+        elif ptype == "tool":
+            st = d.get("state") or {}
+            inp = st.get("input")
+            cmd = ""
+            if isinstance(inp, dict):
+                cmd = inp.get("command") or inp.get("input") or json.dumps(inp, ensure_ascii=False)
+            elif inp is not None:
+                cmd = str(inp)
+            output = st.get("output")
+            if output is None and isinstance(st.get("metadata"), dict):
+                output = st["metadata"].get("output")
+            s["tools"].append({
+                "call_id": d.get("callID", ""),
+                "tool": d.get("tool", "tool"),
+                "command": cmd,
+                "output": str(output) if output is not None else "",
+            })
+        elif ptype in ("patch", "file"):
+            for f in d.get("files", []):
+                if f not in s["files"]:
+                    s["files"].append(f)
+        elif ptype == "compaction":
+            s["compaction"] = True
+            s["tail_id"] = d.get("tail_start_id", "")
+
+    samples = []
+    for sid in session_ids:
+        msgs = msgs_by_session.get(sid, [])
+        if not msgs:
+            continue
+        s_meta = sessions.get(sid, ("", "", ""))
+        n = len(msgs)
+
+        # next-assistant per position (reverse scan)
+        next_asst = [None] * n
+        nxt = None
+        for i in range(n - 1, -1, -1):
+            next_asst[i] = nxt
+            if msgs[i]["role"] == "assistant":
+                nxt = msgs[i]
+
+        # compaction boundaries -> (position, tail_id)
+        boundaries = []
+        for i, m in enumerate(msgs):
+            s = sums.get(m["id"])
+            if s and s["compaction"] and s["tail_id"]:
+                boundaries.append((i, s["tail_id"]))
+        boundaries.sort(key=lambda x: x[0])
+        # tail_id -> position
+        tail_pos = {}
+        for i, m in enumerate(msgs):
+            tail_pos[m["id"]] = i
+
+        # within-session dedup
+        seen = defaultdict(int)
+        turn = 0
+        for i, m in enumerate(msgs):
+            if m["role"] != "user":
+                continue
+            text = sums.get(m["id"], {}).get("text", "")
+            if not text.strip():
+                continue
+            if len(text.strip()) < min_prompt:
+                continue
+            nxt = next_asst[i]
+            if nxt is None or not nxt["model"]:
+                continue
+            if exclude_models and nxt["model"] in exclude_models:
+                continue
+            norm = normalize_prompt(text)
+            if seen[norm] >= dedup_keep:
+                continue
+            seen[norm] += 1
+
+            # locate epoch start
+            epoch_start_pos = 0
+            for bi, tail_id in boundaries:
+                if bi < i:
+                    epoch_start_pos = tail_pos.get(tail_id, 0)
+                else:
+                    break
+
+            context = build_context(msgs, sums, epoch_start_pos, i)
+            actual_model, actual_reply = find_actual_reply(msgs, sums, i)
+            ctx_chars = sum(
+                len(m.get("content") or "")
+                + sum(len(tc["function"]["arguments"]) for tc in m.get("tool_calls", []))
+                for m in context
+            )
+            samples.append({
+                "session_id": sid,
+                "session_title": s_meta[0],
+                "project_dir": s_meta[1],
+                "agent": s_meta[2],
+                "message_id": m["id"],
+                "prompt": sanitize_text(text),
+                "prompt_length": len(text),
+                "model_used": nxt["model"],
+                "provider_used": nxt["provider"],
+                "tokens_in": nxt["tokens_in"],
+                "tokens_out": nxt["tokens_out"],
+                "tokens_reasoning": nxt["tokens_reasoning"],
+                "cost": nxt["cost"],
+                "finish_reason": nxt["finish"],
+                "mode": nxt["mode"],
+                "has_code": bool(CODE_KEYWORDS.search(text)),
+                "has_image": bool(IMAGE_PATTERN.search(text)),
+                "language": detect_language(text),
+                "conversation_turns": turn,
+                "success": nxt["finish"] in ("stop", "tool-calls", ""),
+                "context": context,
+                "actual_model": actual_model,
+                "actual_reply": actual_reply,
+                "context_len_chars": ctx_chars,
+            })
+            turn += 1
+    return samples
+
+
+def build_context(msgs, sums, start_pos, end_pos):
+    """OpenAI-style messages from msgs[start_pos:end_pos].
+
+    Tool calls are replayed as assistant tool_calls + role=tool
+    messages, with the model's original chain-of-thought attached as
+    `reasoning_content` (required by DeepSeek thinking mode when
+    tool-call history is present; the data comes from opencode's
+    `reasoning` parts). Plain assistant turns also carry it when
+    available — harmless for providers that ignore the field.
+    """
+    out = []
+    for msg in msgs[start_pos:end_pos]:
+        s = sums.get(msg["id"])
+        if s is None:
+            continue
+        if msg["role"] == "user":
+            if s["text"]:
+                out.append({"role": "user", "content": sanitize_text(s["text"])})
+        elif msg["role"] == "assistant":
+            tools = s["tools"]
+            text = s["text"]
+            files = s["files"]
+            reasoning = sanitize_text(s.get("reasoning", "")) or None
+            if not tools:
+                content = text
+                if files:
+                    content = (content + "\n" if content else "") + "[files changed: " + ", ".join(files) + "]"
+                if content:
+                    m = {"role": "assistant", "content": sanitize_text(content)}
+                    if reasoning:
+                        m["reasoning_content"] = reasoning
+                    out.append(m)
+            else:
+                tool_calls = []
+                for tp in tools:
+                    call_id = tp["call_id"]
+                    tool_calls.append({
+                        "id": call_id or f"call_{len(tool_calls)}",
+                        "type": "function",
+                        "function": {
+                            "name": tp["tool"],
+                            # Standard OpenAI shape: arguments is a
+                            # JSON-encoded object string. Some providers
+                            # (MiniMax) reject bare-string arguments.
+                            "arguments": json.dumps({"command": tp["command"]}, ensure_ascii=False),
+                        },
+                    })
+                m = {
+                    "role": "assistant",
+                    "content": sanitize_text(text) or None,
+                    "tool_calls": tool_calls,
+                    # DeepSeek thinking mode REQUIRES the
+                    # reasoning_content FIELD on every assistant
+                    # message that made tool calls. Empty strings are
+                    # dropped by gateways with omitempty tags, so use
+                    # a non-empty placeholder when the history lacks
+                    # the real CoT (opencode stores it in `reasoning`
+                    # parts when available).
+                    "reasoning_content": reasoning if reasoning else "[reasoning_content omitted in history]",
+                }
+                out.append(m)
+                for tp in tools:
+                    out.append({
+                        "role": "tool",
+                        "tool_call_id": tp["call_id"],
+                        "content": sanitize_text(tp["output"]),
+                    })
+    return out
+
+
+def find_actual_reply(msgs, sums, sample_pos):
+    """(model, reply_text) of the first assistant text after sample_pos."""
+    for msg in msgs[sample_pos + 1:]:
+        if msg["role"] == "assistant":
+            text = sums.get(msg["id"], {}).get("text", "")
+            if text:
+                return msg.get("model", ""), sanitize_text(text)
+            continue
+        if msg["role"] == "user":
+            break
+    return None, None
+
+
+# ---------------------------------------------------------------------------
+# Orchestration
+# ---------------------------------------------------------------------------
 
 def export(db_path: str, output_path: str, config: dict):
-    """Main export logic."""
-    max_prompt = config.get("max_prompt_length", DEFAULT_MAX_PROMPT_LEN)
-    min_prompt = config.get("min_prompt_length", DEFAULT_MIN_PROMPT_LEN)
-    sample_rate = config.get("sample_rate", 1.0)
+    min_prompt = config.get("min_prompt_length", 1)
     exclude_models = set(config.get("exclude_models", []))
+    dedup_keep = config.get("dedup_keep", 3)
+    workers = config.get("workers", max(1, min(os.cpu_count() or 4, 8)))
 
-    print(f"Opening database: {db_path}")
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    print(f"Opening database (read-only): {db_path}")
+    conn = connect_ro(db_path)
     cur = conn.cursor()
+    cur.execute("SELECT id FROM session ORDER BY id")
+    session_ids = [r["id"] for r in cur.fetchall()]
+    conn.close()
+    print(f"Sessions: {len(session_ids)}, workers: {workers}")
 
-    # Step 1: Get all user messages with their text parts
-    user_query = """
-    SELECT
-        m.id as message_id,
-        m.session_id,
-        m.time_created,
-        json_extract(p.data, '$.text') as text_content
-    FROM message m
-    JOIN part p ON p.message_id = m.id
-    WHERE json_extract(m.data, '$.role') = 'user'
-      AND json_extract(p.data, '$.type') = 'text'
-    ORDER BY m.time_created ASC
-    """
-    print("Fetching user messages...")
-    cur.execute(user_query)
-    user_rows = cur.fetchall()
-    print(f"Found {len(user_rows)} user messages")
+    # Shard sessions across workers
+    shards = [[] for _ in range(workers)]
+    for i, sid in enumerate(session_ids):
+        shards[i % workers].append(sid)
 
-    # Step 2: Get all assistant messages with metadata
-    assistant_query = """
-    SELECT
-        m.id as message_id,
-        m.session_id,
-        m.time_created,
-        json_extract(m.data, '$.providerID') as provider,
-        json_extract(m.data, '$.modelID') as model,
-        json_extract(m.data, '$.tokens.input') as tokens_in,
-        json_extract(m.data, '$.tokens.output') as tokens_out,
-        json_extract(m.data, '$.tokens.reasoning') as tokens_reasoning,
-        json_extract(m.data, '$.cost') as cost,
-        json_extract(m.data, '$.finish') as finish_reason,
-        json_extract(m.data, '$.mode') as mode,
-        json_extract(m.data, '$.time.completed') as time_completed
-    FROM message m
-    WHERE json_extract(m.data, '$.role') = 'assistant'
-    ORDER BY m.time_created ASC
-    """
-    print("Fetching assistant messages...")
-    cur.execute(assistant_query)
-    assistant_rows = cur.fetchall()
-    print(f"Found {len(assistant_rows)} assistant messages")
+    task_args = [
+        (db_path, shard, min_prompt, exclude_models, dedup_keep)
+        for shard in shards if shard
+    ]
 
-    # Step 3: Get session metadata
-    session_query = "SELECT id, title, directory, agent FROM session"
-    cur.execute(session_query)
-    session_map = {}
-    for row in cur.fetchall():
-        session_map[row[0]] = (row[1], row[2], row[3])
+    all_samples = []
+    if workers > 1 and len(task_args) > 1:
+        with Pool(processes=len(task_args)) as pool:
+            for i, samples in enumerate(pool.imap_unordered(_process_shard, task_args)):
+                all_samples.extend(samples)
+                print(f"  shard done ({i+1}/{len(task_args)}): {len(samples)} samples")
+    else:
+        for args in task_args:
+            samples = _process_shard(args)
+            all_samples.extend(samples)
+            print(f"  shard done: {len(samples)} samples")
 
-    # Step 4: Build index of assistant messages by session
-    from collections import defaultdict
-    assistant_by_session = defaultdict(list)
-    for row in assistant_rows:
-        assistant_by_session[row["session_id"]].append(row)
-
-    # Step 5: Match user messages to next assistant message
-    matched = []
-    for user_row in user_rows:
-        sid = user_row["session_id"]
-        user_time = user_row["time_created"]
-        assistants = assistant_by_session.get(sid, [])
-        # Find the first assistant message after this user message
-        next_asst = None
-        for asst in assistants:
-            if asst["time_created"] > user_time:
-                next_asst = asst
-                break
-        if next_asst:
-            matched.append((user_row, next_asst))
-
-    print(f"Matched {len(matched)} user-assistant pairs")
-    rows = matched
-
-    # Track turns per session
-    session_turns = {}
-    exported = 0
-    skipped = 0
+    print(f"Total samples: {len(all_samples)}")
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
-        for user_row, asst_row in rows:
-            session_id = user_row["session_id"]
-            text = user_row["text_content"] or ""
-
-            # Filter
-            if len(text.strip()) < min_prompt:
-                skipped += 1
-                continue
-            if exclude_models and asst_row["model"] in exclude_models:
-                skipped += 1
-                continue
-
-            # Sample rate
-            import random
-            if sample_rate < 1.0 and random.random() > sample_rate:
-                skipped += 1
-                continue
-
-            # Turn tracking
-            turn_idx = session_turns.get(session_id, 0)
-            session_turns[session_id] = turn_idx + 1
-
-            # Session metadata
-            s_meta = session_map.get(session_id, ("", "", ""))
-
-            sample = extract_sample(
-                session_row=(session_id, s_meta[0], s_meta[1], s_meta[2]),
-                message_row=(
-                    user_row["message_id"], asst_row["provider"], asst_row["model"],
-                    asst_row["tokens_in"], asst_row["tokens_out"],
-                    asst_row["tokens_reasoning"], asst_row["cost"],
-                    asst_row["finish_reason"], asst_row["mode"],
-                    user_row["time_created"], asst_row["time_completed"]
-                ),
-                part_text=text,
-                turn_index=turn_idx,
-            )
-            f.write(json.dumps(sample, ensure_ascii=False) + "\n")
-            exported += 1
-
-    conn.close()
-    print(f"Exported: {exported} samples, skipped: {skipped}")
+        for s in all_samples:
+            f.write(json.dumps(s, ensure_ascii=False) + "\n")
     print(f"Output: {output_path}")
 
-    # Summary stats
-    models = {}
-    with open(output_path, "r") as f:
-        for line in f:
-            s = json.loads(line)
-            m = s["model_used"]
-            models[m] = models.get(m, 0) + 1
+    models = defaultdict(int)
+    ctx_lens = []
+    for s in all_samples:
+        models[s["model_used"]] += 1
+        ctx_lens.append(s["context_len_chars"])
+    if ctx_lens:
+        print(f"\nContext size (chars): min={min(ctx_lens)} median={statistics.median(ctx_lens):.0f} "
+              f"p90={sorted(ctx_lens)[int(len(ctx_lens)*0.9)]} max={max(ctx_lens)}")
     print("\nModel distribution:")
-    for m, count in sorted(models.items(), key=lambda x: -x[1]):
-        print(f"  {m}: {count} ({100*count/exported:.1f}%)")
+    for m, c in sorted(models.items(), key=lambda x: -x[1]):
+        print(f"  {m}: {c} ({100*c/len(all_samples):.1f}%)")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Export opencode training samples")
-    parser.add_argument("--db", default="~/.local/share/opencode/opencode.db",
-                        help="Path to opencode SQLite database")
+    parser = argparse.ArgumentParser(description="Export opencode training samples with full context")
+    parser.add_argument("--db", default="~/.local/share/opencode/opencode.db.bak20260807",
+                        help="Path to opencode SQLite backup database")
     parser.add_argument("--output", default=None,
                         help="Output JSONL path (default: data/learned-router/samples.jsonl)")
-    parser.add_argument("--max-prompt-length", type=int, default=DEFAULT_MAX_PROMPT_LEN)
-    parser.add_argument("--min-prompt-length", type=int, default=DEFAULT_MIN_PROMPT_LEN)
-    parser.add_argument("--sample-rate", type=float, default=1.0)
-    parser.add_argument("--no-anonymize", action="store_true")
+    parser.add_argument("--min-prompt-length", type=int, default=1)
+    parser.add_argument("--dedup-keep", type=int, default=3,
+                        help="Keep N representatives per normalized prompt within a session")
+    parser.add_argument("--workers", type=int, default=0,
+                        help="Parallel workers (default: min(cpu, 8))")
     args = parser.parse_args()
 
     db_path = os.path.expanduser(args.db)
@@ -273,10 +449,10 @@ def main():
 
     output = args.output or os.path.join(DEFAULT_OUTPUT_DIR, "samples.jsonl")
     config = {
-        "max_prompt_length": args.max_prompt_length,
         "min_prompt_length": args.min_prompt_length,
-        "sample_rate": args.sample_rate,
         "exclude_models": ["auto"],
+        "dedup_keep": args.dedup_keep,
+        "workers": args.workers,
     }
     export(db_path, output, config)
 

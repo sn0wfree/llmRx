@@ -67,6 +67,12 @@ type Message struct {
 	ToolCallID   string     `json:"tool_call_id,omitempty"`
 	CacheControl *CacheCtl  `json:"cache_control,omitempty"` // Anthropic extension
 	Refusal      string     `json:"refusal,omitempty"`
+	// ReasoningContent carries the chain-of-thought of a thinking
+	// model. DeepSeek's thinking mode requires it to be passed back
+	// on assistant messages that made tool calls, otherwise the
+	// upstream rejects the request with 400. Passed through
+	// verbatim when present.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 
 	// contentStr caches the result of ContentString() after the first
 	// call, avoiding repeated allocation on the hot path.
