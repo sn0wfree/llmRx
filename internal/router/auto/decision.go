@@ -25,4 +25,8 @@ type Decision struct {
 	// Fallback indicates the winning model came from the combo's
 	// Fallback list rather than the tier candidates.
 	Fallback bool `json:"fallback"`
+	// ContextEscalation indicates the winning model came from the
+	// combo's ContextFallback list after every tier candidate was
+	// filtered out for a too-small context window.
+	ContextEscalation bool `json:"context_escalation"`
 }

@@ -976,8 +976,13 @@ func (h *Handler) handleAutoCombo(w http.ResponseWriter, r *http.Request, req *p
 	tier := string(sc.Tier)
 
 	decision := &auto.Decision{Tier: tier, Score: sc.Score, Cause: sc.Cause}
-	order := h.autoAttemptOrder(combo, tier, text, &decision.Picked)
-	decision.Candidates = tierCandidates(combo, tier)
+	order, escalated := h.autoAttemptOrder(combo, tier, text, &decision.Picked)
+	decision.ContextEscalation = escalated
+	if escalated {
+		decision.Candidates = combo.ContextFallback
+	} else {
+		decision.Candidates = tierCandidates(combo, tier)
+	}
 
 	opts := router.RouteOptions{Text: text}
 	var lastErr error
@@ -1059,8 +1064,13 @@ func (h *Handler) handleStreamAutoCombo(w http.ResponseWriter, r *http.Request, 
 	tier := string(sc.Tier)
 
 	decision := &auto.Decision{Tier: tier, Score: sc.Score, Cause: sc.Cause}
-	order := h.autoAttemptOrder(combo, tier, text, &decision.Picked)
-	decision.Candidates = tierCandidates(combo, tier)
+	order, escalated := h.autoAttemptOrder(combo, tier, text, &decision.Picked)
+	decision.ContextEscalation = escalated
+	if escalated {
+		decision.Candidates = combo.ContextFallback
+	} else {
+		decision.Candidates = tierCandidates(combo, tier)
+	}
 
 	opts := router.RouteOptions{Text: text}
 	var lastErr error
@@ -1111,8 +1121,24 @@ func (h *Handler) handleStreamAutoCombo(w http.ResponseWriter, r *http.Request, 
 // fallback model already present in the tier candidates is not
 // retried a second time. Tier candidates whose context window
 // cannot fit the prompt are filtered out before sampling.
-func (h *Handler) autoAttemptOrder(combo model.TokenComboModel, tier, text string, picked *auto.ArmSample) []string {
-	candidates := auto.FilterContextCandidates(tierCandidates(combo, tier), auto.TokenEstimate(text))
+//
+// When every tier candidate has a context window too small for the
+// prompt and the combo declares a ContextFallback list, the order
+// escalates: models are drawn from ContextFallback sorted by
+// context window ascending (smallest that fits first) and the
+// returned escalated flag tells the caller to log the decision as
+// context_escalation. Escalation skips arm sampling — the
+// context_fallback models are a safety net, not quality arms.
+func (h *Handler) autoAttemptOrder(combo model.TokenComboModel, tier, text string, picked *auto.ArmSample) ([]string, bool) {
+	est := auto.TokenEstimate(text)
+	raw := tierCandidates(combo, tier)
+	escalated := auto.AllContextFiltered(raw, est) && len(combo.ContextFallback) > 0
+	var candidates []string
+	if escalated {
+		candidates = auto.SelectContextFallback(combo.ContextFallback, est)
+	} else {
+		candidates = auto.FilterContextCandidates(raw, est)
+	}
 	*picked = h.autoPool.Select(tier, candidates)
 	order := make([]string, 0, len(candidates)+len(combo.Fallback))
 	if picked.Model != "" {
@@ -1128,7 +1154,7 @@ func (h *Handler) autoAttemptOrder(combo model.TokenComboModel, tier, text strin
 			order = append(order, m)
 		}
 	}
-	return order
+	return order, escalated
 }
 
 func containsString(xs []string, s string) bool {
@@ -1180,6 +1206,7 @@ func (h *Handler) emitAutoDecision(r *http.Request, d *auto.Decision) {
 		logging.F("theta", fmt.Sprintf("%.3f", d.Picked.Score)),
 		logging.F("routed", d.Routed),
 		logging.F("fallback", d.Fallback),
+		logging.F("context_escalation", d.ContextEscalation),
 		logging.F("attempted", strings.Join(d.Attempted, ",")),
 	)
 }

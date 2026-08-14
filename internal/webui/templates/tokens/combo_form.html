@@ -98,6 +98,10 @@
         <textarea name="fallback" id="combo-fallback" rows="4" placeholder="deepseek-chat"
                   class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm">{{.FallbackStr}}</textarea>
         <p class="mt-1 text-xs text-gray-500">每行一个模型名（可选）。全部候选失败时串行尝试，绕过熔断——宁可降级不报错。</p>
+        <label class="block text-sm font-medium text-gray-700 mt-3">上下文升级模型</label>
+        <textarea name="context_fallback" id="combo-context-fallback" rows="4" placeholder="gpt-4o"
+                  class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm">{{.ContextFallbackStr}}</textarea>
+        <p class="mt-1 text-xs text-gray-500">每行一个模型名（可选）。tier 候选模型的 context 窗口都装不下 prompt 时，按 context 窗口从小到大的顺序自动升级尝试。</p>
       </div>
     </div>
   </div>

@@ -19,17 +19,25 @@ import (
 // given tier table and fallback list.
 func addAutoCombo(t *testing.T, app *testhelper.App, tokenKey string, tiers map[string]model.TierConfig, fallback []string) {
 	t.Helper()
+	addAutoComboWithContextFallback(t, app, tokenKey, tiers, fallback, nil)
+}
+
+// addAutoComboWithContextFallback is addAutoCombo plus the combo's
+// context_fallback list.
+func addAutoComboWithContextFallback(t *testing.T, app *testhelper.App, tokenKey string, tiers map[string]model.TierConfig, fallback, contextFallback []string) {
+	t.Helper()
 	tok, err := app.Store.GetToken(tokenKey)
 	if err != nil {
 		t.Fatalf("lookup token: %v", err)
 	}
 	combo := &model.TokenComboModel{
-		TokenID:  tok.ID,
-		Name:     "auto",
-		Mode:     model.ComboModeAuto,
-		Tiers:    tiers,
-		Fallback: fallback,
-		Enabled:  true,
+		TokenID:         tok.ID,
+		Name:            "auto",
+		Mode:            model.ComboModeAuto,
+		Tiers:           tiers,
+		Fallback:        fallback,
+		ContextFallback: contextFallback,
+		Enabled:         true,
 	}
 	if err := app.Store.CreateComboModel(combo); err != nil {
 		t.Fatalf("CreateComboModel(auto): %v", err)
@@ -341,6 +349,89 @@ func TestAutoCombo_ContextBudget(t *testing.T) {
 	}
 	if got := rec.Header().Get("X-llmRx-Routed-Model"); got != "claude-3-5-sonnet" {
 		t.Errorf("huge prompt routed = %q, want claude-3-5-sonnet (context budget)", got)
+	}
+}
+
+// TestAutoCombo_ContextEscalation: when every tier candidate has a
+// context window too small for the prompt and the combo declares a
+// ContextFallback list, the router escalates to the fitting
+// context_fallback model (smallest window first) and logs the
+// decision as context_escalation.
+func TestAutoCombo_ContextEscalation(t *testing.T) {
+	app := testhelper.New(t)
+	app.AddToken("sk-t", "t")
+	app.AddChannel("c1", "openai", "https://x", []string{"deepseek-chat", "gpt-4o"}, "sk-1")
+	tiers := map[string]model.TierConfig{
+		"simple":   {Models: []string{"deepseek-chat"}}, // 64k window
+		"standard": {Models: []string{"deepseek-chat"}},
+		"complex":  {Models: []string{"deepseek-chat"}},
+		"agentic":  {Models: []string{"deepseek-chat"}},
+	}
+	addAutoComboWithContextFallback(t, app, "sk-t", tiers, []string{"m1"}, []string{"gpt-4o", "deepseek-chat"})
+
+	// Small prompt: no escalation, cold start picks deepseek-chat.
+	rec := doAutoChat(t, app, `{"model":"auto","messages":[{"role":"user","content":"hello"}]}`)
+	if got := rec.Header().Get("X-llmRx-Routed-Model"); got != "deepseek-chat" {
+		t.Errorf("small prompt routed = %q, want deepseek-chat", got)
+	}
+
+	// ~60k estimated tokens -> need 72k: deepseek-chat (64k)
+	// filtered, gpt-4o (128k) fits via context_fallback.
+	filler := strings.Repeat("a", 240000)
+	body, err := json.Marshal(map[string]any{
+		"model": "auto",
+		"messages": []map[string]string{
+			{"role": "user", "content": filler},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = doAutoChat(t, app, string(body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-llmRx-Routed-Model"); got != "gpt-4o" {
+		t.Errorf("escalated prompt routed = %q, want gpt-4o (context escalation)", got)
+	}
+	// The decision must be recorded as a context escalation.
+	stats := app.Chat.AutoStats().Snapshot()
+	if stats.Decisions < 2 {
+		t.Fatalf("expected >= 2 decisions, got %d", stats.Decisions)
+	}
+}
+
+// TestAutoCombo_ContextEscalationOnlyWhenDeclared: without a
+// ContextFallback list, an oversized prompt still attempts the tier
+// candidates (no escalation, no hard fail).
+func TestAutoCombo_ContextEscalationOnlyWhenDeclared(t *testing.T) {
+	app := testhelper.New(t)
+	app.AddToken("sk-t", "t")
+	app.AddChannel("c1", "openai", "https://x", []string{"deepseek-chat"}, "sk-1")
+	tiers := map[string]model.TierConfig{
+		"simple":   {Models: []string{"deepseek-chat"}},
+		"standard": {Models: []string{"deepseek-chat"}},
+		"complex":  {Models: []string{"deepseek-chat"}},
+		"agentic":  {Models: []string{"deepseek-chat"}},
+	}
+	addAutoCombo(t, app, "sk-t", tiers, []string{"deepseek-chat"})
+
+	filler := strings.Repeat("a", 240000)
+	body, err := json.Marshal(map[string]any{
+		"model": "auto",
+		"messages": []map[string]string{
+			{"role": "user", "content": filler},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No escalation possible: the request still flows through the
+	// (context-too-small) tier candidate — degraded attempt, not a
+	// hard failure.
+	rec := doAutoChat(t, app, string(body))
+	if got := rec.Header().Get("X-llmRx-Routed-Model"); got != "deepseek-chat" {
+		t.Errorf("routed = %q, want deepseek-chat (no context_fallback declared)", got)
 	}
 }
 

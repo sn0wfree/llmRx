@@ -637,7 +637,8 @@ func testCombos(t *testing.T, st store.Store) {
 			"complex":  {Models: []string{"gpt-4o", "claude-3.5"}},
 			"agentic":  {Models: []string{"claude-3.5"}},
 		},
-		Fallback: []string{"deepseek-chat"},
+		Fallback:         []string{"deepseek-chat"},
+		ContextFallback:  []string{"gpt-4o", "claude-3.5-sonnet"},
 	}
 	if err := st.CreateComboModel(auto); err != nil {
 		t.Fatalf("CreateComboModel(auto): %v", err)
@@ -654,6 +655,9 @@ func testCombos(t *testing.T, st store.Store) {
 	}
 	if len(autoGot.Fallback) != 1 || autoGot.Fallback[0] != "deepseek-chat" {
 		t.Fatalf("auto fallback wrong: %+v", autoGot.Fallback)
+	}
+	if len(autoGot.ContextFallback) != 2 || autoGot.ContextFallback[0] != "gpt-4o" || autoGot.ContextFallback[1] != "claude-3.5-sonnet" {
+		t.Fatalf("auto context_fallback wrong: %+v", autoGot.ContextFallback)
 	}
 
 	combos, err := st.GetComboModels(tk.ID)

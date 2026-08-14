@@ -62,6 +62,7 @@ func (h *Handler) ComboNewForm(w http.ResponseWriter, r *http.Request) {
 		"Token":       token,
 		"TiersJSON":   "",
 		"FallbackStr": "",
+		"ContextFallbackStr": "",
 	}
 	if err := h.renderer.Render(w, "combo_form_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -99,6 +100,7 @@ func (h *Handler) ComboEditForm(w http.ResponseWriter, r *http.Request) {
 		"Combo":       combo,
 		"TiersJSON":   tiersJSON(combo.Tiers),
 		"FallbackStr": strings.Join(combo.Fallback, "\n"),
+		"ContextFallbackStr": strings.Join(combo.ContextFallback, "\n"),
 	}
 	if err := h.renderer.Render(w, "combo_form_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -106,7 +108,7 @@ func (h *Handler) ComboEditForm(w http.ResponseWriter, r *http.Request) {
 }
 
 // comboFormFields is the canonical field list for combo forms.
-var comboFormFields = []string{"name", "mode", "models", "tiers", "fallback", "strategy", "status"}
+var comboFormFields = []string{"name", "mode", "models", "tiers", "fallback", "context_fallback", "strategy", "status"}
 
 // parseComboTiers decodes the tiers JSON textarea. Empty input
 // yields nil (no tiers). A malformed document is an error so the
@@ -154,6 +156,7 @@ func (h *Handler) ComboCreate(w http.ResponseWriter, r *http.Request) {
 	strategy := r.FormValue("strategy")
 	tiersRaw := strings.TrimSpace(r.FormValue("tiers"))
 	fallbackRaw := strings.TrimSpace(r.FormValue("fallback"))
+	contextFallbackRaw := strings.TrimSpace(r.FormValue("context_fallback"))
 	enabled := r.FormValue("status") == "1"
 
 	fieldErrors := map[string]string{}
@@ -189,15 +192,17 @@ func (h *Handler) ComboCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	tiers, _ := parseComboTiers(tiersRaw)
 	fallback := splitLines(fallbackRaw)
+	contextFallback := splitLines(contextFallbackRaw)
 	c := &model.TokenComboModel{
 		TokenID:  tokenID,
 		Name:     name,
 		Models:   models,
 		Mode:     model.ComboMode(mode),
 		Strategy: model.CostStrategy(strategy),
-		Tiers:    tiers,
-		Fallback: fallback,
-		Enabled:  enabled,
+		Tiers:           tiers,
+		Fallback:        fallback,
+		ContextFallback: contextFallback,
+		Enabled:         enabled,
 	}
 	if err := h.store.CreateComboModel(c); err != nil {
 		h.renderComboFormError(w, r, tokenID, nil, "创建失败: "+err.Error(), r.Form, nil)
@@ -229,6 +234,7 @@ func (h *Handler) renderComboFormError(w http.ResponseWriter, r *http.Request, t
 			fd["ModelsStr"] = firstOrEmpty(form["models"])
 			fd["TiersStr"] = firstOrEmpty(form["tiers"])
 			fd["FallbackStr"] = firstOrEmpty(form["fallback"])
+			fd["ContextFallbackStr"] = firstOrEmpty(form["context_fallback"])
 			fd["Strategy"] = firstOrEmpty(form["strategy"])
 			fd["Status"] = firstOrEmpty(form["status"])
 		}
@@ -243,6 +249,7 @@ func (h *Handler) renderComboFormError(w http.ResponseWriter, r *http.Request, t
 			"FormData":    fd,
 			"TiersJSON":   fd["TiersStr"],
 			"FallbackStr": fd["FallbackStr"],
+			"ContextFallbackStr": fd["ContextFallbackStr"],
 			"FieldErrors": fieldErrors,
 		}
 		if err := h.renderer.Render(w, "combo_form_body", data); err != nil {
@@ -312,6 +319,7 @@ func (h *Handler) comboUpdateByID(w http.ResponseWriter, r *http.Request, tokenI
 	strategy := r.FormValue("strategy")
 	tiersRaw := strings.TrimSpace(r.FormValue("tiers"))
 	fallbackRaw := strings.TrimSpace(r.FormValue("fallback"))
+	contextFallbackRaw := strings.TrimSpace(r.FormValue("context_fallback"))
 	enabled := r.FormValue("status") == "1"
 
 	fieldErrors := map[string]string{}
@@ -346,6 +354,9 @@ func (h *Handler) comboUpdateByID(w http.ResponseWriter, r *http.Request, tokenI
 	}
 	if fallbackRaw != "" || mode == "auto" {
 		existing.Fallback = splitLines(fallbackRaw)
+	}
+	if contextFallbackRaw != "" || mode == "auto" {
+		existing.ContextFallback = splitLines(contextFallbackRaw)
 	}
 	existing.Strategy = model.CostStrategy(strategy)
 	existing.Enabled = enabled

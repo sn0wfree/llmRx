@@ -254,6 +254,12 @@ type TokenComboModel struct {
 	// combos. Empty for load_balance/serial combos.
 	Tiers     map[string]TierConfig `json:"tiers,omitempty"`
 	Fallback  []string              `json:"fallback,omitempty"`
+	// ContextFallback lists models tried when the classified tier's
+	// candidates all have context windows too small for the prompt.
+	// Escalates to a larger-context model instead of failing the
+	// request. Sorted by context_window ascending when selected
+	// (smallest that fits wins; cost is usually lower too).
+	ContextFallback []string  `json:"context_fallback,omitempty"`
 	Enabled   bool                  `json:"enabled"`
 	IsDefault bool                  `json:"is_default"`
 	CreatedAt time.Time             `json:"created_at"`

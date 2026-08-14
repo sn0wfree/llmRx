@@ -144,3 +144,78 @@ func TestTokenEstimate(t *testing.T) {
 		t.Fatalf("cjk: got %d, want 50", got)
 	}
 }
+
+// TestSelectContextFallback: models that fit the prompt are kept,
+// sorted by context window ascending (smallest fit first). Unknown
+// models trail in input order.
+func TestSelectContextFallback(t *testing.T) {
+	if err := modelmeta.Init(""); err != nil {
+		t.Fatalf("modelmeta.Init: %v", err)
+	}
+	// gpt-4o: 128k, deepseek-chat: 64k, unknown-model: no entry.
+	// 70k tokens -> need 84k: deepseek-chat filtered out; gpt-4o
+	// fits and unknown-model is kept.
+	got := SelectContextFallback([]string{"deepseek-chat", "gpt-4o", "unknown-model"}, 70000)
+	if len(got) != 2 {
+		t.Fatalf("want 2, got %v", got)
+	}
+	// Unknown model comes last (can't rank it by context window).
+	if got[0] != "gpt-4o" || got[1] != "unknown-model" {
+		t.Fatalf("order: want [gpt-4o unknown-model], got %v", got)
+	}
+}
+
+// TestSelectContextFallback_NothingFits: when no model fits, the
+// input is returned unchanged (degraded attempt beats a hard fail).
+func TestSelectContextFallback_NothingFits(t *testing.T) {
+	if err := modelmeta.Init(""); err != nil {
+		t.Fatalf("modelmeta.Init: %v", err)
+	}
+	got := SelectContextFallback([]string{"gpt-4o", "deepseek-chat"}, 500000)
+	if len(got) != 2 {
+		t.Fatalf("want all candidates, got %v", got)
+	}
+}
+
+// TestSelectContextFallback_EdgeInputs: nil/single/zero-token pass
+// through untouched.
+func TestSelectContextFallback_EdgeInputs(t *testing.T) {
+	if err := modelmeta.Init(""); err != nil {
+		t.Fatalf("modelmeta.Init: %v", err)
+	}
+	if got := SelectContextFallback(nil, 100); len(got) != 0 {
+		t.Fatalf("nil: %v", got)
+	}
+	if got := SelectContextFallback([]string{"gpt-4o"}, 100); len(got) != 1 {
+		t.Fatalf("single: %v", got)
+	}
+	if got := SelectContextFallback([]string{"gpt-4o", "deepseek-chat"}, 0); len(got) != 2 {
+		t.Fatalf("zero tokens: %v", got)
+	}
+}
+
+// TestAllContextFiltered: true only when every candidate has a
+// documented context window too small for the prompt. Unknown
+// models count as fitting (lenient).
+func TestAllContextFiltered(t *testing.T) {
+	if err := modelmeta.Init(""); err != nil {
+		t.Fatalf("modelmeta.Init: %v", err)
+	}
+	// 150k tokens -> need 180k: gpt-4o (128k) and deepseek-chat
+	// (64k) both too small -> true.
+	if !AllContextFiltered([]string{"gpt-4o", "deepseek-chat"}, 150000) {
+		t.Fatal("expected all filtered at 150k")
+	}
+	// Unknown model included -> lenient, false.
+	if AllContextFiltered([]string{"gpt-4o", "no-such-model"}, 150000) {
+		t.Fatal("unknown model must count as fitting")
+	}
+	// gpt-4o fits at 70k -> false.
+	if AllContextFiltered([]string{"gpt-4o", "deepseek-chat"}, 70000) {
+		t.Fatal("gpt-4o fits at 70k, should not be all-filtered")
+	}
+	// Empty / zero tokens -> false.
+	if AllContextFiltered(nil, 100) || AllContextFiltered([]string{"gpt-4o"}, 0) {
+		t.Fatal("empty/zero inputs must return false")
+	}
+}

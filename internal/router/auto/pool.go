@@ -1,6 +1,7 @@
 package auto
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/sn0wfree/llmRx/internal/modelmeta"
@@ -70,6 +71,74 @@ func FilterContextCandidates(candidates []string, estimatedTokens int) []string 
 	}
 	if len(out) == 0 {
 		return candidates
+	}
+	return out
+}
+
+// AllContextFiltered reports whether every candidate has a
+// documented context window too small for the estimated prompt
+// tokens. Unknown models (no modelmeta entry) count as "fits" —
+// the filter is lenient. Used by the api layer to decide whether
+// to escalate to the combo's context_fallback list.
+func AllContextFiltered(candidates []string, estimatedTokens int) bool {
+	if len(candidates) == 0 || estimatedTokens <= 0 {
+		return false
+	}
+	need := estimatedTokens + int(float64(estimatedTokens)*contextHeadroom)
+	for _, m := range candidates {
+		meta, ok := modelmeta.Get(m)
+		if !ok || meta.ContextWindow <= 0 || meta.ContextWindow >= need {
+			return false
+		}
+	}
+	return true
+}
+
+// SelectContextFallback picks from the combo's context_fallback
+// list the models whose documented context window can fit the
+// estimated prompt tokens, sorted by context_window ascending so
+// the smallest (usually cheapest) fitting model is tried first.
+// Returns the original list order when no modelmeta entry exists
+// or no model fits (the caller will try them anyway — degraded
+// attempt beats a hard failure).
+func SelectContextFallback(candidates []string, estimatedTokens int) []string {
+	if len(candidates) <= 1 || estimatedTokens <= 0 {
+		return candidates
+	}
+	need := estimatedTokens + int(float64(estimatedTokens)*contextHeadroom)
+	type candidate struct {
+		model string
+		meta  *modelmeta.ModelMeta
+	}
+	var fitting []candidate
+	for _, m := range candidates {
+		meta, ok := modelmeta.Get(m)
+		if !ok || meta.ContextWindow <= 0 {
+			// Unknown model: keep it, ordered by its slot in the
+			// list (can't rank by context window without data).
+			fitting = append(fitting, candidate{model: m})
+			continue
+		}
+		if meta.ContextWindow >= need {
+			fitting = append(fitting, candidate{model: m, meta: meta})
+		}
+	}
+	if len(fitting) == 0 {
+		return candidates
+	}
+	sort.SliceStable(fitting, func(i, j int) bool {
+		ci, cj := fitting[i].meta, fitting[j].meta
+		if ci == nil || ci.ContextWindow <= 0 {
+			return false
+		}
+		if cj == nil || cj.ContextWindow <= 0 {
+			return true
+		}
+		return ci.ContextWindow < cj.ContextWindow
+	})
+	out := make([]string, len(fitting))
+	for i, c := range fitting {
+		out[i] = c.model
 	}
 	return out
 }
