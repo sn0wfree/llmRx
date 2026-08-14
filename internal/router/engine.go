@@ -96,6 +96,14 @@ func (e *RouterEngine) SetBreakerDefaults(d BreakerDefaults) {
 	e.breaker.SetDefaults(d)
 }
 
+// SetHealthChecker injects an active-probe source (prober.Cache)
+// into the circuit breaker. When set, Filter() excludes channels
+// that a fresh probe has marked unhealthy. nil disables the
+// probe filter.
+func (e *RouterEngine) SetHealthChecker(hc HealthChecker) {
+	e.breaker.SetHealthChecker(hc)
+}
+
 // IntentBackend returns the active classifier's backend name
 // (e.g. "disabled" for Nop, "rust" for the native .so). Used by
 // the /health endpoint so operators can tell whether L4 is live

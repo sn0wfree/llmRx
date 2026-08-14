@@ -73,9 +73,25 @@ type breakerCfg struct {
 	resetDur    time.Duration
 }
 
+// HealthChecker is an optional active-probe source. When wired in
+// (via SetHealthChecker), Filter() consults it after the breaker
+// checks: a channel marked unhealthy by a fresh probe is excluded
+// so the request fails fast instead of paying the full upstream
+// latency. If the probe cache is stale (beyond its TTL) the prober
+// returns "healthy" on its own, so the check is transparent during
+// probe outages. If every candidate is probe-unhealthy the safety
+// net returns the breaker-healthy list unchanged - a degraded
+// attempt is preferable to blocking all traffic.
+type HealthChecker interface {
+	Healthy(channelID int64) bool
+}
+
 type CircuitBreaker struct {
 	store    BreakerStore
 	defaults BreakerDefaults // optional; nil ⇒ built-in defaults
+	// healthChecker is an optional active-probe source (prober.Cache).
+	// nil disables the probe filter in Filter().
+	healthChecker HealthChecker
 
 	// cachedDefaults is the resolved defaults snapshot, refreshed
 	// when SetDefaults is called or when the operator updates
@@ -120,6 +136,13 @@ func NewCircuitBreaker(st store.Store) *CircuitBreaker {
 func (b *CircuitBreaker) SetDefaults(d BreakerDefaults) {
 	b.defaults = d
 	b.refreshDefaults()
+}
+
+// SetHealthChecker injects an optional active-probe source. nil
+// disables the probe filter. The prober.Cache implements
+// HealthChecker via its Healthy() method.
+func (b *CircuitBreaker) SetHealthChecker(hc HealthChecker) {
+	b.healthChecker = hc
 }
 
 // refreshDefaults rebuilds the cachedDefaults snapshot from the
@@ -263,7 +286,7 @@ func (b *CircuitBreaker) Filter(channels []*model.Channel) []*model.Channel {
 		entry := b.getEntry(ch.ID)
 		entry.mu.Lock()
 		// Hard rejects (401/404) stay excluded until reload or a
-		// recorded success — retrying an auth failure is pointless.
+		// recorded success - retrying an auth failure is pointless.
 		if entry.hardReject {
 			entry.mu.Unlock()
 			continue
@@ -274,7 +297,7 @@ func (b *CircuitBreaker) Filter(channels []*model.Channel) []*model.Channel {
 			continue
 		}
 		// Sustained bad minute failure rate: exclude while the
-		// sliding window looks unhealthy (pure window semantics —
+		// sliding window looks unhealthy (pure window semantics -
 		// success samples push it back below the threshold).
 		if fails, total := entry.minuteFailureRate(now); total >= minuteWindowMinSamples && float64(fails)/float64(total) > minuteWindowRateThreshold {
 			entry.mu.Unlock()
@@ -293,6 +316,27 @@ func (b *CircuitBreaker) Filter(channels []*model.Channel) []*model.Channel {
 		healthy = append(healthy, ch)
 		entry.mu.Unlock()
 	}
+
+	// Active-probe filter: exclude channels that a fresh probe has
+	// marked unhealthy. This runs after the breaker checks so the
+	// prober only prunes breaker-healthy candidates. The prober's
+	// own TTL governs freshness - stale entries default to healthy.
+	if b.healthChecker != nil && len(healthy) > 0 {
+		filtered := make([]*model.Channel, 0, len(healthy))
+		for _, ch := range healthy {
+			if b.healthChecker.Healthy(ch.ID) {
+				filtered = append(filtered, ch)
+			}
+		}
+		// Safety net: if the prober excluded every candidate, fall
+		// back to the breaker-healthy list. Probe data may be stale
+		// or all channels may have transient issues - a degraded
+		// attempt is preferable to blocking all traffic.
+		if len(filtered) > 0 {
+			return filtered
+		}
+	}
+
 	return healthy
 }
 

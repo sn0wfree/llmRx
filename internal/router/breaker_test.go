@@ -311,3 +311,56 @@ func TestBreaker_5xxOpensBreaker(t *testing.T) {
 		t.Fatal("expected isOpen after 3x 503")
 	}
 }
+
+// stubHealthChecker is a test HealthChecker that marks specific
+// channel IDs as unhealthy.
+type stubHealthChecker struct {
+	unhealthy map[int64]bool
+}
+
+func (s *stubHealthChecker) Healthy(id int64) bool {
+	return !s.unhealthy[id]
+}
+
+// TestBreaker_HealthCheckerFiltersUnhealthy verifies that a wired-in
+// HealthChecker (prober) excludes channels it marks unhealthy,
+// even when the breaker itself considers them healthy.
+func TestBreaker_HealthCheckerFiltersUnhealthy(t *testing.T) {
+	b := NewCircuitBreaker(nil)
+	b.store = newStub(50, 30*time.Millisecond)
+	b.SetHealthChecker(&stubHealthChecker{unhealthy: map[int64]bool{2: true}})
+
+	ch1 := &model.Channel{ID: 1, Name: "healthy-ch"}
+	ch2 := &model.Channel{ID: 2, Name: "probe-unhealthy-ch"}
+	got := b.Filter([]*model.Channel{ch1, ch2})
+	if len(got) != 1 || got[0].ID != 1 {
+		t.Fatalf("expected only healthy channel to pass, got %v", got)
+	}
+}
+
+// TestBreaker_HealthCheckerSafetyNet verifies that when the
+// HealthChecker marks every candidate unhealthy, the breaker
+// falls back to the breaker-healthy list rather than returning
+// an empty list (degraded attempt > no traffic).
+func TestBreaker_HealthCheckerSafetyNet(t *testing.T) {
+	b := NewCircuitBreaker(nil)
+	b.store = newStub(50, 30*time.Millisecond)
+	b.SetHealthChecker(&stubHealthChecker{unhealthy: map[int64]bool{1: true, 2: true}})
+
+	got := b.Filter(mkChannels(1, 2))
+	if len(got) != 2 {
+		t.Fatalf("safety net: expected all channels returned when prober excludes all, got %d", len(got))
+	}
+}
+
+// TestBreaker_HealthCheckerNil is a regression test: nil
+// HealthChecker must not affect filtering at all.
+func TestBreaker_HealthCheckerNil(t *testing.T) {
+	b := NewCircuitBreaker(nil)
+	b.store = newStub(50, 30*time.Millisecond)
+	// No SetHealthChecker call: healthChecker is nil.
+	got := b.Filter(mkChannels(1))
+	if len(got) != 1 {
+		t.Fatalf("nil health checker: expected channel to pass, got %d", len(got))
+	}
+}

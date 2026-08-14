@@ -239,7 +239,8 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	// busy channels get zero probe requests (real traffic is a
 	// better health signal than a synthetic /v1/models probe).
 	s.router.SetTrafficObserver(prober.NewRouterObserver(proberCache))
-	logging.Info("prober: wired into router (real-traffic observer)")
+	s.router.SetHealthChecker(proberCache)
+	logging.Info("prober: wired into router (real-traffic observer + L2 health filter)")
 
 	// Initialize MCP components.
 	s.mcpClientMgr = mcp.NewClientManager(s.store)

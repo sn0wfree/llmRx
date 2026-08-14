@@ -859,33 +859,16 @@ func (h *Handler) handleLoadBalanceCombo(w http.ResponseWriter, r *http.Request,
 	}
 
 	// Rewrite req.Model to the real channel model so the upstream
-	// sees a model name it recognises (the combo name — e.g. "auto"
-	// — is only meaningful to llmRx).
+	// sees a model name it recognises (the combo name - e.g. "auto"
+	// - is only meaningful to llmRx).
 	originalModel := req.Model
 	if len(route.Channel.Models) > 0 {
 		req.Model = route.Channel.Models[0]
 	}
 
-	// Probe-based short-circuit: if the prober has recently
-	// verified this channel as unhealthy, fail fast with a
-	// distinct error so callers can distinguish "no channel" from
-	// "selected channel looks dead". Only triggers when both
-	// (a) the request is model="auto" and (b) the cache has a
-	// fresh failing entry — otherwise we'd over-aggressively
-	// penalise non-auto traffic.
-	if h.prober != nil && originalModel == "auto" && !h.prober.Healthy(route.Channel.ID) {
-		lat, _ := h.prober.Latest(route.Channel.ID)
-		logging.Warn("chat.probe_unhealthy",
-			logging.F("channel_id", route.Channel.ID),
-			logging.F("channel", route.Channel.Name),
-			logging.F("error", lat.Error),
-			logging.F("checked_at", lat.CheckedAt),
-		)
-		writeError(w, http.StatusBadGateway,
-			"selected channel marked unhealthy by probe: "+lat.Error,
-			"probe_unhealthy")
-		return
-	}
+	// Probe-based filtering now happens in L2 (CircuitBreaker.Filter)
+	// for all requests, not just auto. The per-channel probe cache
+	// is wired via RouterEngine.SetHealthChecker at startup.
 
 	prov := h.providerFor(route.Channel.Protocol, false)
 	start := time.Now()
