@@ -34,6 +34,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/ratelimit"
 	"github.com/sn0wfree/llmRx/internal/requestid"
 	"github.com/sn0wfree/llmRx/internal/router"
+	"github.com/sn0wfree/llmRx/internal/router/session"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/secrets"
 	"github.com/sn0wfree/llmRx/internal/store"
@@ -61,6 +62,7 @@ type Server struct {
 	engine       *chi.Mux
 	httpServer   *http.Server
 	prober       *prober.Cache
+	sessions     *session.Store
 	mcpClientMgr *mcp.ClientManager
 	mcpServer    *mcp.Server
 	// limiter overrides the api handler's default process-local
@@ -242,6 +244,23 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	s.router.SetHealthChecker(proberCache)
 	logging.Info("prober: wired into router (real-traffic observer + L2 health filter)")
 
+	// Session affinity for mode:auto combos (default off). When
+	// enabled, multi-turn conversations pin to one model/channel to
+	// preserve upstream prompt caches.
+	if s.cfg.Session.Enabled {
+		sessStore := session.New(session.Config{
+			TTL:        time.Duration(s.cfg.Session.TTLSec) * time.Second,
+			MaxEntries: s.cfg.Session.MaxEntries,
+		})
+		sessStore.StartCleanup(time.Minute)
+		handler.SetSessions(sessStore)
+		s.sessions = sessStore
+		logging.Info("session_affinity: enabled",
+			logging.F("ttl_sec", s.cfg.Session.TTLSec),
+			logging.F("max_entries", s.cfg.Session.MaxEntries),
+		)
+	}
+
 	// Initialize MCP components.
 	s.mcpClientMgr = mcp.NewClientManager(s.store)
 	var oauthSec *secrets.Manager
@@ -263,6 +282,7 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	adminHandler.SetMCPClientManager(s.mcpClientMgr)
 	adminHandler.SetGuardrailEngine(handler.GuardrailEngine())
 	adminHandler.SetAutoStats(handler.AutoStats())
+	adminHandler.SetSessions(handler.Sessions())
 	s.guardrailEngine = handler.GuardrailEngine()
 	adminHandler.SetReloadNotifier(s.fireNotify)
 
@@ -471,6 +491,9 @@ func (s *Server) Start(ctx context.Context) error {
 		defer cancel()
 		if s.prober != nil {
 			s.prober.Stop()
+		}
+		if s.sessions != nil {
+			s.sessions.Stop()
 		}
 		if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
 			return fmt.Errorf("graceful shutdown: %w", err)

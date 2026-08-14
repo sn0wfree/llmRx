@@ -31,6 +31,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/ratelimit"
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/router/auto"
+	"github.com/sn0wfree/llmRx/internal/router/session"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
 
@@ -165,6 +166,9 @@ type Handler struct {
 	// autoStats accumulates decision counters for the admin state
 	// endpoint; reset via admin /reload.
 	autoStats *auto.Stats
+	// sessions pins multi-turn conversations to one model/channel
+	// when session affinity is enabled. nil disables affinity.
+	sessions *session.Store
 }
 
 func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, ls *logstore.Manager, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Handler {
@@ -228,6 +232,13 @@ func (h *Handler) SetAutoScorer(s auto.ComplexityScorer) {
 		h.autoScorer = s
 	}
 }
+
+// SetSessions wires the session-affinity store. nil disables
+// affinity (default). Started at server startup from config.
+func (h *Handler) SetSessions(s *session.Store) { h.sessions = s }
+
+// Sessions exposes the affinity store for the admin state endpoint.
+func (h *Handler) Sessions() *session.Store { return h.sessions }
 
 // Limits exposes the rate limiter for the server to wire into the
 // middleware. The limiter is process-local unless a cluster backend
@@ -972,6 +983,23 @@ func (h *Handler) handleSerialCombo(w http.ResponseWriter, r *http.Request, req 
 func (h *Handler) handleAutoCombo(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, combo model.TokenComboModel) {
 	tokenID := lookupTokenID(r.Context(), h.store)
 	text := lastUserText(req.Messages)
+
+	// Session affinity: a live pin short-circuits classification and
+	// arm sampling, routing straight to the model that served the
+	// first turn (preserves upstream prompt caches). A failed or
+	// unroutable pinned model drops the pin and re-classifies.
+	sessionID := h.sessionIDFor(r, req)
+	if h.sessions != nil {
+		if pin, ok := h.sessions.Get(sessionID); ok && pin.Model != "" {
+			if h.autoAttemptPinned(w, r, req, combo, pin, tokenID, text) {
+				return
+			}
+			// Pinned model failed: drop the pin, fall through to a
+			// fresh decision.
+			h.sessions.Delete(sessionID)
+		}
+	}
+
 	sc := h.autoScorer.Classify(text)
 	tier := string(sc.Tier)
 
@@ -1026,6 +1054,9 @@ func (h *Handler) handleAutoCombo(w http.ResponseWriter, r *http.Request, req *p
 		}
 		decision.Routed = m
 		decision.Fallback = !isTierCandidate(combo, tier, m)
+		if h.sessions != nil {
+			h.sessions.Set(sessionID, m, tier, route.Channel.ID)
+		}
 		h.emitAutoDecision(r, decision)
 		h.setAutoHeaders(w, decision)
 		logging.Debug("auto.success",
@@ -1052,6 +1083,60 @@ func (h *Handler) handleAutoCombo(w http.ResponseWriter, r *http.Request, req *p
 	}
 }
 
+// autoAttemptPinned routes one request to the pinned session model.
+// It returns true when the request was fully handled (success OR
+// hard failure with a response written). A routing failure or an
+// upstream 5xx leaves the pin in place for the caller to drop and
+// re-classify — but the caller only reaches here when the pin was
+// live, so a 5xx means the channel is flaky: the caller deletes the
+// pin and falls through.
+func (h *Handler) autoAttemptPinned(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, combo model.TokenComboModel, pin session.Pin, tokenID int64, text string) bool {
+	opts := router.RouteOptions{Text: text}
+	// The pinned model may be a fallback/context model not in the
+	// current tier — always bypass the breaker for a pinned retry:
+	// the pin existed because this channel served the conversation.
+	opts.SkipBreaker = true
+	route, routeErr := h.router.RouteWith(context.Background(), pin.Model, opts)
+	if routeErr != nil {
+		logging.Debug("auto.pin_unroutable",
+			logging.F("model", pin.Model),
+			logging.F("error", routeErr),
+		)
+		return false
+	}
+	prov := h.providerFor(route.Channel.Protocol, false)
+	start := time.Now()
+	resp, statusCode, err := prov.Chat(r.Context(), req, route.KeyValue, route.Channel.BaseURL)
+	duration := time.Since(start).Milliseconds()
+	if err != nil || statusCode >= 500 {
+		h.router.RecordFailure(route.Channel.ID, statusCode)
+		logging.Debug("auto.pin_failed",
+			logging.F("model", pin.Model),
+			logging.F("channel", route.Channel.Name),
+			logging.F("status", statusCode),
+			logging.F("error", err),
+		)
+		h.emitLog(r.Context(), tokenID, pin.Model, route, nil, duration, statusCode, true, h.clientIP(r))
+		return false
+	}
+	h.router.RecordSuccessLatency(route.Channel.ID, duration)
+	if h.sessions != nil {
+		h.sessions.Set(sessionIDFromReq(req), pin.Model, pin.Tier, route.Channel.ID)
+	}
+	w.Header().Set("X-llmRx-Session-Pinned", "true")
+	w.Header().Set("X-llmRx-Routed-Model", pin.Model)
+	w.Header().Set("X-llmRx-Auto-Tier", pin.Tier)
+	logging.Debug("auto.pin_hit",
+		logging.F("model", pin.Model),
+		logging.F("channel", route.Channel.Name),
+		logging.F("status", statusCode),
+		logging.F("duration_ms", duration),
+	)
+	h.emitLog(r.Context(), tokenID, pin.Model, route, &resp.Usage, duration, statusCode, false, h.clientIP(r))
+	writeJSON(w, resp)
+	return true
+}
+
 // handleStreamAutoCombo routes a streaming mode:auto combo request.
 // Classification and arm sampling are identical to the non-streaming
 // path; the first model that yields an upstream SSE channel streams
@@ -1060,6 +1145,20 @@ func (h *Handler) handleAutoCombo(w http.ResponseWriter, r *http.Request, req *p
 // the execution-layer work.
 func (h *Handler) handleStreamAutoCombo(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, combo model.TokenComboModel) {
 	text := lastUserText(req.Messages)
+
+	// Session affinity: a live pin routes straight to the pinned
+	// model without re-classifying. Stream failures drop the pin so
+	// the next turn re-decides.
+	sessionID := h.sessionIDFor(r, req)
+	if h.sessions != nil {
+		if pin, ok := h.sessions.Get(sessionID); ok && pin.Model != "" {
+			if h.streamAttemptPinned(w, r, req, combo, pin) {
+				return
+			}
+			h.sessions.Delete(sessionID)
+		}
+	}
+
 	sc := h.autoScorer.Classify(text)
 	tier := string(sc.Tier)
 
@@ -1089,6 +1188,9 @@ func (h *Handler) handleStreamAutoCombo(w http.ResponseWriter, r *http.Request, 
 		decision.Attempted = append(decision.Attempted, m)
 		decision.Routed = m
 		decision.Fallback = !isTierCandidate(combo, tier, m)
+		if h.sessions != nil {
+			h.sessions.Set(sessionID, m, tier, route.Channel.ID)
+		}
 		h.emitAutoDecision(r, decision)
 		h.setAutoHeaders(w, decision)
 		logging.Debug("combo.stream_auto.success",
@@ -1112,6 +1214,34 @@ func (h *Handler) handleStreamAutoCombo(w http.ResponseWriter, r *http.Request, 
 	} else {
 		writeError(w, http.StatusServiceUnavailable, "no channel matched for auto combo models", "no_channel")
 	}
+}
+
+// streamAttemptPinned streams one request through the pinned model.
+// Returns true when the request was fully handled. Any failure —
+// unroutable model, non-streaming channel, upstream error — is
+// reported by the caller deleting the pin and re-deciding.
+func (h *Handler) streamAttemptPinned(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, combo model.TokenComboModel, pin session.Pin) bool {
+	opts := router.RouteOptions{Text: lastUserText(req.Messages)}
+	opts.SkipBreaker = true
+	route, routeErr := h.router.RouteWith(r.Context(), pin.Model, opts)
+	if routeErr != nil {
+		return false
+	}
+	prov := h.providerFor(route.Channel.Protocol, true)
+	if _, ok := prov.(provider.StreamingProvider); !ok {
+		return false
+	}
+	w.Header().Set("X-llmRx-Session-Pinned", "true")
+	w.Header().Set("X-llmRx-Auto-Tier", pin.Tier)
+	logging.Debug("combo.stream_auto.pin_hit",
+		logging.F("model", pin.Model),
+		logging.F("channel", route.Channel.Name),
+	)
+	original := req.Model
+	req.Model = pin.Model
+	h.streamChatCompletions(w, r, req)
+	req.Model = original
+	return true
 }
 
 // autoAttemptOrder builds the attempt order for one auto request:
@@ -1164,6 +1294,72 @@ func containsString(xs []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// sessionIDFor derives the session key for one request, in
+// priority order:
+//
+//  1. the X-Session-ID header (explicit client control)
+//  2. the request's user field (OpenAI passthrough)
+//  3. a hash of (system prompt + first user message) — gives
+//     multi-turn affinity without any client cooperation
+//
+// Returns "" when sessions are not configured.
+func (h *Handler) sessionIDFor(r *http.Request, req *provider.ChatRequest) string {
+	if h.sessions == nil {
+		return ""
+	}
+	if id := strings.TrimSpace(r.Header.Get("X-Session-ID")); id != "" {
+		return "header:" + id
+	}
+	return sessionIDFromReq(req)
+}
+
+// sessionIDFromReq derives the session key from the request alone
+// (no header access): explicit user field, else content hash.
+func sessionIDFromReq(req *provider.ChatRequest) string {
+	if id := strings.TrimSpace(req.User); id != "" {
+		return "user:" + id
+	}
+	system, firstUser := firstTurnText(req.Messages)
+	return session.Hash(system, firstUser)
+}
+
+// firstTurnText extracts the system prompt and the first user
+// message for the session hash.
+func firstTurnText(msgs []provider.Message) (system, firstUser string) {
+	for _, m := range msgs {
+		switch m.Role {
+		case "system":
+			if system == "" {
+				system = contentString(m)
+			}
+		case "user":
+			if firstUser == "" {
+				firstUser = contentString(m)
+			}
+		}
+	}
+	return system, firstUser
+}
+
+// contentString renders a message's content (string or parts) as
+// plain text for hashing.
+func contentString(m provider.Message) string {
+	switch c := m.Content.(type) {
+	case string:
+		return c
+	case []provider.ContentPart:
+		var sb strings.Builder
+		for _, p := range c {
+			if p.Text != "" {
+				sb.WriteString(p.Text)
+			}
+		}
+		return sb.String()
+	default:
+		return ""
+	}
 }
 
 // tierCandidates returns the tier's model list in cost order, or

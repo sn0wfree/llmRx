@@ -161,6 +161,30 @@ latency_routing:
 	}
 }
 
+func TestLoad_SessionAffinityConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yml")
+	yaml := `
+server:
+  port: 9000
+
+session_affinity:
+  enabled: true
+  ttl_sec: 7200
+  max_entries: 5000
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Session.Enabled || cfg.Session.TTLSec != 7200 || cfg.Session.MaxEntries != 5000 {
+		t.Errorf("session affinity config: %+v", cfg.Session)
+	}
+}
+
 func TestLoad_LogstoreSynchronous(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yml")

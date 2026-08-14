@@ -52,9 +52,18 @@ type Handler struct {
 	// state endpoint. Wired from the api handler via SetAutoStats;
 	// nil renders the state endpoint without the stats block.
 	autoStats *auto.Stats
+	// sessions exposes the session-affinity pin table size for the
+	// state endpoint. Wired via SetSessions; nil renders without it.
+	sessions SessionCounter
 	// reloadNotifier broadcasts local config writes to other
 	// replicas (P12 M2 PG NOTIFY). nil = no-op.
 	reloadNotifier func()
+}
+
+// SessionCounter is the narrow slice of the session store the admin
+// state endpoint needs.
+type SessionCounter interface {
+	Count() int
 }
 
 // AlertReloader is the narrow contract the admin /reload handler
@@ -78,6 +87,10 @@ func (h *Handler) SetStore(st store.Store) { h.store = st }
 // SetAutoStats wires the auto-router decision counter accumulator
 // (owned by the api handler) into the state endpoint and /reload.
 func (h *Handler) SetAutoStats(s *auto.Stats) { h.autoStats = s }
+
+// SetSessions wires the session-affinity pin store into the state
+// endpoint (session count). nil hides the block.
+func (h *Handler) SetSessions(s SessionCounter) { h.sessions = s }
 
 // SetAlertManager lets main.go inject the alert manager for /reload.
 // Accepts the AlertReloader interface to keep the import graph
@@ -868,6 +881,10 @@ func (h *Handler) AutoRouterState(w http.ResponseWriter, r *http.Request) {
 	// Per-channel EWMA latency (ms) when the latency tracker is live.
 	if lt := h.router.LatencyTracker(); lt != nil {
 		out["latency_ms"] = lt.Snapshot()
+	}
+	// Live session-affinity pins when configured.
+	if h.sessions != nil {
+		out["sessions"] = h.sessions.Count()
 	}
 	writeJSON(w, http.StatusOK, out)
 }

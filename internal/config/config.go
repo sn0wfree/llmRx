@@ -18,6 +18,7 @@ type Config struct {
 	Providers    []ProviderConfig   `yaml:"providers"`
 	AutoRouter   AutoRouterConfig   `yaml:"auto_router"`
 	LatencyRoute LatencyRouteConfig `yaml:"latency_routing"`
+	Session      SessionConfig      `yaml:"session_affinity"`
 }
 
 type ServerConfig struct {
@@ -161,6 +162,17 @@ type LatencyRouteConfig struct {
 	// cost_latency_blend (defaults 0.7 / 0.3).
 	CostWeight    float64 `yaml:"cost_weight"`
 	LatencyWeight float64 `yaml:"latency_weight"`
+}
+
+// SessionConfig configures session affinity for mode:auto combos.
+// When enabled, multi-turn conversations are pinned to the model
+// that served the first turn (preserving upstream prompt caches).
+type SessionConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// TTLSec bounds how long a pin stays valid. Default 3600.
+	TTLSec int `yaml:"ttl_sec"`
+	// MaxEntries caps the pin table. Default 10000.
+	MaxEntries int `yaml:"max_entries"`
 }
 
 // AutoRouterConfig configures the mode:auto combos: the global
