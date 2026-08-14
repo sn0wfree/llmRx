@@ -8,15 +8,16 @@ import (
 )
 
 type Config struct {
-	Server     ServerConfig     `yaml:"server"`
-	Database   DatabaseConfig   `yaml:"database"`
-	Strategy   StrategyConfig   `yaml:"strategy"`
-	Tokens     []TokenConfig    `yaml:"tokens"`
-	Channels   []ChannelConfig  `yaml:"channels"`
-	Secrets    SecretsConfig    `yaml:"secrets"`
-	BYOK       BYOKConfig       `yaml:"byok"`
-	Providers  []ProviderConfig `yaml:"providers"`
-	AutoRouter AutoRouterConfig `yaml:"auto_router"`
+	Server       ServerConfig       `yaml:"server"`
+	Database     DatabaseConfig     `yaml:"database"`
+	Strategy     StrategyConfig     `yaml:"strategy"`
+	Tokens       []TokenConfig      `yaml:"tokens"`
+	Channels     []ChannelConfig    `yaml:"channels"`
+	Secrets      SecretsConfig      `yaml:"secrets"`
+	BYOK         BYOKConfig         `yaml:"byok"`
+	Providers    []ProviderConfig   `yaml:"providers"`
+	AutoRouter   AutoRouterConfig   `yaml:"auto_router"`
+	LatencyRoute LatencyRouteConfig `yaml:"latency_routing"`
 }
 
 type ServerConfig struct {
@@ -139,6 +140,27 @@ type ServerConfig struct {
 
 type StrategyConfig struct {
 	CostStrategy string `yaml:"cost_strategy"` // cheapest | fastest | balanced | weighted_random
+}
+
+// LatencyRouteConfig configures the latency-aware routing option:
+// a per-channel EWMA response-time tracker fed by real requests,
+// exposed to the routing strategies as `latency` and
+// `cost_latency_blend`.
+type LatencyRouteConfig struct {
+	// Enabled turns on latency-aware routing. When disabled the
+	// latency tracker still records (cheap) but no strategy uses
+	// the data.
+	Enabled bool `yaml:"enabled"`
+	// Alpha is the EWMA smoothing factor (0..1). Default 0.1.
+	Alpha float64 `yaml:"alpha"`
+	// Strategy is the cost strategy name to use when enabled:
+	// "latency" (EWMA only) or "cost_latency_blend" (default).
+	// When empty, "cost_latency_blend" is used.
+	Strategy string `yaml:"strategy"`
+	// CostWeight / LatencyWeight are the blend weights for
+	// cost_latency_blend (defaults 0.7 / 0.3).
+	CostWeight    float64 `yaml:"cost_weight"`
+	LatencyWeight float64 `yaml:"latency_weight"`
 }
 
 // AutoRouterConfig configures the mode:auto combos: the global

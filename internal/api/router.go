@@ -695,7 +695,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.router.RecordSuccess(route.Channel.ID)
+	h.router.RecordSuccessLatency(route.Channel.ID, duration)
 
 	// Agentic loop: if response has MCP tool calls, dispatch and re-invoke.
 	if h.mcpLoop != nil && resp != nil && len(resp.Choices) > 0 && len(resp.Choices[0].Message.ToolCalls) > 0 {
@@ -892,7 +892,7 @@ func (h *Handler) handleLoadBalanceCombo(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	h.router.RecordSuccess(route.Channel.ID)
+	h.router.RecordSuccessLatency(route.Channel.ID, duration)
 	logging.Debug("combo.upstream_success",
 		logging.F("model_requested", originalModel),
 		logging.F("model_actual", route.Channel.Models[0]),
@@ -941,7 +941,7 @@ func (h *Handler) handleSerialCombo(w http.ResponseWriter, r *http.Request, req 
 		}
 
 		// Success.
-		h.router.RecordSuccess(route.Channel.ID)
+		h.router.RecordSuccessLatency(route.Channel.ID, duration)
 		logging.Debug("combo.serial.success",
 			logging.F("model", modelName),
 			logging.F("channel", route.Channel.Name),
@@ -1015,7 +1015,7 @@ func (h *Handler) handleAutoCombo(w http.ResponseWriter, r *http.Request, req *p
 			continue
 		}
 
-		h.router.RecordSuccess(route.Channel.ID)
+		h.router.RecordSuccessLatency(route.Channel.ID, duration)
 		if isTierCandidate(combo, tier, m) {
 			h.router.RecordArmSuccess(auto.ArmKey(tier, m))
 		}
@@ -1440,7 +1440,7 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.router.RecordSuccess(route.Channel.ID)
+	h.router.RecordSuccessLatency(route.Channel.ID, duration)
 	h.emitLog(r.Context(), tokenID, req.Model, route, &resp.Usage, duration, statusCode, false, h.clientIP(r))
 	writeJSON(w, resp)
 }
@@ -1494,7 +1494,7 @@ func (h *Handler) ImageGenerations(w http.ResponseWriter, r *http.Request) {
 		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
 		return
 	}
-	h.router.RecordSuccess(route.Channel.ID)
+	h.router.RecordSuccessLatency(route.Channel.ID, duration)
 	var usage *provider.Usage
 	if resp.Usage != nil {
 		usage = resp.Usage
@@ -1554,7 +1554,7 @@ func (h *Handler) AudioSpeech(w http.ResponseWriter, r *http.Request) {
 		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
 		return
 	}
-	h.router.RecordSuccess(route.Channel.ID)
+	h.router.RecordSuccessLatency(route.Channel.ID, duration)
 	h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, false, h.clientIP(r))
 	format := req.ResponseFormat
 	if format == "" {
@@ -1638,7 +1638,7 @@ func (h *Handler) AudioTranscriptions(w http.ResponseWriter, r *http.Request) {
 		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
 		return
 	}
-	h.router.RecordSuccess(route.Channel.ID)
+	h.router.RecordSuccessLatency(route.Channel.ID, duration)
 	var usage *provider.Usage
 	if resp.Duration > 0 {
 		usage = &provider.Usage{TotalTokens: int(resp.Duration * 1000)}
@@ -1699,7 +1699,7 @@ func (h *Handler) Rerank(w http.ResponseWriter, r *http.Request) {
 		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
 		return
 	}
-	h.router.RecordSuccess(route.Channel.ID)
+	h.router.RecordSuccessLatency(route.Channel.ID, duration)
 	var usage *provider.Usage
 	if resp.Usage != nil {
 		usage = resp.Usage
@@ -2107,7 +2107,7 @@ final:
 	}
 	w.Write(donePayload)
 	flusher.Flush()
-	h.router.RecordSuccess(route.Channel.ID)
+	h.router.RecordSuccessLatency(route.Channel.ID, time.Since(start).Milliseconds())
 	if streamBuf != nil {
 		body := streamBuf.Bytes()
 		bodyCopy := make([]byte, len(body))

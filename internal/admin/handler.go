@@ -865,6 +865,10 @@ func (h *Handler) AutoRouterState(w http.ResponseWriter, r *http.Request) {
 	if h.autoStats != nil {
 		out["stats"] = h.autoStats.Snapshot()
 	}
+	// Per-channel EWMA latency (ms) when the latency tracker is live.
+	if lt := h.router.LatencyTracker(); lt != nil {
+		out["latency_ms"] = lt.Snapshot()
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 

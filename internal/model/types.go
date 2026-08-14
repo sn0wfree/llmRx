@@ -53,6 +53,8 @@ const (
 	StrategyFastest        CostStrategy = "fastest"
 	StrategyBalanced       CostStrategy = "balanced"
 	StrategyWeightedRandom CostStrategy = "weighted_random"
+	StrategyLatency        CostStrategy = "latency"
+	StrategyCostLatency    CostStrategy = "cost_latency_blend"
 )
 
 // ComboMode selects the routing strategy inside a token combo model.

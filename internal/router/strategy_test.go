@@ -85,8 +85,93 @@ func TestStrategyRegistryIncludesWeightedRandom(t *testing.T) {
 	if _, ok := strategyMap[model.StrategyWeightedRandom]; !ok {
 		t.Fatal("weighted_random strategy not registered")
 	}
-	got := strategyFromName(model.StrategyWeightedRandom)
+	got := strategyFromName(model.StrategyWeightedRandom, nil)
 	if got.Name() != string(model.StrategyWeightedRandom) {
 		t.Fatalf("strategyFromName: %v", got.Name())
+	}
+}
+
+// fakeLatencyProvider is a LatencyProvider with a fixed per-channel
+// latency map.
+type fakeLatencyProvider struct {
+	ms map[int64]float64
+}
+
+func (f *fakeLatencyProvider) LatencyMS(channelID int64) float64 { return f.ms[channelID] }
+
+func TestLatencyStrategy_SortsByEWMA(t *testing.T) {
+	s := LatencyStrategy{Provider: &fakeLatencyProvider{
+		ms: map[int64]float64{1: 500, 2: 100, 3: 300},
+	}}
+	chs := []*model.Channel{chWithPrice(1, 1), chWithPrice(2, 1), chWithPrice(3, 1)}
+	out := s.Sort(chs)
+	// Fastest (2:100ms) first, then 3:300ms, then 1:500ms.
+	want := []int64{2, 3, 1}
+	for i, id := range want {
+		if out[i].ID != id {
+			t.Fatalf("pos %d: want channel %d, got %d", i, id, out[i].ID)
+		}
+	}
+}
+
+func TestLatencyStrategy_UnknownChannelsTrail(t *testing.T) {
+	s := LatencyStrategy{Provider: &fakeLatencyProvider{
+		ms: map[int64]float64{1: 500, 2: 100},
+	}}
+	chs := []*model.Channel{chWithPrice(3, 1), chWithPrice(1, 1), chWithPrice(2, 1)}
+	out := s.Sort(chs)
+	// Known latencies sorted first; unknown (3) keeps input order at the end.
+	if out[0].ID != 2 || out[1].ID != 1 || out[2].ID != 3 {
+		t.Fatalf("want [2,1,3], got [%d,%d,%d]", out[0].ID, out[1].ID, out[2].ID)
+	}
+}
+
+func TestLatencyStrategy_NilProviderNoop(t *testing.T) {
+	s := LatencyStrategy{}
+	chs := []*model.Channel{chWithPrice(2, 1), chWithPrice(1, 1)}
+	out := s.Sort(chs)
+	if len(out) != 2 || out[0].ID != 2 || out[1].ID != 1 {
+		t.Fatalf("nil provider must preserve input order, got %d,%d", out[0].ID, out[1].ID)
+	}
+}
+
+func TestCostLatencyBlend_SortsByBlendedScore(t *testing.T) {
+	s := CostLatencyBlendStrategy{
+		Provider:      &fakeLatencyProvider{ms: map[int64]float64{1: 100, 2: 900}},
+		CostWeight:    0.7,
+		LatencyWeight: 0.3,
+	}
+	// ch1: price=1, lat=100ms -> score = 0.7*(1/5) + 0.3*(100/900) = 0.14 + 0.033 = 0.173
+	// ch2: price=5, lat=900ms -> score = 0.7*(5/5) + 0.3*(900/900) = 0.7 + 0.3 = 1.0
+	// ch1 wins.
+	chs := []*model.Channel{chWithPrice(2, 5), chWithPrice(1, 1)}
+	out := s.Sort(chs)
+	if out[0].ID != 1 {
+		t.Fatalf("blend: want cheap+fast channel first, got %d", out[0].ID)
+	}
+}
+
+func TestCostLatencyBlend_DefaultWeights(t *testing.T) {
+	s := CostLatencyBlendStrategy{
+		Provider: &fakeLatencyProvider{ms: map[int64]float64{1: 100, 2: 900}},
+	}
+	// Zero weights -> default 0.7/0.3. Same expectation as above.
+	chs := []*model.Channel{chWithPrice(2, 5), chWithPrice(1, 1)}
+	out := s.Sort(chs)
+	if out[0].ID != 1 {
+		t.Fatalf("default weights: want cheap+fast channel first, got %d", out[0].ID)
+	}
+}
+
+func TestStrategyFromNameLatencyStrategies(t *testing.T) {
+	lp := &fakeLatencyProvider{ms: map[int64]float64{1: 50}}
+	if s := strategyFromName(model.StrategyLatency, lp); s.Name() != string(model.StrategyLatency) {
+		t.Fatalf("latency name mismatch: %v", s.Name())
+	}
+	if s := strategyFromName(model.StrategyCostLatency, lp); s.Name() != string(model.StrategyCostLatency) {
+		t.Fatalf("blend name mismatch: %v", s.Name())
+	}
+	if s := strategyFromName(model.StrategyCheapest, lp); s.Name() != string(model.StrategyCheapest) {
+		t.Fatalf("cheapest must remain registered: %v", s.Name())
 	}
 }

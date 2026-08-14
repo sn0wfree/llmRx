@@ -296,6 +296,28 @@ func main() {
 		rt.SetCostStrategy(s)
 		eng.SetStrategy(model.CostStrategy(s))
 	}
+	// Latency-aware routing (optional, default off). When enabled
+	// the per-channel EWMA tracker overrides the default alpha and
+	// the cost strategy switches to the latency variant so slow
+	// channels rank below fast ones.
+	if cfg.LatencyRoute.Enabled {
+		eng.SetLatencyAlpha(cfg.LatencyRoute.Alpha)
+		latStrat := cfg.LatencyRoute.Strategy
+		if latStrat == "" {
+			latStrat = "cost_latency_blend"
+		}
+		if cfg.LatencyRoute.CostWeight > 0 || cfg.LatencyRoute.LatencyWeight > 0 {
+			eng.SetBlendWeights(cfg.LatencyRoute.CostWeight, cfg.LatencyRoute.LatencyWeight)
+		}
+		rt.SetCostStrategy(latStrat)
+		eng.SetStrategy(model.CostStrategy(latStrat))
+		logging.Info("latency_routing: enabled",
+			logging.F("strategy", latStrat),
+			logging.F("alpha", cfg.LatencyRoute.Alpha),
+			logging.F("cost_weight", cfg.LatencyRoute.CostWeight),
+			logging.F("latency_weight", cfg.LatencyRoute.LatencyWeight),
+		)
+	}
 	// 2) DB override: any admin changes persisted to
 	//    runtime_settings take precedence over the YAML seeds.
 	if raw, err := st.GetRuntimeSettings(); err != nil {

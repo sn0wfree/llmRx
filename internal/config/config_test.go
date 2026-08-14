@@ -128,6 +128,37 @@ func TestLoad_AutoRouterDefaults(t *testing.T) {
 	if cfg.AutoRouter.LLMClassifier.Enabled {
 		t.Error("llm classifier should default to disabled")
 	}
+	if cfg.LatencyRoute.Enabled {
+		t.Error("latency_routing should default to disabled")
+	}
+}
+
+func TestLoad_LatencyRoutingConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yml")
+	yaml := `
+server:
+  port: 9000
+
+latency_routing:
+  enabled: true
+  alpha: 0.25
+  strategy: latency
+  cost_weight: 0.6
+  latency_weight: 0.4
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	lr := cfg.LatencyRoute
+	if !lr.Enabled || lr.Alpha != 0.25 || lr.Strategy != "latency" ||
+		lr.CostWeight != 0.6 || lr.LatencyWeight != 0.4 {
+		t.Errorf("latency routing config: %+v", lr)
+	}
 }
 
 func TestLoad_LogstoreSynchronous(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/intent"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/pool"
+	"github.com/sn0wfree/llmRx/internal/router/latency"
 	"github.com/sn0wfree/llmRx/internal/router/thompson"
 	"github.com/sn0wfree/llmRx/internal/store"
 )
@@ -26,6 +27,7 @@ type RouterEngine struct {
 	store         store.Store
 	extraChannels []func() []*model.Channel // BYOK hook (Phase 1.5 reserved)
 	trafficObs    []TrafficObserver         // optional real-traffic observers (prober etc.)
+	latency       *latency.Tracker          // per-channel EWMA latency tracker
 }
 
 // TrafficObserver is the pluggable hook RouterEngine invokes on
@@ -68,7 +70,8 @@ type RouteResult struct {
 // circuit-breaker config and channels always reflect the latest DB
 // state without restarting.
 func New(st store.Store, pool *pool.ChannelPool) *RouterEngine {
-	return &RouterEngine{
+	latencyTr := latency.New(latency.DefaultAlpha)
+	r := &RouterEngine{
 		static:   NewStaticRouter(st),
 		breaker:  NewCircuitBreaker(st),
 		cost:     NewCostRouter(),
@@ -76,7 +79,12 @@ func New(st store.Store, pool *pool.ChannelPool) *RouterEngine {
 		intent:   intent.Nop{},
 		pool:     pool,
 		store:    st,
+		latency:  latencyTr,
 	}
+	// Wire latency tracker into the cost router so latency-aware
+	// strategies can rank candidates by EWMA response time.
+	r.cost.SetLatencyProvider(latencyTr)
+	return r
 }
 
 // SetIntentClassifier injects an L4 classifier. Pass intent.Nop{}
@@ -132,6 +140,9 @@ func (e *RouterEngine) ReloadAllChannels() {
 	e.breaker.reloadAll()
 	e.thompson.ResetAll()
 	e.static.Reload()
+	if e.latency != nil {
+		e.latency.Reset()
+	}
 }
 
 // SetStrategy swaps the cost router's strategy at runtime. The
@@ -203,6 +214,15 @@ func (e *RouterEngine) RecordSuccess(channelID int64) {
 	}
 }
 
+// RecordSuccessLatency records a successful call together with its
+// measured duration, feeding both the breaker/Thompson posteriors
+// and the per-channel EWMA latency tracker. Prefer this over
+// RecordSuccess when the api layer has the duration at hand.
+func (e *RouterEngine) RecordSuccessLatency(channelID int64, durationMs int64) {
+	e.RecordSuccess(channelID)
+	e.RecordLatency(channelID, durationMs)
+}
+
 // RecordFailure records a failed real call. status is the upstream
 // HTTP status (or a synthesized one like 502/504 for network and
 // stream failures); the circuit breaker buckets by it (401/404 hard
@@ -223,6 +243,34 @@ func (e *RouterEngine) RecordArmSuccess(key string) { e.thompson.RecordArmSucces
 // RecordArmFailure updates the auto-router's (tier, model) quality
 // arm after a failed request.
 func (e *RouterEngine) RecordArmFailure(key string) { e.thompson.RecordArmFailure(key) }
+
+// RecordLatency updates the per-channel EWMA response time. Called
+// by the api layer after each successful upstream call so the
+// latency-aware routing strategies have fresh data.
+func (e *RouterEngine) RecordLatency(channelID int64, durationMs int64) {
+	if e.latency != nil {
+		e.latency.Record(channelID, float64(durationMs))
+	}
+}
+
+// LatencyTracker exposes the underlying tracker for the admin API
+// and tests.
+func (e *RouterEngine) LatencyTracker() *latency.Tracker { return e.latency }
+
+// SetLatencyAlpha overrides the EWMA smoothing factor. Called at
+// startup from config (latency_routing.alpha); 0 keeps the default.
+func (e *RouterEngine) SetLatencyAlpha(alpha float64) {
+	if e.latency != nil {
+		e.latency.SetAlpha(alpha)
+	}
+}
+
+// SetBlendWeights overrides the cost/latency weights for the
+// cost_latency_blend strategy (latency_routing.cost_weight /
+// latency_weight). Zero values keep the strategy defaults.
+func (e *RouterEngine) SetBlendWeights(cost, latency float64) {
+	e.cost.SetBlendWeights(cost, latency)
+}
 
 // Thompson returns the underlying sampler (for the admin API and
 // tests).
