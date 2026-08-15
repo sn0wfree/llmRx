@@ -356,16 +356,30 @@ def build_context(msgs, sums, start_pos, end_pos):
 
 
 def find_actual_reply(msgs, sums, sample_pos):
-    """(model, reply_text) of the first assistant text after sample_pos."""
+    """(model, reply_text) of the assistant's FULL textual reply for
+    the turn starting at sample_pos.
+
+    Equity fix (see docs/EVALUATION-METHODOLOGY.md §2.2 #3): merge
+    ALL assistant text from after the sample prompt until the next
+    user message, so the historical 'actual' reply is the complete
+    turn — not just the first intermediate sentence (agent turns are
+    mostly tool calls with short text interludes).
+    """
+    texts = []
+    model = None
     for msg in msgs[sample_pos + 1:]:
         if msg["role"] == "assistant":
+            if model is None:
+                model = msg.get("model", "")
             text = sums.get(msg["id"], {}).get("text", "")
             if text:
-                return msg.get("model", ""), sanitize_text(text)
+                texts.append(text)
             continue
         if msg["role"] == "user":
             break
-    return None, None
+    if not texts:
+        return None, None
+    return model, sanitize_text("\n".join(texts))
 
 
 # ---------------------------------------------------------------------------

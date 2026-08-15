@@ -3,24 +3,29 @@
 judge_samples.py — Label training samples using LLM-as-judge.
 
 Usage:
+    # Independent judge (default): deepseek-v4-flash judges the others
     python scripts/learned-router/judge_samples.py \
         --input data/learned-router/samples.jsonl \
         --output data/learned-router/labels.jsonl \
         --api-base http://localhost:8787/v1 \
         --api-key sk-xxx \
         --candidates MiniMax-M3 mimo-v2.5 deepseek-v4-flash \
-        --cross-judge
+        --judge deepseek-v4-flash \
+        --mode independent
+
+    # Legacy cross-judge (each model judges the others)
+    ... --mode cross
 
 Each sample carries a FULL conversation context (rebuilt from
-opencode history, bounded by compaction epochs). Candidate models
-receive the whole context — not just the last prompt — so they are
-judged on a realistic agentic scene.
+opencode history, bounded by compaction epochs). Candidates receive
+the whole context — not just the last prompt.
 
-The historical actual reply (the model that really answered at the
-time) is included as a pseudo-candidate named "actual", letting us
-measure whether history picked the right model:
-  consistent   best == model_used   (history's choice was optimal)
-  history_wins best == "actual"     (history's reply is still best)
+Methodology (docs/EVALUATION-METHODOLOGY.md):
+  - Independent judge (never a candidate) avoids self-enhancement
+  - Dual-track: pointwise scoring (1-5 x 3 dims) + pairwise votes;
+    best is only 'high confidence' when both tracks agree
+  - The historical actual reply is a pseudo-candidate "actual"
+    (full merged turn, not just the first sentence)
 """
 import argparse
 import json
@@ -415,14 +420,238 @@ def judge_sample_cross(sample: dict, api_base: str, api_key: str,
 
 
 # ---------------------------------------------------------------------------
+# Independent judge (dual-track: pointwise scores + pairwise votes)
+# ---------------------------------------------------------------------------
+
+SCORE_PROMPT = """You are a quality evaluator for LLM assistant replies in a real coding-agent session.
+
+=== Conversation Context (last 60 messages, compressed) ===
+{context_block}
+
+=== User Prompt (last message) ===
+{prompt}
+
+=== Candidate Replies ===
+{responses_block}
+
+First give a brief reason for your evaluation (2-3 sentences max).
+Then rate EACH reply on three dimensions (1-5):
+
+1. correctness:  Is the reply accurate and grounded in the context?
+2. completeness: Does it fully address the user's request?
+3. contextual_fit: Does it correctly use the conversation history and tool outputs?
+
+IMPORTANT: Concise replies are NOT penalized; verbosity without added value is NOT rewarded.
+
+Respond with ONLY a JSON object after your brief reason:
+{{"scores": {{"<model_name or actual>": {{"correctness": <1-5>, "completeness": <1-5>, "contextual_fit": <1-5>}}, ...}}}}
+
+No other text."""
+
+
+def judge_score_all(sample: dict, responses: dict, judge_model: str,
+                    api_base: str, api_key: str, timeout: int = 300,
+                    sleep_s: float = 0.3) -> Optional[dict]:
+    """Pointwise track: judge scores every candidate on 3 dims."""
+    ctx = sample_messages(sample)
+    parts = []
+    for m in ctx:
+        role = m.get("role", "")
+        if "tool_calls" in m:
+            parts.append(f"[assistant tool_calls] {' | '.join(c['function']['arguments'][:150] for c in m['tool_calls'])[:300]}")
+        elif role == "tool":
+            parts.append(f"[tool result] {(m.get('content') or '')[:150]}")
+        else:
+            parts.append(f"[{role}] {(m.get('content') or '')[:250]}")
+    context_block = "\n".join(parts[-60:])
+
+    rparts = []
+    for i, (model, resp) in enumerate(responses.items(), 1):
+        label = "actual (historical reply)" if model == "actual" else model
+        truncated = resp[:700] + ("..." if len(resp) > 700 else "")
+        rparts.append(f"Model {i} ({label}):\n{truncated}")
+
+    prompt = SCORE_PROMPT.format(
+        context_block=context_block,
+        prompt=sample.get("prompt", "")[:800],
+        responses_block="\n\n".join(rparts),
+    )
+    result = call_llm(
+        api_base, api_key, judge_model,
+        [{"role": "user", "content": prompt}],
+        temperature=0.1, timeout=timeout,
+    )
+    if sleep_s > 0:
+        time.sleep(sleep_s)
+    if not result:
+        return None
+    parsed = parse_judge_response(result)
+    if not parsed or "scores" not in parsed:
+        return None
+    return parsed["scores"]
+
+
+def judge_pairwise(sample: dict, responses: dict, judge_model: str,
+                   api_base: str, api_key: str, timeout: int = 300,
+                   swap: bool = False, sleep_s: float = 0.3) -> dict:
+    """Pairwise track: judge picks a winner per pair (optional swap)."""
+    votes = {}
+    votes_known = set(responses.keys())
+    models = list(responses.keys())
+    ctx = sample_messages(sample)
+    parts = []
+    for m in ctx:
+        role = m.get("role", "")
+        if "tool_calls" in m:
+            parts.append(f"[assistant tool_calls] {' | '.join(c['function']['arguments'][:150] for c in m['tool_calls'])[:300]}")
+        elif role == "tool":
+            parts.append(f"[tool result] {(m.get('content') or '')[:150]}")
+        else:
+            parts.append(f"[{role}] {(m.get('content') or '')[:250]}")
+    context_block = "\n".join(parts[-60:])
+
+    for i in range(len(models)):
+        for j in range(i + 1, len(models)):
+            m_a, m_b = models[i], models[j]
+            pairs = [(m_a, m_b)]
+            if swap:
+                pairs.append((m_b, m_a))
+            for (x, y) in pairs:
+                label_x = "actual (historical reply)" if x == "actual" else x
+                label_y = "actual (historical reply)" if y == "actual" else y
+                judge_prompt = CROSS_JUDGE_PROMPT.format(
+                    context_block=context_block,
+                    prompt=sample.get("prompt", "")[:800],
+                    model_a=label_x,
+                    response_a=responses[x][:500],
+                    model_b=label_y,
+                    response_b=responses[y][:500],
+                )
+                result = call_llm(
+                    api_base, api_key, judge_model,
+                    [{"role": "user", "content": judge_prompt}],
+                    temperature=0.1, timeout=timeout,
+                )
+                if result:
+                    parsed = parse_judge_response(result)
+                    if parsed and "winner" in parsed and parsed["winner"] in votes_known:
+                        votes[parsed["winner"]] = votes.get(parsed["winner"], 0) + 1
+                if sleep_s > 0:
+                    time.sleep(sleep_s)
+    return votes
+
+
+def normalize_score_keys(scores: dict, known: set) -> dict:
+    """Map judge score keys back to candidate names.
+
+    Judges sometimes key scores as 'MiniMax-M3' but also as
+    'Model 1 (MiniMax-M3)' / 'Model 1' / 'actual (historical
+    reply)'. Normalize to the known candidate names.
+    """
+    out = {}
+    for k, v in scores.items():
+        match = None
+        if k in known:
+            match = k
+        else:
+            for name in known:
+                if name in k or k in name:
+                    match = name
+                    break
+        if match:
+            out[match] = v
+    return out
+
+
+def judge_sample_independent(sample: dict, api_base: str, api_key: str,
+                             candidate_models: list, judge_model: str,
+                             timeout: int = 300, sample_workers: int = 3,
+                             include_actual: bool = True, swap: bool = False,
+                             sleep_s: float = 0.3) -> Optional[dict]:
+    """Dual-track independent judging (docs/EVALUATION-METHODOLOGY.md)."""
+    model_used = sample["model_used"]
+    # Judge never participates as a candidate (self-enhancement bias).
+    candidates = [m for m in candidate_models if m != judge_model]
+    candidates = list(dict.fromkeys(candidates + [model_used]))
+    responses = get_candidate_responses(
+        sample, api_base, api_key, candidates, timeout, sample_workers,
+    )
+    if include_actual:
+        responses = responses_with_actual(responses, sample)
+
+    if len(responses) < 2:
+        return {
+            "prompt": sample["prompt"],
+            "best_model": model_used,
+            "best_score": model_used,
+            "best_vote": model_used,
+            "model_used": model_used,
+            "consistent": True,
+            "history_wins": True,
+            "confidence": "low",
+            "scores": {},
+            "votes": {},
+            "judge_model": judge_model,
+            "candidate_count": len(responses),
+            "fallback": True,
+        }
+
+    # Track 1: pointwise scores
+    scores = judge_score_all(sample, responses, judge_model,
+                             api_base, api_key, timeout, sleep_s)
+    if scores:
+        scores = normalize_score_keys(scores, set(responses.keys()))
+    # Track 2: pairwise votes
+    votes = judge_pairwise(sample, responses, judge_model,
+                           api_base, api_key, timeout, swap, sleep_s)
+
+    score_means = {}
+    if scores:
+        for m, dims in scores.items():
+            vals = [v for v in dims.values() if isinstance(v, (int, float))]
+            if vals:
+                score_means[m] = sum(vals) / len(vals)
+    best_score = max(score_means, key=score_means.get) if score_means else None
+
+    best_vote = None
+    if votes:
+        max_votes = max(votes.values())
+        winners = [m for m, v in votes.items() if v == max_votes]
+        best_vote = winners[0] if len(winners) == 1 else "tie"
+
+    if best_score is not None and best_vote is not None and best_score == best_vote:
+        best = best_score
+        confidence = "high"
+    else:
+        best = "conflict"
+        confidence = "low"
+
+    return {
+        "prompt": sample["prompt"],
+        "best_model": best,
+        "best_score": best_score,
+        "best_vote": best_vote,
+        "model_used": model_used,
+        "consistent": best == model_used,
+        "history_wins": best == "actual",
+        "confidence": confidence,
+        "scores": scores or {},
+        "votes": votes,
+        "judge_model": judge_model,
+        "candidate_count": len(responses),
+        "fallback": False,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 
 def run_judge(input_path: str, output_path: str, api_base: str, api_key: str,
               judge_model: str, candidate_models: list, max_samples: int = 0,
-              timeout: int = 300, cross_judge: bool = False,
-              sample_workers: int = 3, sleep_s: float = 0.5,
-              no_actual: bool = False, resume: bool = False):
+              timeout: int = 300, mode: str = "independent",
+              sample_workers: int = 3, sleep_s: float = 0.3,
+              no_actual: bool = False, swap: bool = False, resume: bool = False):
     samples = []
     with open(input_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -432,9 +661,11 @@ def run_judge(input_path: str, output_path: str, api_base: str, api_key: str,
         samples = samples[:max_samples]
 
     print(f"Loaded {len(samples)} samples")
-    print(f"Mode: {'cross-judge' if cross_judge else 'single-judge (' + judge_model + ')'}")
+    print(f"Mode: {mode} (judge={judge_model})" if mode == "independent"
+          else f"Mode: cross-judge")
     print(f"Candidates: {candidate_models}")
     print(f"Include 'actual' pseudo-candidate: {not no_actual}")
+    print(f"Position swap: {swap}")
     print(f"Sample-internal concurrency: {sample_workers}")
 
     # Resume support: skip samples already labeled (match by prompt hash)
@@ -455,7 +686,7 @@ def run_judge(input_path: str, output_path: str, api_base: str, api_key: str,
     labels = []
     success = 0
     fail = 0
-    ties = 0
+    conflicts = 0
     skipped = 0
     start_t = time.time()
 
@@ -464,32 +695,33 @@ def run_judge(input_path: str, output_path: str, api_base: str, api_key: str,
             if sample.get("prompt") in done_prompts:
                 skipped += 1
                 continue
-            if cross_judge:
+            if mode == "cross":
                 label = judge_sample_cross(
                     sample, api_base, api_key, candidate_models,
                     timeout, sample_workers, not no_actual, sleep_s,
                 )
             else:
-                label = judge_sample(
+                label = judge_sample_independent(
                     sample, api_base, api_key, candidate_models,
                     judge_model, timeout, sample_workers, not no_actual,
+                    swap, sleep_s,
                 )
             if label:
                 f.write(json.dumps(label, ensure_ascii=False) + "\n")
                 f.flush()
                 labels.append(label)
                 success += 1
-                if label.get("best_model") == "tie":
-                    ties += 1
+                if label.get("best_model") == "conflict":
+                    conflicts += 1
             else:
                 fail += 1
 
             if (i + 1) % 5 == 0:
                 elapsed = time.time() - start_t
                 print(f"  [{i+1}/{len(samples)}] success={success} fail={fail} "
-                      f"ties={ties} elapsed={elapsed:.0f}s")
+                      f"conflicts={conflicts} elapsed={elapsed:.0f}s")
 
-    print(f"\nDone: success={success}, fail={fail}, ties={ties}, skipped={skipped}")
+    print(f"\nDone: success={success}, fail={fail}, conflicts={conflicts}, skipped={skipped}")
     print(f"Output: {output_path}")
 
     if labels:
@@ -503,9 +735,11 @@ def run_judge(input_path: str, output_path: str, api_base: str, api_key: str,
 
         consistent = sum(1 for l in labels if l.get("consistent"))
         history_wins = sum(1 for l in labels if l.get("history_wins"))
+        high_conf = sum(1 for l in labels if l.get("confidence") == "high")
         n = len(labels)
         print(f"\n历史一致率 (best == model_used): {consistent}/{n} = {100*consistent/n:.1f}%")
         print(f"历史胜出率 (best == actual):      {history_wins}/{n} = {100*history_wins/n:.1f}%")
+        print(f"高置信占比 (双轨一致):            {high_conf}/{n} = {100*high_conf/n:.1f}%")
 
 
 def main():
@@ -514,30 +748,37 @@ def main():
     parser.add_argument("--output", required=True, help="Output labels.jsonl")
     parser.add_argument("--api-base", default="http://localhost:8787/v1")
     parser.add_argument("--api-key", default="sk-placeholder")
-    parser.add_argument("--judge", default="MiniMax-M3",
-                        help="Judge model (ignored with --cross-judge)")
+    parser.add_argument("--judge", default="deepseek-v4-flash",
+                        help="Independent judge model (mode=independent)")
     parser.add_argument("--candidates", nargs="+",
                         default=["MiniMax-M3", "mimo-v2.5", "deepseek-v4-flash"])
+    parser.add_argument("--mode", choices=["independent", "cross"],
+                        default="independent",
+                        help="independent (default) or legacy cross-judge")
     parser.add_argument("--cross-judge", action="store_true",
-                        help="Each model judges the others")
+                        help="Shorthand for --mode cross")
     parser.add_argument("--max-samples", type=int, default=0,
                         help="Process only first N samples (0=all)")
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--sample-workers", type=int, default=3,
                         help="Concurrent calls within one sample (default 3)")
-    parser.add_argument("--sleep", type=float, default=0.5,
+    parser.add_argument("--sleep", type=float, default=0.3,
                         help="Sleep between judge calls (rate control)")
     parser.add_argument("--no-actual", action="store_true",
                         help="Exclude the historical 'actual' pseudo-candidate")
+    parser.add_argument("--swap", action="store_true",
+                        help="Position swap in pairwise track (calibration only)")
     parser.add_argument("--resume", action="store_true",
                         help="Append and skip already-labeled samples")
     args = parser.parse_args()
 
+    mode = "cross" if args.cross_judge else args.mode
+
     run_judge(
         args.input, args.output, args.api_base, args.api_key,
         args.judge, args.candidates, args.max_samples,
-        args.timeout, args.cross_judge, args.sample_workers,
-        args.sleep, args.no_actual, args.resume,
+        args.timeout, mode, args.sample_workers,
+        args.sleep, args.no_actual, args.swap, args.resume,
     )
 
 
