@@ -308,6 +308,7 @@ def judge_cross_one(sample: dict, responses: dict, judge_model: str,
                     sleep_s: float = 0.5) -> dict:
     """One model judges all pairwise comparisons."""
     votes = {}
+    votes_known = set(responses.keys())
     models = list(responses.keys())
     ctx = sample_messages(sample)
     parts = []
@@ -343,7 +344,11 @@ def judge_cross_one(sample: dict, responses: dict, judge_model: str,
                 parsed = parse_judge_response(result)
                 if parsed and "winner" in parsed:
                     w = parsed["winner"]
-                    votes[w] = votes.get(w, 0) + 1
+                    # Only accept winners that match a known candidate
+                    # (model name or "actual"); judges sometimes emit
+                    # "Response A" style labels we must discard.
+                    if w in votes_known:
+                        votes[w] = votes.get(w, 0) + 1
             if sleep_s > 0:
                 time.sleep(sleep_s)
     return votes
