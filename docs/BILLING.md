@@ -82,8 +82,57 @@ curl -X POST http://localhost:8787/api/v1/register \
 - 用户专属 token 绑定专属 plan；用户只能看到自己的 plan（/api/v1/me）
 - RoleUser 不获得 admin 管理权限（仍为 viewer）
 
-## 7. 后续可扩展
+## 7. 计费升级：model_costs 费率表 + 用户用量统计
+
+> 状态：**已实现** (2026-08-15)
+> 设计：`model_costs` 表是**唯一计费源**（channel 价格不再参与）；多维价格 + 每用户用量统计
+
+### 7.1 费率表（model_costs）
+
+每模型一行的价格表（单位：每 1M token；image 按张）：
+
+| 字段 | 含义 |
+|---|---|
+| `input_price_per_1m` / `output_price_per_1m` | 基础输入/输出价 |
+| `cache_read_price_per_1m` | 缓存命中输入价（上游 prompt cache **和**响应缓存命中都用它） |
+| `cache_write_price_per_1m` | 缓存写入价（0 = 按 input 计） |
+| `reasoning_price_per_1m` | 推理 token 附加价（0 = 按 output 计） |
+| `image_price` | 每张输入图（0 = 免费） |
+| `input/output_price_per_1m_above_128k` / `_above_200k` | 长上下文分段价 |
+
+- **更新**：Admin UI `/admin/model-costs`（表格内联编辑 + 新增 + 删除）+ "从目录导入"
+  按钮；API `GET/PUT/DELETE /admin/api/v1/model-costs`、`POST .../model-costs/import`
+- **启动播种**：表为空时从 modelmeta 目录自动导入（幂等，不覆盖手工改价）
+- **未定价模型 fail-closed**：请求在调上游前返回 `422 model_not_priced`，
+  绝不会白嫖上游
+- 内存缓存 `internal/modelcost`，admin 改价后自动 reload
+
+### 7.2 计费公式
+
+```
+cost = 分段计价(prompt_uncached, base/128k/200k input)
+     + cached/1M × cache_read
+     + 分段计价(completion − reasoning, base/128k/200k output)
+     + reasoning/1M × reasoning_price
+     + images × image_price
+```
+
+- **响应缓存命中现在也计费**：整段 prompt 按 cache_read 价计费 + 输出价，
+  计入日志（`cache_hit=true`）与 spend
+- `reasoning_tokens` 从上游 usage 捕获（DeepSeek/GLM thinking 场景）
+- `/v1/models?details=true` 展示费率表价格（缺省回退 modelmeta）
+
+### 7.3 每用户用量统计
+
+- `tokens.user_id` 启动时按 `token.name == username` 回填，归属到用户
+- **Admin**：`/admin/usage` 所有用户聚合（请求/token/成本/缓存命中）；
+  点入单用户看每日趋势 + 按模型分布 + 请求明细 + CSV 导出
+  （`/admin/usage/{id}/export.csv`）
+- **用户自助**：`/admin/me` 现含用量统计（总量卡片、趋势图、按模型表、导出 CSV）
+- 日志新列：`reasoning_tokens`、`cache_hit`（读取时自动迁移旧日文件）
+
+## 8. 后续可扩展
 
 - 支付网关自动发码（支付宝/Stripe 回调）
-- 自助创建多个 token / 查看用量明细
+- 自助创建多个 token
 - 充值码分级（不同档位不同 markup）
