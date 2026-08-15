@@ -25,8 +25,8 @@ func TestClientIP_DefaultIgnoresProxyHeaders(t *testing.T) {
 	r.Header.Set("X-Forwarded-For", "10.0.0.1")
 	r.Header.Set("X-Real-IP", "10.0.0.2")
 
-	if got := h.clientIP(r); got != "203.0.113.10:54321" {
-		t.Fatalf("default clientIP = %q, want %q (no proxy trust)", got, r.RemoteAddr)
+	if got := h.clientIP(r); got != "203.0.113.10" {
+		t.Fatalf("default clientIP = %q, want %q (no proxy trust, port stripped)", got, "203.0.113.10")
 	}
 }
 
@@ -38,8 +38,8 @@ func TestClientIP_TrustsProxyHeadersFromUntrustedPeer(t *testing.T) {
 	r.RemoteAddr = "203.0.113.10:54321" // outside trusted CIDR
 	r.Header.Set("X-Forwarded-For", "10.0.0.1")
 
-	if got := h.clientIP(r); got != "203.0.113.10:54321" {
-		t.Fatalf("clientIP from untrusted peer = %q, want %q (header must be ignored)", got, r.RemoteAddr)
+	if got := h.clientIP(r); got != "203.0.113.10" {
+		t.Fatalf("clientIP from untrusted peer = %q, want %q (header must be ignored, port stripped)", got, "203.0.113.10")
 	}
 }
 

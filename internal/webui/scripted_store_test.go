@@ -30,6 +30,7 @@ type ScriptedStore struct {
 	WipeKeysFunc               func() (int64, error)
 	GetTokenFunc               func(key string) (*model.Token, error)
 	GetTokenByIDFunc           func(id int64) (*model.Token, error)
+	GetTokenByNameFunc         func(name string) (*model.Token, error)
 	GetTokensFunc              func() ([]model.Token, error)
 	CreateTokenFunc            func(t *model.Token) error
 	UpdateTokenFunc            func(t *model.Token) error
@@ -189,6 +190,13 @@ func (s *ScriptedStore) GetTokenByID(id int64) (*model.Token, error) {
 		return s.GetTokenByIDFunc(id)
 	}
 	return s.underlying.GetTokenByID(id)
+}
+
+func (s *ScriptedStore) GetTokenByName(name string) (*model.Token, error) {
+	if s.GetTokenByNameFunc != nil {
+		return s.GetTokenByNameFunc(name)
+	}
+	return s.underlying.GetTokenByName(name)
 }
 func (s *ScriptedStore) GetTokens() ([]model.Token, error) {
 	if s.GetTokensFunc != nil {

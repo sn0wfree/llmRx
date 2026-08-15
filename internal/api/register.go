@@ -55,6 +55,29 @@ func (h *Handler) SetRegisterLimit(limit int, win time.Duration) {
 // after registration creates a new token).
 func (h *Handler) SetTokenReloader(fn func() error) { h.tokenReload = fn }
 
+// SetRedeemLimit replaces the per-IP top-up throttle (tests /
+// operators). limit<=0 disables throttling.
+func (h *Handler) SetRedeemLimit(limit int, win time.Duration) {
+	if limit <= 0 {
+		h.redeemLimiter = nil
+		return
+	}
+	h.redeemLimiter = newRegisterLimiter(limit, win)
+}
+
+// isSecureRequest returns true when the request arrives over TLS
+// (direct or via a trusted reverse proxy that sets X-Forwarded-Proto).
+func (h *Handler) isSecureRequest(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if h.cfg != nil && h.cfg.Server.TrustProxyHeaders &&
+		r.Header.Get("X-Forwarded-Proto") == "https" {
+		return true
+	}
+	return false
+}
+
 func (l *registerLimiter) allow(ip string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -116,6 +139,16 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	if body.Username == "" || body.Password == "" {
 		writeError(w, http.StatusBadRequest, "username and password required", "missing_fields")
 		return
+	}
+	if len(body.Username) < 3 || len(body.Username) > 32 {
+		writeError(w, http.StatusBadRequest, "username must be 3-32 characters", "invalid_username")
+		return
+	}
+	for _, r := range body.Username {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
+			writeError(w, http.StatusBadRequest, "username must be alphanumeric (underscores and hyphens allowed)", "invalid_username")
+			return
+		}
 	}
 	if body.InviteCode == "" {
 		writeError(w, http.StatusBadRequest, "invite code required", "missing_invite")
@@ -183,6 +216,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		Expires:  exp,
 		MaxAge:   int(sessionTTL.Seconds()),
 		SameSite: http.SameSiteStrictMode,
+		Secure:   h.isSecureRequest(r),
 	})
 
 	writeJSON(w, map[string]any{
@@ -232,6 +266,10 @@ func (h *Handler) Redeem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "login required", "not_authenticated")
 		return
 	}
+	if h.redeemLimiter != nil && !h.redeemLimiter.allow(h.clientIP(r)) {
+		writeError(w, http.StatusTooManyRequests, "too many redemption attempts, try again later", "rate_limited")
+		return
+	}
 	var body redeemRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body", "invalid_body")
@@ -246,6 +284,12 @@ func (h *Handler) Redeem(w http.ResponseWriter, r *http.Request) {
 	me, err := h.userBilling(u)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error(), "billing_lookup_failed")
+		return
+	}
+	if me.Plan == nil {
+		// No dedicated billing token/plan (e.g. admin-created user).
+		// Nothing to top up; reject instead of panic.
+		writeError(w, http.StatusBadRequest, "no billing plan for this account", "no_billing_plan")
 		return
 	}
 	plan, err := h.store.RedeemTopup(r.Context(), body.Code, me.Plan.ID)
@@ -288,28 +332,27 @@ func (h *Handler) sessionUser(r *http.Request) (*model.User, bool) {
 // token created at registration carries the plan). Returns a
 // partial response when no token exists (admin-created users).
 func (h *Handler) userBilling(u *model.User) (*meResponse, error) {
-	tokens, err := h.store.GetTokens()
+	tok, err := h.store.GetTokenByName(u.Username)
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// No dedicated token (admin-created user): return a
+			// partial profile with a nil plan.
+			return &meResponse{User: u}, nil
+		}
 		return nil, err
 	}
-	var tok *model.Token
-	for i := range tokens {
-		if tokens[i].Name == u.Username && tokens[i].PlanID > 0 {
-			tok = &tokens[i]
-			break
-		}
-	}
-	out := &meResponse{User: u}
-	if tok == nil {
-		return out, nil
+	if tok.PlanID <= 0 {
+		return &meResponse{User: u}, nil
 	}
 	plan, err := h.store.GetPlan(tok.PlanID)
 	if err != nil {
 		return nil, err
 	}
-	out.Token = tok
-	out.Plan = plan
-	out.UsedUSD = plan.UsedUSD
-	out.BudgetUSD = plan.BudgetUSD
-	return out, nil
+	return &meResponse{
+		User:      u,
+		Token:     tok,
+		Plan:      plan,
+		UsedUSD:   plan.UsedUSD,
+		BudgetUSD: plan.BudgetUSD,
+	}, nil
 }

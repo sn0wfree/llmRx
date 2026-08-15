@@ -1,9 +1,11 @@
 package webui
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/store"
 )
 
 // RegisterPage renders the public invite-code registration form.
@@ -72,19 +74,15 @@ type meView struct {
 // userBillingView resolves the user's dedicated token + plan (the
 // token created at registration carries the plan).
 func (h *Handler) userBillingView(u *model.User) (*meView, error) {
-	tokens, err := h.store.GetTokens()
+	tok, err := h.store.GetTokenByName(u.Username)
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return &meView{Username: u.Username, Role: u.Role}, nil
+		}
 		return nil, err
 	}
-	var tok *model.Token
-	for i := range tokens {
-		if tokens[i].Name == u.Username && tokens[i].PlanID > 0 {
-			tok = &tokens[i]
-			break
-		}
-	}
 	view := &meView{Username: u.Username, Role: u.Role}
-	if tok == nil {
+	if tok.PlanID <= 0 {
 		return view, nil
 	}
 	view.APIKey = tok.Key

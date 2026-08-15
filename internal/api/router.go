@@ -186,6 +186,10 @@ type Handler struct {
 	// regLimiter throttles public registration per IP.
 	regLimiter *registerLimiter
 
+	// redeemLimiter throttles top-up code redemption per IP so a
+	// single account can't brute-force guess codes at high rate.
+	redeemLimiter *registerLimiter
+
 	// tokenReload refreshes the bearer-token cache after
 	// registration creates a new token (the cache is owned by the
 	// server). nil = no refresh (tests).
@@ -221,6 +225,7 @@ func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st 
 		taskModelBias:  cfg.AutoRouter.TaskModelBias,
 		contModel:      make(map[string]string),
 		regLimiter:     newRegisterLimiter(5, time.Hour),
+		redeemLimiter:  newRegisterLimiter(20, time.Hour),
 	}
 	if cfg.AutoRouter.SessionContinuation {
 		h.continuationOn = true
@@ -1558,6 +1563,15 @@ func (h *Handler) clientIP(r *http.Request) string {
 		if v := h.firstTrustedProxyHeader(r); v != "" {
 			return v
 		}
+	}
+	// Normalize to the bare host: r.RemoteAddr is "ip:port", but
+	// consumers (per-token IP whitelists, the registration throttle)
+	// match/aggregate on bare IPs. Keying on the ephemeral source
+	// port would let a client dodge per-IP limits and break exact
+	// whitelist matches, so strip it.
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
 	}
 	return r.RemoteAddr
 }

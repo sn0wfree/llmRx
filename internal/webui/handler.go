@@ -316,6 +316,7 @@ func (h *Handler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 		Expires:  exp,
 		MaxAge:   int(DefaultSessionTTL.Seconds()),
 		SameSite: http.SameSiteStrictMode,
+		Secure:   r.TLS != nil,
 	})
 
 	// HTMX expects 200 + OOB swap to redirect (we use JS in template).

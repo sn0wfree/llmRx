@@ -5,6 +5,7 @@ import "github.com/sn0wfree/llmRx/internal/model"
 type TokenRepository interface {
 	GetToken(key string) (*model.Token, error)
 	GetTokenByID(id int64) (*model.Token, error)
+	GetTokenByName(name string) (*model.Token, error)
 	GetTokens() ([]model.Token, error)
 	CreateToken(t *model.Token) error
 	UpdateToken(t *model.Token) error

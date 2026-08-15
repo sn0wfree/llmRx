@@ -36,6 +36,7 @@ type WebuiStore interface {
 	// Tokens
 	GetTokens() ([]model.Token, error)
 	GetTokenByID(id int64) (*model.Token, error)
+	GetTokenByName(name string) (*model.Token, error)
 	CreateToken(t *model.Token) error
 	UpdateToken(t *model.Token) error
 	DeleteToken(id int64) error

@@ -89,10 +89,12 @@ func (h *Handler) ListRedeemCodes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"codes": codes})
 }
 
-// newRedeemCode generates "RXM-XXXXXXXX" (8 random uppercase chars).
+// newRedeemCode generates "RXM-XXXXXXXXXXXX" (12 random uppercase
+// chars ≈ 60 bits of entropy). These codes carry monetary value, so
+// they must be impractical to brute-force at the redeem endpoint.
 func newRedeemCode() string {
 	const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // no 0/O/1/I
-	b := make([]byte, 8)
+	b := make([]byte, 12)
 	_, _ = rand.Read(b)
 	for i := range b {
 		b[i] = chars[int(b[i])%len(chars)]

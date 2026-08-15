@@ -985,6 +985,15 @@ func (s *dbStore) GetTokenByID(id int64) (*model.Token, error) {
 	return scanTokenRow(s, row)
 }
 
+// GetTokenByName returns the token whose name matches. Primarily
+// used to resolve the dedicated token created at registration
+// (name == username). Name is not unique at the schema level, so
+// prefer the registration-flow contract (one token per user name).
+func (s *dbStore) GetTokenByName(name string) (*model.Token, error) {
+	row := s.queryRow(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens WHERE name = ? ORDER BY id LIMIT 1`, name)
+	return scanTokenRow(s, row)
+}
+
 func (s *dbStore) GetTokens() ([]model.Token, error) {
 	rows, err := s.query(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens ORDER BY id`)
 	if err != nil {
