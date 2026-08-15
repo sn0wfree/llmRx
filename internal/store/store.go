@@ -63,6 +63,7 @@ type Store interface {
 	TokenRepository
 	PlanRepository
 	UserRepository
+	RedeemRepository
 	AlertRepository
 	GuardrailRepository
 	BYOKRepository
@@ -71,6 +72,7 @@ type Store interface {
 	RuntimeRepository
 	SecurityRepository
 	MCPRepository
+	ModelCostRepository
 
 	Ping(ctx context.Context) error
 	Close() error

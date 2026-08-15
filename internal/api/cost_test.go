@@ -1,102 +1,98 @@
-package api_test
+package api
 
 import (
-	"net/http/httptest"
-	"strings"
+	"math"
 	"testing"
 
-	"github.com/sn0wfree/llmRx/internal/logstore"
+	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/provider"
-	"github.com/sn0wfree/llmRx/internal/testhelper"
 )
 
-func TestGateway_CachedTokenCostDiscount(t *testing.T) {
-	app := testhelper.New(t)
-	app.AddChannelWithPrice("c", "openai", "https://x", []string{"m"}, 1.0, 0.0, "sk-key")
-	app.Chat.SetMarkup(1.0)
-	app.AddToken("sk-t", "t")
+func TestRealCost_TieredLongContext(t *testing.T) {
+	cc := &CostCalculator{}
+	mc := &model.ModelCost{
+		InputPricePer1M:           1.0,
+		OutputPricePer1M:          3.0,
+		InputPricePer1MAbove128K:  2.0,
+		InputPricePer1MAbove200K:  4.0,
+		OutputPricePer1MAbove128K: 6.0,
+	}
 
-	chs, _ := app.Store.GetChannels()
-	chs[0].CachedInputDiscount = 0.1
-	app.Store.UpdateChannel(&chs[0])
-	app.Pool.LoadFromStore(app.Store)
+	// 250k prompt tokens: 128k @ $1 + 72k @ $2 + 50k @ $4.
+	u := provider.Usage{PromptTokens: 250_000}
+	got := cc.RealCost(mc, u)
+	want := 128000/1e6*1.0 + 72000/1e6*2.0 + 50000/1e6*4.0
+	if math.Abs(got-want) > 1e-6 {
+		t.Fatalf("tiered input: got %.6f want %.6f", got, want)
+	}
 
-	cp := &capturingProvider{
-		resp: &provider.ChatResponse{
-			ID: "c1", Object: "chat.completion", Model: "m",
-			Choices: []provider.Choice{{Index: 0, Message: provider.Message{Role: "assistant", Content: "ok"}, FinishReason: "stop"}},
-			Usage: provider.Usage{
-				PromptTokens:        1000000,
-				CompletionTokens:    0,
-				TotalTokens:         1000000,
-				PromptTokensDetails: &provider.PromptTokensDetails{CachedTokens: 500000},
-			},
-		},
-		status: 200,
-	}
-	app.Chat.SetProviders(map[string]provider.Provider{"": cp, "openai": cp})
-
-	req := httptest.NewRequest("POST", "/v1/chat/completions",
-		strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
-	req.Header.Set("Authorization", "Bearer sk-t")
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	app.Mux.ServeHTTP(rec, req)
-
-	if rec.Code != 200 {
-		t.Fatalf("status: %d %s", rec.Code, rec.Body.String())
-	}
-	logs, _, _ := app.LogStore.Query(logstore.QueryFilter{Limit: 10, Offset: 0}, nil)
-	if len(logs) != 1 {
-		t.Fatalf("expected 1 log, got %d", len(logs))
-	}
-	l := logs[0]
-	if l.CachedTokens != 500000 {
-		t.Errorf("cached_tokens: got %d, want 500000", l.CachedTokens)
-	}
-	if l.PromptTokens != 1000000 {
-		t.Errorf("prompt_tokens: got %d", l.PromptTokens)
-	}
-	if l.RealCostUSD <= 0 {
-		t.Fatalf("real cost should be positive: %f", l.RealCostUSD)
+	// 150k completion: 128k @ $3 + 22k @ $6.
+	u = provider.Usage{CompletionTokens: 150_000}
+	got = cc.RealCost(mc, u)
+	want = 128000/1e6*3.0 + 22000/1e6*6.0
+	if math.Abs(got-want) > 1e-6 {
+		t.Fatalf("tiered output: got %.6f want %.6f", got, want)
 	}
 }
 
-func TestGateway_MarkupAppliedToBilledCost(t *testing.T) {
-	app := testhelper.New(t)
-	app.AddChannelWithPrice("c", "openai", "https://x", []string{"m"}, 1.0, 0.0, "sk-key")
-	app.Chat.SetMarkup(1.5)
-	app.AddToken("sk-t", "t")
+func TestRealCost_ReasoningTokens(t *testing.T) {
+	cc := &CostCalculator{}
+	mc := &model.ModelCost{OutputPricePer1M: 1.0, ReasoningPricePer1M: 4.0}
+	// 1M completion, 200k of it reasoning: 800k @ $1 + 200k @ $4 = $1.60.
+	u := provider.Usage{
+		CompletionTokens:        1_000_000,
+		CompletionTokensDetails: &provider.CompletionTokensDetails{ReasoningTokens: 200_000},
+	}
+	got := cc.RealCost(mc, u)
+	want := 800000/1e6*1.0 + 200000/1e6*4.0
+	if math.Abs(got-want) > 1e-6 {
+		t.Fatalf("reasoning: got %.6f want %.6f", got, want)
+	}
 
-	cp := &capturingProvider{
-		resp: &provider.ChatResponse{
-			ID: "c1", Object: "chat.completion", Model: "m",
-			Choices: []provider.Choice{{Index: 0, Message: provider.Message{Role: "assistant", Content: "ok"}, FinishReason: "stop"}},
-			Usage:   provider.Usage{PromptTokens: 1000000, CompletionTokens: 0, TotalTokens: 1000000},
-		},
-		status: 200,
+	// Reasoning tokens clamp to completion.
+	u.CompletionTokensDetails.ReasoningTokens = 2_000_000
+	got = cc.RealCost(mc, u)
+	want = 1_000_000 / 1e6 * 4.0
+	if math.Abs(got-want) > 1e-6 {
+		t.Fatalf("reasoning clamp: got %.6f want %.6f", got, want)
 	}
-	app.Chat.SetProviders(map[string]provider.Provider{"": cp, "openai": cp})
+}
 
-	req := httptest.NewRequest("POST", "/v1/chat/completions",
-		strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
-	req.Header.Set("Authorization", "Bearer sk-t")
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	app.Mux.ServeHTTP(rec, req)
+func TestRealCost_CacheWriteDiscount(t *testing.T) {
+	cc := &CostCalculator{}
+	mc := &model.ModelCost{
+		InputPricePer1M:      2.0,
+		CacheWritePricePer1M: 0.5, // upstream discounts cache-creation
+		CacheReadPricePer1M:  0.2,
+	}
+	// 1M prompt, 400k cached: uncached 600k @ $0.5 + cached 400k @ $0.2.
+	u := provider.Usage{
+		PromptTokens:        1_000_000,
+		PromptTokensDetails: &provider.PromptTokensDetails{CachedTokens: 400_000},
+	}
+	got := cc.RealCost(mc, u)
+	want := 600000/1e6*0.5 + 400000/1e6*0.2
+	if math.Abs(got-want) > 1e-6 {
+		t.Fatalf("cache write: got %.6f want %.6f", got, want)
+	}
+}
 
-	if rec.Code != 200 {
-		t.Fatalf("status: %d", rec.Code)
+func TestRealCost_Images(t *testing.T) {
+	cc := &CostCalculator{}
+	mc := &model.ModelCost{InputPricePer1M: 1.0, OutputPricePer1M: 1.0, ImagePrice: 0.02}
+	u := provider.Usage{PromptTokens: 1000, CompletionTokens: 1000, Images: 3}
+	got := cc.RealCost(mc, u)
+	want := 1000/1e6*1.0 + 1000/1e6*1.0 + 3*0.02
+	if math.Abs(got-want) > 1e-6 {
+		t.Fatalf("images: got %.6f want %.6f", got, want)
 	}
-	logs, _, _ := app.LogStore.Query(logstore.QueryFilter{Limit: 10, Offset: 0}, nil)
-	if len(logs) != 1 {
-		t.Fatalf("expected 1 log, got %d", len(logs))
-	}
-	l := logs[0]
-	if l.RealCostUSD < 0.99 || l.RealCostUSD > 1.01 {
-		t.Errorf("real cost: %f", l.RealCostUSD)
-	}
-	if l.BilledCostUSD < 1.49 || l.BilledCostUSD > 1.51 {
-		t.Errorf("billed cost should be 1.5x: got %f", l.BilledCostUSD)
+}
+
+func TestRealCost_FreeModel(t *testing.T) {
+	cc := &CostCalculator{}
+	mc := &model.ModelCost{} // all zeros = free
+	u := provider.Usage{PromptTokens: 1_000_000, CompletionTokens: 1_000_000}
+	if got := cc.RealCost(mc, u); got != 0 {
+		t.Fatalf("free model should cost 0, got %f", got)
 	}
 }

@@ -34,6 +34,10 @@ type Defaults struct {
 	retryBaseDelayMs  int64
 
 	costStrategy atomic.Value // string
+	// retentionMode is the logstore retention action: "delete" or
+	// "archive". "archive" keeps old log files on disk compressed
+	// (.db.gz) instead of deleting them.
+	retentionMode atomic.Value // string
 }
 
 // New returns Defaults seeded with sane defaults.
@@ -52,6 +56,7 @@ func New() *Defaults {
 	atomic.StoreUint64(&d.logLevelBits, uint64(0)) // slog.LevelInfo
 	d.SetMarkupRatio(1.0)
 	d.SetCostStrategy("cheapest")
+	d.SetLogRetentionMode("delete")
 	return d
 }
 
@@ -168,6 +173,28 @@ func (d *Defaults) SetLogRetentionDays(days int64) {
 		days = 3650
 	}
 	atomic.StoreInt64(&d.logRetentionDays, days)
+}
+
+// ---- LogRetentionMode ----
+
+// LogRetentionMode returns the logstore retention action:
+// "delete" (default) or "archive" (compress old log files to
+// .db.gz and keep them instead of deleting).
+func (d *Defaults) LogRetentionMode() string {
+	v, _ := d.retentionMode.Load().(string)
+	if v == "" {
+		return "delete"
+	}
+	return v
+}
+
+// SetLogRetentionMode replaces the retention action. Unknown values
+// are rejected (kept as-is); valid values are "delete" and "archive".
+func (d *Defaults) SetLogRetentionMode(mode string) {
+	switch mode {
+	case "delete", "archive":
+		d.retentionMode.Store(mode)
+	}
 }
 
 // ---- StreamTimeoutSec ----
@@ -369,6 +396,7 @@ type Snapshot struct {
 	BreakerResetMs     int64   `json:"breaker_reset_timeout_ms"`
 	AlertCooldownSec   int64   `json:"alert_cooldown_sec"`
 	LogRetentionDays   int64   `json:"log_retention_days"`
+	LogRetentionMode   string  `json:"log_retention_mode"`
 	StreamTimeoutSec   int64   `json:"stream_timeout_sec"`
 	StreamMaxBodyBytes int64   `json:"stream_max_body_bytes"`
 	MaxLogSubscribers  int64   `json:"max_log_subscribers"`
@@ -388,6 +416,7 @@ func (d *Defaults) Snapshot() Snapshot {
 		BreakerResetMs:     d.BreakerResetTimeoutMs(),
 		AlertCooldownSec:   d.AlertCooldownSec(),
 		LogRetentionDays:   d.LogRetentionDays(),
+		LogRetentionMode:   d.LogRetentionMode(),
 		StreamTimeoutSec:   d.StreamTimeoutSec(),
 		StreamMaxBodyBytes: d.StreamMaxBodyBytes(),
 		MaxLogSubscribers:  d.MaxLogSubscribers(),
@@ -421,6 +450,9 @@ func (d *Defaults) Apply(s Snapshot) {
 	}
 	if s.LogRetentionDays >= 0 {
 		d.SetLogRetentionDays(s.LogRetentionDays)
+	}
+	if s.LogRetentionMode != "" {
+		d.SetLogRetentionMode(s.LogRetentionMode)
 	}
 	d.SetStreamTimeoutSec(s.StreamTimeoutSec)
 	d.SetStreamMaxBodyBytes(s.StreamMaxBodyBytes)

@@ -25,4 +25,23 @@ type Decision struct {
 	// Fallback indicates the winning model came from the combo's
 	// Fallback list rather than the tier candidates.
 	Fallback bool `json:"fallback"`
+	// ContextEscalation indicates the winning model came from the
+	// combo's ContextFallback list after every tier candidate was
+	// filtered out for a too-small context window.
+	ContextEscalation bool `json:"context_escalation"`
+
+	// LearnedUsed indicates the learned router prior was applied
+	// to this request's model selection.
+	LearnedUsed bool `json:"learned_used,omitempty"`
+
+	// Task is the coarse task type (code/math/data/.../general).
+	Task string `json:"task,omitempty"`
+	// TaskSource names where the task came from: "auto" (keyword
+	// classifier), "header" (X-Task-Type) or "" (disabled).
+	TaskSource string `json:"task_source,omitempty"`
+	// EstTokens is the estimated prompt+context token count.
+	EstTokens int `json:"est_tokens,omitempty"`
+	// Continuation indicates the selected model was preferred
+	// because the session already used it (long-context sessions).
+	Continuation bool `json:"continuation,omitempty"`
 }

@@ -1,9 +1,10 @@
 // Package logstore provides the storage backend for request logs.
 //
-// Logs are written into per-date SQLite files (data/logs/YYYY-MM-DD.db)
-// so retention is a `rm` instead of a slow DELETE, and so per-day files
-// stay small enough for fast admin queries. Cross-day queries use
-// SQLite ATTACH to union across all retained files transparently.
+// Logs are written into per-date SQLite files (logs/YYYY-MM-DD.db,
+// defaulting to the SQLite DB's directory + /logs) so retention is a
+// `rm` instead of a slow DELETE, and so per-day files stay small
+// enough for fast admin queries. Cross-day queries use SQLite ATTACH
+// to union across all retained files transparently.
 //
 // Only the Driver interface is exported; the SQLiteDriver is the
 // sole implementation today. The interface exists so future
@@ -68,6 +69,15 @@ type Driver interface {
 	// error.
 	DeleteFiles(days []string) error
 
+	// ArchiveFiles compresses the named files into .db.gz archives
+	// and removes the originals (closing any open connections
+	// first). Used by retention in "archive" mode so old logs are
+	// kept on disk in compressed form instead of being deleted.
+	// Idempotent: missing files are skipped. Backends without
+	// per-day files (Postgres shared table) treat this as a no-op,
+	// which makes archive mode equivalent to "keep rows forever".
+	ArchiveFiles(days []string) error
+
 	// Close releases all open connections. Subsequent Insert or
 	// Query calls return an error.
 	Close() error
@@ -77,11 +87,13 @@ type Driver interface {
 // the Manager fills this from a store.LogFilter at the boundary.
 type QueryFilter struct {
 	TokenID     int64
+	TokenIDs    []int64 // matches ANY of the token ids (IN clause); overrides TokenID when set
 	ChannelID   int64
 	KeyID       int64
 	Model       string
 	Endpoint    string // "" = no filter; "mcp" = MCP tool-call rows only
 	StatusCode  int    // 0 = no filter
+	CacheHit    bool   // true = only response-cache-hit rows (1); false = no filter
 	CreatedFrom int64  // unix seconds, 0 = no lower bound
 	CreatedTo   int64  // unix seconds, 0 = no upper bound
 	Limit       int    // 0 = driver default (50)
@@ -127,3 +139,11 @@ const MaxAttachFiles = 8
 
 // Now is overridable in tests for deterministic day routing.
 var Now = func() time.Time { return time.Now().UTC() }
+
+// boolToInt encodes a boolean as 1/0 for integer-backed storage.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}

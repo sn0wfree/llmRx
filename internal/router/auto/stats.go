@@ -13,6 +13,10 @@ type Stats struct {
 	fallbacks int64
 	tierHits  map[string]int64
 	causeHits map[string]int64
+
+	// Learned router stats (v3).
+	learnedHits   int64 // requests where learned prior was used
+	learnedMisses int64 // requests where learned prior was unavailable (fallback)
 }
 
 // NewStats returns an empty accumulator.
@@ -36,15 +40,22 @@ func (s *Stats) Record(d Decision) {
 	}
 	s.tierHits[d.Tier]++
 	s.causeHits[d.Cause]++
+	if d.LearnedUsed {
+		s.learnedHits++
+	} else if d.Cause == "learned_fallback" {
+		s.learnedMisses++
+	}
 }
 
 // StatsSnapshot is a point-in-time view for the admin endpoint.
 type StatsSnapshot struct {
-	Decisions int64            `json:"decisions"`
-	Routed    int64            `json:"routed"`
-	Fallbacks int64            `json:"fallbacks"`
-	TierHits  map[string]int64 `json:"tier_hits"`
-	CauseHits map[string]int64 `json:"cause_hits"`
+	Decisions    int64            `json:"decisions"`
+	Routed       int64            `json:"routed"`
+	Fallbacks    int64            `json:"fallbacks"`
+	TierHits     map[string]int64 `json:"tier_hits"`
+	CauseHits    map[string]int64 `json:"cause_hits"`
+	LearnedHits  int64            `json:"learned_hits"`
+	LearnedMisses int64           `json:"learned_misses"`
 }
 
 // Snapshot returns a consistent copy of the counters.
@@ -52,11 +63,13 @@ func (s *Stats) Snapshot() StatsSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := StatsSnapshot{
-		Decisions: s.decisions,
-		Routed:    s.routed,
-		Fallbacks: s.fallbacks,
-		TierHits:  make(map[string]int64, len(s.tierHits)),
-		CauseHits: make(map[string]int64, len(s.causeHits)),
+		Decisions:     s.decisions,
+		Routed:        s.routed,
+		Fallbacks:     s.fallbacks,
+		TierHits:      make(map[string]int64, len(s.tierHits)),
+		CauseHits:     make(map[string]int64, len(s.causeHits)),
+		LearnedHits:   s.learnedHits,
+		LearnedMisses: s.learnedMisses,
 	}
 	for k, v := range s.tierHits {
 		out.TierHits[k] = v
@@ -77,4 +90,6 @@ func (s *Stats) Reset() {
 	s.fallbacks = 0
 	s.tierHits = make(map[string]int64)
 	s.causeHits = make(map[string]int64)
+	s.learnedHits = 0
+	s.learnedMisses = 0
 }

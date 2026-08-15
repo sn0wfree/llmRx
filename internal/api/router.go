@@ -24,6 +24,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/mcp"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/modelcost"
 	"github.com/sn0wfree/llmRx/internal/modelmeta"
 	"github.com/sn0wfree/llmRx/internal/observability"
 	"github.com/sn0wfree/llmRx/internal/pool"
@@ -31,6 +32,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/ratelimit"
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/router/auto"
+	"github.com/sn0wfree/llmRx/internal/router/session"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
 
@@ -165,6 +167,39 @@ type Handler struct {
 	// autoStats accumulates decision counters for the admin state
 	// endpoint; reset via admin /reload.
 	autoStats *auto.Stats
+	// sessions pins multi-turn conversations to one model/channel
+	// when session affinity is enabled. nil disables affinity.
+	sessions *session.Store
+
+	// Task-aware routing (auto upgrade): taskClassifier identifies
+	// the request task (task_source=auto); taskModelBias reorders
+	// tier candidates per task; contModel remembers the model each
+	// session last used so long-context sessions can continue with
+	// it (tool-chain continuity).
+	taskClassifier auto.TaskClassifier
+	taskSource     string
+	taskModelBias  map[string][]string
+	continuationOn bool
+	contThreshold  int
+	contMu         sync.Mutex
+	contModel      map[string]string
+
+	// regLimiter throttles public registration per IP.
+	regLimiter *registerLimiter
+
+	// redeemLimiter throttles top-up code redemption per IP so a
+	// single account can't brute-force guess codes at high rate.
+	redeemLimiter *registerLimiter
+
+	// tokenReload refreshes the bearer-token cache after
+	// registration creates a new token (the cache is owned by the
+	// server). nil = no refresh (tests).
+	tokenReload func() error
+
+	// modelCosts is the in-memory rate card (the model_costs table).
+	// Billing resolves the price from here; a model absent from the
+	// cache is rejected fail-closed before the upstream call.
+	modelCosts *modelcost.Cache
 }
 
 func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, ls *logstore.Manager, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Handler {
@@ -174,23 +209,38 @@ func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st 
 	}
 	cc := NewCostCalculator(func() float64 { return rt.MarkupRatio() })
 	lim := ratelimit.New()
+	mc := modelcost.New(st)
 	h := &Handler{
-		router:     eng,
-		pool:       cp,
-		provider:   provider.NewOpenAIProvider(),
-		providers:  provider.All(),
-		cfg:        cfg,
-		store:      st,
-		logStore:   ls,
-		logBroker:  lb,
-		rt:         rt,
-		limits:     lim,
-		guardrails: guardrail.New(st),
-		costCalc:   cc,
-		emitter:    NewLogEmitter(ls, lb, st, lim, cc, cfg.Server.LogSampleRate),
-		autoPool:   auto.NewPool(eng.Thompson()),
-		autoScorer: buildAutoScorer(cfg),
-		autoStats:  auto.NewStats(),
+		router:         eng,
+		pool:           cp,
+		provider:       provider.NewOpenAIProvider(),
+		providers:      provider.All(),
+		cfg:            cfg,
+		store:          st,
+		logStore:       ls,
+		logBroker:      lb,
+		rt:             rt,
+		limits:         lim,
+		guardrails:     guardrail.New(st),
+		costCalc:       cc,
+		emitter:        NewLogEmitter(ls, lb, st, lim, cc, mc, cfg.Server.LogSampleRate),
+		autoPool:       auto.NewPool(eng.Thompson()),
+		autoScorer:     buildAutoScorer(cfg),
+		autoStats:      auto.NewStats(),
+		taskClassifier: auto.NewTaskClassifier(),
+		taskSource:     cfg.AutoRouter.TaskSource,
+		taskModelBias:  cfg.AutoRouter.TaskModelBias,
+		contModel:      make(map[string]string),
+		regLimiter:     newRegisterLimiter(5, time.Hour),
+		redeemLimiter:  newRegisterLimiter(20, time.Hour),
+		modelCosts:     mc,
+	}
+	if cfg.AutoRouter.SessionContinuation {
+		h.continuationOn = true
+		h.contThreshold = cfg.AutoRouter.ContinuationThreshold
+		if h.contThreshold <= 0 {
+			h.contThreshold = 100000
+		}
 	}
 	return h
 }
@@ -228,6 +278,13 @@ func (h *Handler) SetAutoScorer(s auto.ComplexityScorer) {
 		h.autoScorer = s
 	}
 }
+
+// SetSessions wires the session-affinity store. nil disables
+// affinity (default). Started at server startup from config.
+func (h *Handler) SetSessions(s *session.Store) { h.sessions = s }
+
+// Sessions exposes the affinity store for the admin state endpoint.
+func (h *Handler) Sessions() *session.Store { return h.sessions }
 
 // Limits exposes the rate limiter for the server to wire into the
 // middleware. The limiter is process-local unless a cluster backend
@@ -565,6 +622,10 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Carry the request's image count for the cost calculator (image
+	// pricing). The wrapped context propagates to all emit sites.
+	r = r.WithContext(ctxWithImages(r.Context(), &req))
+
 	// Per-token model whitelist + IP whitelist enforcement.
 	var tokenID int64
 	if info, ok := lookupTokenInfo(r.Context()); ok {
@@ -633,6 +694,13 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 						w.Header().Set("Content-Type", "application/json")
 						w.WriteHeader(cached.StatusCode)
 						_, _ = w.Write(cached.Body)
+						// Bill + log the cache hit (all prompt tokens
+						// treated as cache-read) and count it in usage.
+						if cached.Usage != nil {
+							h.emitter.EmitCacheHit(r.Context(),
+								lookupTokenID(r.Context(), h.store),
+								req.Model, cached.Usage, h.clientIP(r))
+						}
 						return
 					}
 				}
@@ -660,6 +728,11 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 						if f, ok := w.(http.Flusher); ok {
 							f.Flush()
 						}
+						if cached.Usage != nil {
+							h.emitter.EmitCacheHit(r.Context(),
+								lookupTokenID(r.Context(), h.store),
+								req.Model, cached.Usage, h.clientIP(r))
+						}
 						return
 					}
 				}
@@ -669,6 +742,12 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	if req.Stream {
 		h.streamChatCompletions(w, r, &req)
+		return
+	}
+
+	// Fail-closed: the concrete model must be on the rate card before
+	// any upstream spend. (Combo/auto models are checked in handleCombo.)
+	if !h.requirePriced(w, req.Model) {
 		return
 	}
 
@@ -695,7 +774,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.router.RecordSuccess(route.Channel.ID)
+	h.router.RecordSuccessLatency(route.Channel.ID, duration)
 
 	// Agentic loop: if response has MCP tool calls, dispatch and re-invoke.
 	if h.mcpLoop != nil && resp != nil && len(resp.Choices) > 0 && len(resp.Choices[0].Message.ToolCalls) > 0 {
@@ -724,12 +803,16 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			ckey, ckeyErr := cache.Key(&req)
 			if ckeyErr == nil {
 				ttl := time.Duration(h.cfg.Server.CacheTTLSeconds) * time.Second
+				costUSD := 0.0
+				if mc, ok := h.modelCostFor(req.Model); ok {
+					costUSD = h.costCalc.RealCost(mc, resp.Usage)
+				}
 				entry := &cache.Entry{
 					Key:        ckey,
 					StatusCode: http.StatusOK,
 					Body:       mustMarshalJSON(resp),
 					Usage:      &resp.Usage,
-					CostUSD:    h.costCalc.RealCost(route.Channel, resp.Usage),
+					CostUSD:    costUSD,
 					ChannelID:  route.Channel.ID,
 				}
 				_ = h.responseCache.Set(r.Context(), entry, ttl)
@@ -859,34 +942,23 @@ func (h *Handler) handleLoadBalanceCombo(w http.ResponseWriter, r *http.Request,
 	}
 
 	// Rewrite req.Model to the real channel model so the upstream
-	// sees a model name it recognises (the combo name — e.g. "auto"
-	// — is only meaningful to llmRx).
+	// sees a model name it recognises (the combo name - e.g. "auto"
+	// - is only meaningful to llmRx).
 	originalModel := req.Model
+	actualModel := originalModel
 	if len(route.Channel.Models) > 0 {
-		req.Model = route.Channel.Models[0]
+		actualModel = route.Channel.Models[0]
+		req.Model = actualModel
 	}
 
-	// Probe-based short-circuit: if the prober has recently
-	// verified this channel as unhealthy, fail fast with a
-	// distinct error so callers can distinguish "no channel" from
-	// "selected channel looks dead". Only triggers when both
-	// (a) the request is model="auto" and (b) the cache has a
-	// fresh failing entry — otherwise we'd over-aggressively
-	// penalise non-auto traffic.
-	if h.prober != nil && originalModel == "auto" && !h.prober.Healthy(route.Channel.ID) {
-		lat, _ := h.prober.Latest(route.Channel.ID)
-		logging.Warn("chat.probe_unhealthy",
-			logging.F("channel_id", route.Channel.ID),
-			logging.F("channel", route.Channel.Name),
-			logging.F("error", lat.Error),
-			logging.F("checked_at", lat.CheckedAt),
-		)
-		writeError(w, http.StatusBadGateway,
-			"selected channel marked unhealthy by probe: "+lat.Error,
-			"probe_unhealthy")
+	// Probe-based filtering now happens in L2 (CircuitBreaker.Filter)
+	// for all requests, not just auto. The per-channel probe cache
+	// is wired via RouterEngine.SetHealthChecker at startup.
+
+	// Fail-closed: never call upstream for an unpriced model.
+	if !h.requirePriced(w, actualModel) {
 		return
 	}
-
 	prov := h.providerFor(route.Channel.Protocol, false)
 	start := time.Now()
 	resp, statusCode, err := prov.Chat(r.Context(), req, route.KeyValue, route.Channel.BaseURL)
@@ -905,19 +977,19 @@ func (h *Handler) handleLoadBalanceCombo(w http.ResponseWriter, r *http.Request,
 			logging.F("error", err.Error()),
 		)
 		writeError(w, statusCode, "upstream error: "+err.Error(), "upstream_error")
-		h.emitLog(r.Context(), tokenID, originalModel, route, nil, duration, statusCode, true, h.clientIP(r))
+		h.emitLog(r.Context(), tokenID, actualModel, route, nil, duration, statusCode, true, h.clientIP(r))
 		return
 	}
 
-	h.router.RecordSuccess(route.Channel.ID)
+	h.router.RecordSuccessLatency(route.Channel.ID, duration)
 	logging.Debug("combo.upstream_success",
 		logging.F("model_requested", originalModel),
-		logging.F("model_actual", route.Channel.Models[0]),
+		logging.F("model_actual", actualModel),
 		logging.F("channel", route.Channel.Name),
 		logging.F("status", statusCode),
 		logging.F("duration_ms", duration),
 	)
-	h.emitLog(r.Context(), tokenID, originalModel, route, &resp.Usage, duration, statusCode, false, h.clientIP(r))
+	h.emitLog(r.Context(), tokenID, actualModel, route, &resp.Usage, duration, statusCode, false, h.clientIP(r))
 	writeJSON(w, resp)
 }
 
@@ -937,6 +1009,10 @@ func (h *Handler) handleSerialCombo(w http.ResponseWriter, r *http.Request, req 
 			continue
 		}
 
+		// Fail-closed: never call upstream for an unpriced model.
+		if !h.requirePriced(w, modelName) {
+			return
+		}
 		// Attempt the actual chat.
 		prov := h.providerFor(route.Channel.Protocol, false)
 		start := time.Now()
@@ -958,7 +1034,7 @@ func (h *Handler) handleSerialCombo(w http.ResponseWriter, r *http.Request, req 
 		}
 
 		// Success.
-		h.router.RecordSuccess(route.Channel.ID)
+		h.router.RecordSuccessLatency(route.Channel.ID, duration)
 		logging.Debug("combo.serial.success",
 			logging.F("model", modelName),
 			logging.F("channel", route.Channel.Name),
@@ -989,12 +1065,47 @@ func (h *Handler) handleSerialCombo(w http.ResponseWriter, r *http.Request, req 
 func (h *Handler) handleAutoCombo(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, combo model.TokenComboModel) {
 	tokenID := lookupTokenID(r.Context(), h.store)
 	text := lastUserText(req.Messages)
+
+	// Session affinity: a live pin short-circuits classification and
+	// arm sampling, routing straight to the model that served the
+	// first turn (preserves upstream prompt caches). A failed or
+	// unroutable pinned model drops the pin and re-classifies.
+	sessionID := h.sessionIDFor(r, req)
+	if h.sessions != nil {
+		if pin, ok := h.sessions.Get(sessionID); ok && pin.Model != "" {
+			if h.autoAttemptPinned(w, r, req, combo, pin, tokenID, text) {
+				return
+			}
+			// Pinned model failed: drop the pin, fall through to a
+			// fresh decision.
+			h.sessions.Delete(sessionID)
+		}
+	}
+
 	sc := h.autoScorer.Classify(text)
 	tier := string(sc.Tier)
 
-	decision := &auto.Decision{Tier: tier, Score: sc.Score, Cause: sc.Cause}
-	order := h.autoAttemptOrder(combo, tier, text, &decision.Picked)
-	decision.Candidates = tierCandidates(combo, tier)
+	// Task-aware routing: resolve the task type and the session's
+	// continuation model before building the attempt order.
+	task, taskSource := h.resolveTask(r, req, text)
+	est := auto.TokenEstimate(lastUserText(req.Messages))
+	for _, m := range req.Messages {
+		est += auto.TokenEstimate(m.ContentString())
+	}
+	contModel := h.continuationModel(sessionID, est)
+
+	decision := &auto.Decision{
+		Tier: tier, Score: sc.Score, Cause: sc.Cause,
+		Task: task, TaskSource: taskSource, EstTokens: est,
+		Continuation: contModel != "",
+	}
+	order, escalated := h.autoAttemptOrder(combo, tier, text, &decision.Picked, task, contModel)
+	decision.ContextEscalation = escalated
+	if escalated {
+		decision.Candidates = combo.ContextFallback
+	} else {
+		decision.Candidates = tierCandidates(combo, tier)
+	}
 
 	opts := router.RouteOptions{Text: text}
 	var lastErr error
@@ -1009,6 +1120,10 @@ func (h *Handler) handleAutoCombo(w http.ResponseWriter, r *http.Request, req *p
 		}
 		decision.Attempted = append(decision.Attempted, m)
 
+		// Fail-closed: never call upstream for an unpriced model.
+		if !h.requirePriced(w, m) {
+			return
+		}
 		prov := h.providerFor(route.Channel.Protocol, false)
 		start := time.Now()
 		resp, statusCode, err := prov.Chat(r.Context(), req, route.KeyValue, route.Channel.BaseURL)
@@ -1032,12 +1147,16 @@ func (h *Handler) handleAutoCombo(w http.ResponseWriter, r *http.Request, req *p
 			continue
 		}
 
-		h.router.RecordSuccess(route.Channel.ID)
+		h.router.RecordSuccessLatency(route.Channel.ID, duration)
 		if isTierCandidate(combo, tier, m) {
 			h.router.RecordArmSuccess(auto.ArmKey(tier, m))
 		}
 		decision.Routed = m
 		decision.Fallback = !isTierCandidate(combo, tier, m)
+		if h.sessions != nil {
+			h.sessions.Set(sessionID, m, tier, route.Channel.ID)
+		}
+		h.rememberContinuation(sessionID, m)
 		h.emitAutoDecision(r, decision)
 		h.setAutoHeaders(w, decision)
 		logging.Debug("auto.success",
@@ -1064,6 +1183,64 @@ func (h *Handler) handleAutoCombo(w http.ResponseWriter, r *http.Request, req *p
 	}
 }
 
+// autoAttemptPinned routes one request to the pinned session model.
+// It returns true when the request was fully handled (success OR
+// hard failure with a response written). A routing failure or an
+// upstream 5xx leaves the pin in place for the caller to drop and
+// re-classify — but the caller only reaches here when the pin was
+// live, so a 5xx means the channel is flaky: the caller deletes the
+// pin and falls through.
+func (h *Handler) autoAttemptPinned(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, combo model.TokenComboModel, pin session.Pin, tokenID int64, text string) bool {
+	opts := router.RouteOptions{Text: text}
+	// The pinned model may be a fallback/context model not in the
+	// current tier — always bypass the breaker for a pinned retry:
+	// the pin existed because this channel served the conversation.
+	opts.SkipBreaker = true
+	route, routeErr := h.router.RouteWith(context.Background(), pin.Model, opts)
+	if routeErr != nil {
+		logging.Debug("auto.pin_unroutable",
+			logging.F("model", pin.Model),
+			logging.F("error", routeErr),
+		)
+		return false
+	}
+	// Fail-closed: never call upstream for an unpriced model.
+	if !h.requirePriced(w, pin.Model) {
+		return true
+	}
+	prov := h.providerFor(route.Channel.Protocol, false)
+	start := time.Now()
+	resp, statusCode, err := prov.Chat(r.Context(), req, route.KeyValue, route.Channel.BaseURL)
+	duration := time.Since(start).Milliseconds()
+	if err != nil || statusCode >= 500 {
+		h.router.RecordFailure(route.Channel.ID, statusCode)
+		logging.Debug("auto.pin_failed",
+			logging.F("model", pin.Model),
+			logging.F("channel", route.Channel.Name),
+			logging.F("status", statusCode),
+			logging.F("error", err),
+		)
+		h.emitLog(r.Context(), tokenID, pin.Model, route, nil, duration, statusCode, true, h.clientIP(r))
+		return false
+	}
+	h.router.RecordSuccessLatency(route.Channel.ID, duration)
+	if h.sessions != nil {
+		h.sessions.Set(sessionIDFromReq(req), pin.Model, pin.Tier, route.Channel.ID)
+	}
+	w.Header().Set("X-llmRx-Session-Pinned", "true")
+	w.Header().Set("X-llmRx-Routed-Model", pin.Model)
+	w.Header().Set("X-llmRx-Auto-Tier", pin.Tier)
+	logging.Debug("auto.pin_hit",
+		logging.F("model", pin.Model),
+		logging.F("channel", route.Channel.Name),
+		logging.F("status", statusCode),
+		logging.F("duration_ms", duration),
+	)
+	h.emitLog(r.Context(), tokenID, pin.Model, route, &resp.Usage, duration, statusCode, false, h.clientIP(r))
+	writeJSON(w, resp)
+	return true
+}
+
 // handleStreamAutoCombo routes a streaming mode:auto combo request.
 // Classification and arm sampling are identical to the non-streaming
 // path; the first model that yields an upstream SSE channel streams
@@ -1072,12 +1249,42 @@ func (h *Handler) handleAutoCombo(w http.ResponseWriter, r *http.Request, req *p
 // the execution-layer work.
 func (h *Handler) handleStreamAutoCombo(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, combo model.TokenComboModel) {
 	text := lastUserText(req.Messages)
+
+	// Session affinity: a live pin routes straight to the pinned
+	// model without re-classifying. Stream failures drop the pin so
+	// the next turn re-decides.
+	sessionID := h.sessionIDFor(r, req)
+	if h.sessions != nil {
+		if pin, ok := h.sessions.Get(sessionID); ok && pin.Model != "" {
+			if h.streamAttemptPinned(w, r, req, combo, pin) {
+				return
+			}
+			h.sessions.Delete(sessionID)
+		}
+	}
+
 	sc := h.autoScorer.Classify(text)
 	tier := string(sc.Tier)
 
-	decision := &auto.Decision{Tier: tier, Score: sc.Score, Cause: sc.Cause}
-	order := h.autoAttemptOrder(combo, tier, text, &decision.Picked)
-	decision.Candidates = tierCandidates(combo, tier)
+	task, taskSource := h.resolveTask(r, req, text)
+	est := auto.TokenEstimate(text)
+	for _, m := range req.Messages {
+		est += auto.TokenEstimate(m.ContentString())
+	}
+	contModel := h.continuationModel(sessionID, est)
+
+	decision := &auto.Decision{
+		Tier: tier, Score: sc.Score, Cause: sc.Cause,
+		Task: task, TaskSource: taskSource, EstTokens: est,
+		Continuation: contModel != "",
+	}
+	order, escalated := h.autoAttemptOrder(combo, tier, text, &decision.Picked, task, contModel)
+	decision.ContextEscalation = escalated
+	if escalated {
+		decision.Candidates = combo.ContextFallback
+	} else {
+		decision.Candidates = tierCandidates(combo, tier)
+	}
 
 	opts := router.RouteOptions{Text: text}
 	var lastErr error
@@ -1096,6 +1303,10 @@ func (h *Handler) handleStreamAutoCombo(w http.ResponseWriter, r *http.Request, 
 		decision.Attempted = append(decision.Attempted, m)
 		decision.Routed = m
 		decision.Fallback = !isTierCandidate(combo, tier, m)
+		if h.sessions != nil {
+			h.sessions.Set(sessionID, m, tier, route.Channel.ID)
+		}
+		h.rememberContinuation(sessionID, m)
 		h.emitAutoDecision(r, decision)
 		h.setAutoHeaders(w, decision)
 		logging.Debug("combo.stream_auto.success",
@@ -1121,6 +1332,34 @@ func (h *Handler) handleStreamAutoCombo(w http.ResponseWriter, r *http.Request, 
 	}
 }
 
+// streamAttemptPinned streams one request through the pinned model.
+// Returns true when the request was fully handled. Any failure —
+// unroutable model, non-streaming channel, upstream error — is
+// reported by the caller deleting the pin and re-deciding.
+func (h *Handler) streamAttemptPinned(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, combo model.TokenComboModel, pin session.Pin) bool {
+	opts := router.RouteOptions{Text: lastUserText(req.Messages)}
+	opts.SkipBreaker = true
+	route, routeErr := h.router.RouteWith(r.Context(), pin.Model, opts)
+	if routeErr != nil {
+		return false
+	}
+	prov := h.providerFor(route.Channel.Protocol, true)
+	if _, ok := prov.(provider.StreamingProvider); !ok {
+		return false
+	}
+	w.Header().Set("X-llmRx-Session-Pinned", "true")
+	w.Header().Set("X-llmRx-Auto-Tier", pin.Tier)
+	logging.Debug("combo.stream_auto.pin_hit",
+		logging.F("model", pin.Model),
+		logging.F("channel", route.Channel.Name),
+	)
+	original := req.Model
+	req.Model = pin.Model
+	h.streamChatCompletions(w, r, req)
+	req.Model = original
+	return true
+}
+
 // autoAttemptOrder builds the attempt order for one auto request:
 // the sampled arm first (highest θ draw, or the cheapest candidate
 // while the cold-start gate is on), then the remaining tier
@@ -1128,8 +1367,37 @@ func (h *Handler) handleStreamAutoCombo(w http.ResponseWriter, r *http.Request, 
 // fallback model already present in the tier candidates is not
 // retried a second time. Tier candidates whose context window
 // cannot fit the prompt are filtered out before sampling.
-func (h *Handler) autoAttemptOrder(combo model.TokenComboModel, tier, text string, picked *auto.ArmSample) []string {
-	candidates := auto.FilterContextCandidates(tierCandidates(combo, tier), auto.TokenEstimate(text))
+//
+// Task-aware upgrades:
+//   - task ("" disables): tier candidates are reordered so the
+//     task_model_bias preference for this task comes first (affects
+//     the cold-start gate and the non-sampled attempt order).
+//   - contModel ("" disables): session continuation moves the model
+//     this long-context session already used to the front of the
+//     attempt order — tool-chain continuity beats a per-turn pick.
+//
+// When every tier candidate has a context window too small for the
+// prompt and the combo declares a ContextFallback list, the order
+// escalates: models are drawn from ContextFallback sorted by
+// context window ascending (smallest that fits first) and the
+// returned escalated flag tells the caller to log the decision as
+// context_escalation. Escalation skips arm sampling — the
+// context_fallback models are a safety net, not quality arms.
+func (h *Handler) autoAttemptOrder(combo model.TokenComboModel, tier, text string, picked *auto.ArmSample, task, contModel string) ([]string, bool) {
+	est := auto.TokenEstimate(text)
+	raw := tierCandidates(combo, tier)
+	escalated := auto.AllContextFiltered(raw, est) && len(combo.ContextFallback) > 0
+	var candidates []string
+	if escalated {
+		candidates = auto.SelectContextFallback(combo.ContextFallback, est)
+	} else {
+		candidates = auto.FilterContextCandidates(raw, est)
+		// Task preference reorders candidates before sampling
+		// (affects the cold-start gate and fallback order).
+		if task != "" {
+			candidates, _ = auto.ReorderByTask(candidates, task, h.taskModelBias)
+		}
+	}
 	*picked = h.autoPool.Select(tier, candidates)
 	order := make([]string, 0, len(candidates)+len(combo.Fallback))
 	if picked.Model != "" {
@@ -1140,12 +1408,18 @@ func (h *Handler) autoAttemptOrder(combo model.TokenComboModel, tier, text strin
 			order = append(order, m)
 		}
 	}
+	// Session continuation: prefer the model the session already
+	// uses (long-context agentic sessions). Move it to the front of
+	// the attempt order; if it fails, the rest still apply.
+	if contModel != "" {
+		order, _ = auto.MoveToFront(order, contModel)
+	}
 	for _, m := range combo.Fallback {
 		if !containsString(order, m) {
 			order = append(order, m)
 		}
 	}
-	return order
+	return order, escalated
 }
 
 func containsString(xs []string, s string) bool {
@@ -1155,6 +1429,124 @@ func containsString(xs []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// resolveTask determines the task type for task-aware routing.
+// task_source=header reads X-Task-Type from the request; task_source
+// =auto runs the built-in keyword classifier over the prompt plus
+// recent context; anything else returns "" (feature off).
+func (h *Handler) resolveTask(r *http.Request, req *provider.ChatRequest, text string) (string, string) {
+	switch h.taskSource {
+	case "header":
+		if t := r.Header.Get("X-Task-Type"); t != "" && auto.ValidTask(t) {
+			return t, "header"
+		}
+		return "", ""
+	case "auto":
+		ctx := auto.TaskContextText(text, messageTexts(req.Messages), 3)
+		return string(h.taskClassifier.Classify(ctx)), "auto"
+	default:
+		return "", ""
+	}
+}
+
+// messageTexts flattens request messages into plain text tails for
+// task classification context.
+func messageTexts(msgs []provider.Message) []string {
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, m.ContentString())
+	}
+	return out
+}
+
+// continuationModel returns the model this session last used when
+// long-context continuation is enabled and the estimated context is
+// large enough. Empty string disables continuation for this request.
+func (h *Handler) continuationModel(sessionID string, estTokens int) string {
+	if !h.continuationOn || sessionID == "" || estTokens < h.contThreshold {
+		return ""
+	}
+	h.contMu.Lock()
+	defer h.contMu.Unlock()
+	return h.contModel[sessionID]
+}
+
+// rememberContinuation records the model that served a session turn
+// (only when continuation is enabled, to bound memory).
+func (h *Handler) rememberContinuation(sessionID, model string) {
+	if !h.continuationOn || sessionID == "" || model == "" {
+		return
+	}
+	h.contMu.Lock()
+	h.contModel[sessionID] = model
+	h.contMu.Unlock()
+}
+
+// sessionIDFor derives the session key for one request, in
+// priority order:
+//
+//  1. the X-Session-ID header (explicit client control)
+//  2. the request's user field (OpenAI passthrough)
+//  3. a hash of (system prompt + first user message) — gives
+//     multi-turn affinity without any client cooperation
+//
+// Returns "" when sessions are not configured.
+func (h *Handler) sessionIDFor(r *http.Request, req *provider.ChatRequest) string {
+	if h.sessions == nil {
+		return ""
+	}
+	if id := strings.TrimSpace(r.Header.Get("X-Session-ID")); id != "" {
+		return "header:" + id
+	}
+	return sessionIDFromReq(req)
+}
+
+// sessionIDFromReq derives the session key from the request alone
+// (no header access): explicit user field, else content hash.
+func sessionIDFromReq(req *provider.ChatRequest) string {
+	if id := strings.TrimSpace(req.User); id != "" {
+		return "user:" + id
+	}
+	system, firstUser := firstTurnText(req.Messages)
+	return session.Hash(system, firstUser)
+}
+
+// firstTurnText extracts the system prompt and the first user
+// message for the session hash.
+func firstTurnText(msgs []provider.Message) (system, firstUser string) {
+	for _, m := range msgs {
+		switch m.Role {
+		case "system":
+			if system == "" {
+				system = contentString(m)
+			}
+		case "user":
+			if firstUser == "" {
+				firstUser = contentString(m)
+			}
+		}
+	}
+	return system, firstUser
+}
+
+// contentString renders a message's content (string or parts) as
+// plain text for hashing.
+func contentString(m provider.Message) string {
+	switch c := m.Content.(type) {
+	case string:
+		return c
+	case []provider.ContentPart:
+		var sb strings.Builder
+		for _, p := range c {
+			if p.Text != "" {
+				sb.WriteString(p.Text)
+			}
+		}
+		return sb.String()
+	default:
+		return ""
+	}
 }
 
 // tierCandidates returns the tier's model list in cost order, or
@@ -1197,6 +1589,7 @@ func (h *Handler) emitAutoDecision(r *http.Request, d *auto.Decision) {
 		logging.F("theta", fmt.Sprintf("%.3f", d.Picked.Score)),
 		logging.F("routed", d.Routed),
 		logging.F("fallback", d.Fallback),
+		logging.F("context_escalation", d.ContextEscalation),
 		logging.F("attempted", strings.Join(d.Attempted, ",")),
 	)
 }
@@ -1222,6 +1615,15 @@ func (h *Handler) clientIP(r *http.Request) string {
 		if v := h.firstTrustedProxyHeader(r); v != "" {
 			return v
 		}
+	}
+	// Normalize to the bare host: r.RemoteAddr is "ip:port", but
+	// consumers (per-token IP whitelists, the registration throttle)
+	// match/aggregate on bare IPs. Keying on the ephemeral source
+	// port would let a client dodge per-IP limits and break exact
+	// whitelist matches, so strip it.
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
 	}
 	return r.RemoteAddr
 }
@@ -1283,6 +1685,61 @@ func lookupTokenID(ctx context.Context, st store.Store) int64 {
 	}
 	return v
 }
+
+// modelCostFor resolves a model's rate card from the in-memory
+// cache. ok=false when unpriced (requests for it are rejected
+// fail-closed before the upstream call).
+func (h *Handler) modelCostFor(model string) (*model.ModelCost, bool) {
+	if h.modelCosts == nil {
+		return nil, false
+	}
+	mc, ok := h.modelCosts.Lookup(model)
+	if !ok {
+		return nil, false
+	}
+	return &mc, true
+}
+
+// requirePriced writes a 422 and returns false when any of the given
+// models is absent from the rate card (fail-closed: unpriced models
+// must never run upstream for free). An empty rate card is treated as
+// "no pricing configured yet" (fresh DB before startup seeding, or a
+// test harness) and allows requests — production always seeds the
+// card at boot, so fail-closed applies as soon as it is non-empty.
+func (h *Handler) requirePriced(w http.ResponseWriter, models ...string) bool {
+	if h.modelCosts == nil || h.modelCosts.Size() == 0 {
+		return true
+	}
+	for _, m := range models {
+		if m == "" {
+			continue
+		}
+		if _, ok := h.modelCostFor(m); !ok {
+			writeError(w, http.StatusUnprocessableEntity,
+				"model "+m+" is not priced; ask the operator to add it to the rate card",
+				"model_not_priced")
+			return false
+		}
+	}
+	return true
+}
+
+// SetModelCosts swaps the rate-card cache (used after admin edits /
+// startup seeding so billing picks up fresh prices).
+func (h *Handler) SetModelCosts(c *modelcost.Cache) { h.modelCosts = c }
+
+// ReloadModelCosts re-reads the rate card from the store (used after
+// admin writes / tests).
+func (h *Handler) ReloadModelCosts() error {
+	if h.modelCosts == nil {
+		return nil
+	}
+	return h.modelCosts.Reload()
+}
+
+// ModelCosts exposes the shared rate-card cache (wired into the
+// admin handler so admin edits can reload it).
+func (h *Handler) ModelCosts() *modelcost.Cache { return h.modelCosts }
 
 func (h *Handler) emitLog(ctx context.Context, tokenID int64, modelName string, route *router.RouteResult, usage *provider.Usage, durationMs int64, statusCode int, failed bool, ip string) {
 	h.emitter.Emit(ctx, tokenID, modelName, route, usage, durationMs, statusCode, failed, ip)
@@ -1355,19 +1812,45 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 					OwnedBy: ch.Provider,
 				}
 				if details {
-					if meta, ok := modelmeta.Get(m); ok {
-						cw := meta.ContextWindow
-						mo := meta.MaxOutput
-						entry.ContextWindow = &cw
-						entry.MaxOutput = &mo
-						entry.Pricing = &modelPricing{
-							Input:  meta.InputPrice,
-							Output: meta.OutputPrice,
+					// Pricing comes from the billing rate card (the
+					// model_costs table). modelmeta supplies context
+					// window / capabilities when the rate card lacks
+					// them.
+					var pr *modelPricing
+					cw, mo := 0, 0
+					if mc, ok := h.modelCostFor(m); ok {
+						pr = &modelPricing{
+							Input:  mc.InputPricePer1M,
+							Output: mc.OutputPricePer1M,
 						}
-						caps := meta.Capabilities
-						entry.Capabilities = &caps
+						cw, mo = mc.ContextWindow, mc.MaxOutput
+					}
+					if meta, ok := modelmeta.Get(m); ok {
+						if cw == 0 {
+							cw = meta.ContextWindow
+						}
+						if mo == 0 {
+							mo = meta.MaxOutput
+						}
+						if pr == nil {
+							pr = &modelPricing{
+								Input:  meta.InputPrice,
+								Output: meta.OutputPrice,
+							}
+						}
+						entry.Capabilities = &meta.Capabilities
 						entry.Modalities = meta.Modalities
 					}
+					// Unknown models get no context_window / max_output
+					// fields at all (nil), matching the pre-rate-card
+					// behaviour.
+					if cw > 0 {
+						entry.ContextWindow = &cw
+					}
+					if mo > 0 {
+						entry.MaxOutput = &mo
+					}
+					entry.Pricing = pr
 				}
 				data = append(data, entry)
 			}
@@ -1457,7 +1940,7 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.router.RecordSuccess(route.Channel.ID)
+	h.router.RecordSuccessLatency(route.Channel.ID, duration)
 	h.emitLog(r.Context(), tokenID, req.Model, route, &resp.Usage, duration, statusCode, false, h.clientIP(r))
 	writeJSON(w, resp)
 }
@@ -1511,7 +1994,7 @@ func (h *Handler) ImageGenerations(w http.ResponseWriter, r *http.Request) {
 		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
 		return
 	}
-	h.router.RecordSuccess(route.Channel.ID)
+	h.router.RecordSuccessLatency(route.Channel.ID, duration)
 	var usage *provider.Usage
 	if resp.Usage != nil {
 		usage = resp.Usage
@@ -1571,7 +2054,7 @@ func (h *Handler) AudioSpeech(w http.ResponseWriter, r *http.Request) {
 		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
 		return
 	}
-	h.router.RecordSuccess(route.Channel.ID)
+	h.router.RecordSuccessLatency(route.Channel.ID, duration)
 	h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, false, h.clientIP(r))
 	format := req.ResponseFormat
 	if format == "" {
@@ -1655,7 +2138,7 @@ func (h *Handler) AudioTranscriptions(w http.ResponseWriter, r *http.Request) {
 		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
 		return
 	}
-	h.router.RecordSuccess(route.Channel.ID)
+	h.router.RecordSuccessLatency(route.Channel.ID, duration)
 	var usage *provider.Usage
 	if resp.Duration > 0 {
 		usage = &provider.Usage{TotalTokens: int(resp.Duration * 1000)}
@@ -1716,7 +2199,7 @@ func (h *Handler) Rerank(w http.ResponseWriter, r *http.Request) {
 		h.emitLog(r.Context(), tokenID, req.Model, route, nil, duration, statusCode, true, h.clientIP(r))
 		return
 	}
-	h.router.RecordSuccess(route.Channel.ID)
+	h.router.RecordSuccessLatency(route.Channel.ID, duration)
 	var usage *provider.Usage
 	if resp.Usage != nil {
 		usage = resp.Usage
@@ -1749,19 +2232,6 @@ func itoa(n int) string {
 	return string(buf[i:])
 }
 
-// calcCost returns the real USD cost of a single chat completion.
-// The cached-token discount applies only to the prompt leg: when the
-// upstream reports that some prompt tokens were served from its
-// prompt cache (Anthropic, OpenAI GPT-5+, etc.), the gateway charges
-// only the discount fraction of InputPrice for those tokens. The
-// discount is configured per channel (CachedInputDiscount). If the
-// discount is zero, no savings apply (and cached tokens still count
-// toward PromptTokens for billing purposes).
-func calcCost(ch *model.Channel, usage provider.Usage) float64 {
-	cc := CostCalculator{}
-	return cc.RealCost(ch, usage)
-}
-
 // streamChatCompletions is invoked when the client sets stream=true.
 // It performs the normal route selection, asks the upstream for a
 // stream, and writes each chunk back as an SSE event. The
@@ -1779,6 +2249,10 @@ func calcCost(ch *model.Channel, usage provider.Usage) float64 {
 //
 // A value of 0 disables the corresponding cap.
 func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest) {
+	// Fail-closed: unpriced models never run upstream (even streamed).
+	if !h.requirePriced(w, req.Model) {
+		return
+	}
 	route, err := h.router.RouteWith(r.Context(), req.Model, router.RouteOptions{Text: lastUserText(req.Messages)})
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "no available channel: "+err.Error(), "no_channel")
@@ -1892,15 +2366,15 @@ func (h *Handler) streamChatCompletions(w http.ResponseWriter, r *http.Request, 
 						continue
 					}
 					idx := *tc.Index
-acc, ok := toolCallAcc[idx]
-				if !ok {
-					acc = toolCallAccumPool.Get().(*toolCallAccum)
-					acc.Index = idx
-					acc.ID = ""
-					acc.Name.Reset()
-					acc.Arguments.Reset()
-					toolCallAcc[idx] = acc
-				}
+					acc, ok := toolCallAcc[idx]
+					if !ok {
+						acc = toolCallAccumPool.Get().(*toolCallAccum)
+						acc.Index = idx
+						acc.ID = ""
+						acc.Name.Reset()
+						acc.Arguments.Reset()
+						toolCallAcc[idx] = acc
+					}
 					if tc.ID != "" {
 						acc.ID = tc.ID
 					}
@@ -2124,7 +2598,7 @@ final:
 	}
 	w.Write(donePayload)
 	flusher.Flush()
-	h.router.RecordSuccess(route.Channel.ID)
+	h.router.RecordSuccessLatency(route.Channel.ID, time.Since(start).Milliseconds())
 	if streamBuf != nil {
 		body := streamBuf.Bytes()
 		bodyCopy := make([]byte, len(body))
@@ -2154,7 +2628,9 @@ func (h *Handler) tryCacheStream(ctx context.Context, req *provider.ChatRequest,
 	ttl := time.Duration(h.cfg.Server.CacheTTLSeconds) * time.Second
 	var costUSD float64
 	if usage != nil {
-		costUSD = h.costCalc.RealCost(route.Channel, *usage)
+		if mc, ok := h.modelCostFor(req.Model); ok {
+			costUSD = h.costCalc.RealCost(mc, *usage)
+		}
 	}
 	entry := &cache.Entry{
 		Key:        ckey,

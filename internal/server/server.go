@@ -34,6 +34,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/ratelimit"
 	"github.com/sn0wfree/llmRx/internal/requestid"
 	"github.com/sn0wfree/llmRx/internal/router"
+	"github.com/sn0wfree/llmRx/internal/router/session"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/secrets"
 	"github.com/sn0wfree/llmRx/internal/store"
@@ -61,6 +62,7 @@ type Server struct {
 	engine       *chi.Mux
 	httpServer   *http.Server
 	prober       *prober.Cache
+	sessions     *session.Store
 	mcpClientMgr *mcp.ClientManager
 	mcpServer    *mcp.Server
 	// limiter overrides the api handler's default process-local
@@ -239,7 +241,25 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	// busy channels get zero probe requests (real traffic is a
 	// better health signal than a synthetic /v1/models probe).
 	s.router.SetTrafficObserver(prober.NewRouterObserver(proberCache))
-	logging.Info("prober: wired into router (real-traffic observer)")
+	s.router.SetHealthChecker(proberCache)
+	logging.Info("prober: wired into router (real-traffic observer + L2 health filter)")
+
+	// Session affinity for mode:auto combos (default off). When
+	// enabled, multi-turn conversations pin to one model/channel to
+	// preserve upstream prompt caches.
+	if s.cfg.Session.Enabled {
+		sessStore := session.New(session.Config{
+			TTL:        time.Duration(s.cfg.Session.TTLSec) * time.Second,
+			MaxEntries: s.cfg.Session.MaxEntries,
+		})
+		sessStore.StartCleanup(time.Minute)
+		handler.SetSessions(sessStore)
+		s.sessions = sessStore
+		logging.Info("session_affinity: enabled",
+			logging.F("ttl_sec", s.cfg.Session.TTLSec),
+			logging.F("max_entries", s.cfg.Session.MaxEntries),
+		)
+	}
 
 	// Initialize MCP components.
 	s.mcpClientMgr = mcp.NewClientManager(s.store)
@@ -262,6 +282,8 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	adminHandler.SetMCPClientManager(s.mcpClientMgr)
 	adminHandler.SetGuardrailEngine(handler.GuardrailEngine())
 	adminHandler.SetAutoStats(handler.AutoStats())
+	adminHandler.SetSessions(handler.Sessions())
+	adminHandler.SetModelCosts(handler.ModelCosts())
 	s.guardrailEngine = handler.GuardrailEngine()
 	adminHandler.SetReloadNotifier(s.fireNotify)
 
@@ -271,6 +293,14 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	// same effective behaviour as the old WithLimits call.
 	s.engine.With(authmw.WithLimitsAndOptions(s.tokens.Lookup, handler.Limits(), s.byokHook)).
 		Mount("/v1", handler.Routes())
+
+	// Public self-service billing endpoints (no bearer token; the
+	// /me/* routes authenticate via the llmrx_session cookie):
+	// invite-code registration + top-up redemption.
+	handler.SetTokenReloader(s.tokens.Reload)
+	s.engine.Post("/api/v1/register", handler.Register)
+	s.engine.Get("/api/v1/me", handler.Me)
+	s.engine.Post("/api/v1/me/redeem", handler.Redeem)
 
 	// MCP server endpoint: expose llmRx's own tools. Same token
 	// chain as /v1 — the endpoint can spend the gateway's upstream
@@ -470,6 +500,9 @@ func (s *Server) Start(ctx context.Context) error {
 		defer cancel()
 		if s.prober != nil {
 			s.prober.Stop()
+		}
+		if s.sessions != nil {
+			s.sessions.Stop()
 		}
 		if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
 			return fmt.Errorf("graceful shutdown: %w", err)

@@ -34,6 +34,7 @@ func (d *errorLogDriver) TopByField(f logstore.QueryFilter, field string, limit 
 }
 func (d *errorLogDriver) ListFiles() ([]string, error)                  { return nil, d.err }
 func (d *errorLogDriver) DeleteFiles(days []string) error               { return d.err }
+func (d *errorLogDriver) ArchiveFiles(days []string) error              { return d.err }
 func (d *errorLogDriver) Close() error                                  { return nil }
 func (d *errorLogDriver) BatchInsert(entries []*model.Log) (int, error) { return 0, d.err }
 

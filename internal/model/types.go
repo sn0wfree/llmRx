@@ -53,6 +53,8 @@ const (
 	StrategyFastest        CostStrategy = "fastest"
 	StrategyBalanced       CostStrategy = "balanced"
 	StrategyWeightedRandom CostStrategy = "weighted_random"
+	StrategyLatency        CostStrategy = "latency"
+	StrategyCostLatency    CostStrategy = "cost_latency_blend"
 )
 
 // ComboMode selects the routing strategy inside a token combo model.
@@ -170,7 +172,63 @@ type Token struct {
 	ExpiresAt       time.Time   `json:"expires_at"`
 	LastUsedAt      time.Time   `json:"last_used_at"`
 	CreatedAt       time.Time   `json:"created_at"`
+	// UserID links the token to its owning user (0 = not linked,
+	// e.g. legacy admin-created tokens). Backfilled from
+	// token.name == users.username on startup for registration-created
+	// tokens, so usage stats can attribute requests to a user.
+	UserID int64 `json:"user_id"`
 }
+
+// ModelCost is the billing rate card for a model. It is the SOLE
+// source of truth for per-model pricing (channel-level prices no
+// longer participate in cost calculation). Prices are per 1M tokens
+// (image_price is per image). A zero price field means "free" where
+// a dimension exists, or "fall back to the base tier" for the
+// optional dimensions below:
+//
+//	cache_write = 0 → non-cached prompt billed at input_price
+//	reasoning   = 0 → reasoning tokens billed at output_price
+//	above_128k/above_200k = 0 → fall back to the lower tier price
+type ModelCost struct {
+	ID       int64  `json:"id"`
+	Model    string `json:"model"`
+	Provider string `json:"provider,omitempty"`
+
+	InputPricePer1M  float64 `json:"input_price_per_1m"`
+	OutputPricePer1M float64 `json:"output_price_per_1m"`
+	// CacheReadPricePer1M is charged for prompt tokens served from a
+	// cache: the upstream prompt cache AND llmRx's own response cache
+	// (cache hits). 0 = cached tokens free.
+	CacheReadPricePer1M float64 `json:"cache_read_price_per_1m"`
+	// CacheWritePricePer1M, when > 0, is charged for the non-cached
+	// prompt tokens that (re)populate the upstream cache. 0 = those
+	// tokens are billed at input_price_per_1m.
+	CacheWritePricePer1M float64 `json:"cache_write_price_per_1m"`
+	// ReasoningPricePer1M, when > 0, replaces output_price_per_1m for
+	// the reasoning/thinking portion of the completion tokens.
+	ReasoningPricePer1M float64 `json:"reasoning_price_per_1m"`
+	// ImagePrice is charged per input image (0 = free / unsupported).
+	ImagePrice float64 `json:"image_price"`
+
+	// Long-context tier pricing. When prompt/completion tokens exceed
+	// the threshold, the excess portion is billed at the tier rate.
+	// 0 = fall back to the lower tier.
+	InputPricePer1MAbove128K  float64 `json:"input_price_per_1m_above_128k"`
+	OutputPricePer1MAbove128K float64 `json:"output_price_per_1m_above_128k"`
+	InputPricePer1MAbove200K  float64 `json:"input_price_per_1m_above_200k"`
+	OutputPricePer1MAbove200K float64 `json:"output_price_per_1m_above_200k"`
+
+	ContextWindow int `json:"context_window"`
+	MaxOutput     int `json:"max_output"`
+
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ModelCost thresholds (tokens) for long-context tier pricing.
+const (
+	ModelCostTier128K = 128000
+	ModelCostTier200K = 200000
+)
 
 type User struct {
 	ID           int64    `json:"id"`
@@ -187,6 +245,42 @@ type User struct {
 	CreatedAt    time.Time  `json:"created_at"`
 }
 
+// RedeemCodeKind distinguishes invite codes (registration gate) from
+// top-up codes (add budget to a plan).
+type RedeemCodeKind string
+
+const (
+	RedeemKindInvite RedeemCodeKind = "invite"
+	RedeemKindTopup  RedeemCodeKind = "topup"
+)
+
+// RedeemCode is a single-use code: kind=invite gates registration
+// (and grants initial_quota), kind=topup adds amount_usd to a
+// plan's budget. Codes are created by an admin and consumed once.
+type RedeemCode struct {
+	ID int64 `json:"id"`
+	// Code is the redeemable string, e.g. "RXM-ABCD1234".
+	Code string `json:"code"`
+	// Kind: "invite" (registration gate) or "topup" (add budget).
+	Kind RedeemCodeKind `json:"kind"`
+	// AmountUSD is the budget added on redemption (topup codes).
+	AmountUSD float64 `json:"amount_usd"`
+	// InitialQuota is the plan budget granted at registration
+	// (invite codes, configurable, default 5).
+	InitialQuota float64 `json:"initial_quota"`
+	// Role granted to the registering user (invite codes).
+	Role UserRole `json:"role"`
+	// CreatedBy is the admin user id that generated the code.
+	CreatedBy int64 `json:"created_by"`
+	// ExpiresAt zero = never expires.
+	ExpiresAt time.Time `json:"expires_at"`
+	// UsedBy / UsedAt zero = unused.
+	UsedBy int64     `json:"used_by"`
+	UsedAt time.Time `json:"used_at"`
+	// CreatedAt records generation time.
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type Log struct {
 	ID               int64  `json:"id"`
 	TokenID          int64  `json:"token_id"`
@@ -199,7 +293,14 @@ type Log struct {
 	// upstream's prompt cache (Anthropic, OpenAI GPT-5+, etc.). The
 	// real cost calculation subtracts (CachedTokens * InputPrice *
 	// (1 - CachedInputDiscount)).
-	CachedTokens  int     `json:"cached_tokens"`
+	CachedTokens int `json:"cached_tokens"`
+	// ReasoningTokens is the portion of CompletionTokens used for
+	// chain-of-thought / thinking, when the upstream reports it
+	// (DeepSeek, GLM, etc.). Billed at the model's reasoning rate.
+	ReasoningTokens int `json:"reasoning_tokens"`
+	// CacheHit marks a row produced by llmRx's own response cache
+	// (no upstream call). Billed at the model's cache-read rate.
+	CacheHit      bool    `json:"cache_hit"`
 	RealCostUSD   float64 `json:"real_cost_usd"`
 	BilledCostUSD float64 `json:"billed_cost_usd"`
 	DurationMs    int64   `json:"duration_ms"`
@@ -250,10 +351,29 @@ type TokenComboModel struct {
 	Strategy CostStrategy `json:"strategy"` // "" = inherit global
 	// Tiers is the complexity-tier candidate table for mode:auto
 	// combos. Empty for load_balance/serial combos.
-	Tiers     map[string]TierConfig `json:"tiers,omitempty"`
-	Fallback  []string              `json:"fallback,omitempty"`
-	Enabled   bool                  `json:"enabled"`
-	IsDefault bool                  `json:"is_default"`
-	CreatedAt time.Time             `json:"created_at"`
-	UpdatedAt time.Time             `json:"updated_at"`
+	Tiers    map[string]TierConfig `json:"tiers,omitempty"`
+	Fallback []string              `json:"fallback,omitempty"`
+	// ContextFallback lists models tried when the classified tier's
+	// candidates all have context windows too small for the prompt.
+	// Escalates to a larger-context model instead of failing the
+	// request. Sorted by context_window ascending when selected
+	// (smallest that fits wins; cost is usually lower too).
+	ContextFallback []string  `json:"context_fallback,omitempty"`
+	Enabled         bool      `json:"enabled"`
+	IsDefault       bool      `json:"is_default"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// LearnedRouterConfig holds configuration for the learned router
+// (trained ML model that predicts best model for a prompt).
+type LearnedRouterConfig struct {
+	Enabled          bool    `yaml:"enabled" json:"enabled"`
+	ModelPath        string  `yaml:"model_path" json:"model_path"`
+	VocabPath        string  `yaml:"vocab_path" json:"vocab_path"`
+	FeatureStatsPath string  `yaml:"feature_stats_path" json:"feature_stats_path"`
+	WeightTs         float64 `yaml:"weight_ts" json:"weight_ts"`
+	WeightLearned    float64 `yaml:"weight_learned" json:"weight_learned"`
+	WeightCost       float64 `yaml:"weight_cost" json:"weight_cost"`
+	Fallback         bool    `yaml:"fallback" json:"fallback"` // fallback to TS when model unavailable
 }

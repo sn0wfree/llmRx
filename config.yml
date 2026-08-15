@@ -26,6 +26,25 @@ secrets:
   key_master_env: LLMRX_KEY_MASTER
   dev_allow_plaintext_keys: false
 
+# latency_routing: 可选延迟感知路由（默认关闭）。开启后每个 channel
+# 维护 EWMA 响应延迟，路由时把慢 channel 排后。
+#   strategy: latency（纯延迟）或 cost_latency_blend（价格+延迟混合，默认）
+#   cost_weight/latency_weight: 混合策略权重（默认 0.7 / 0.3）
+latency_routing:
+  enabled: false
+  alpha: 0.1
+  strategy: cost_latency_blend
+  cost_weight: 0.7
+  latency_weight: 0.3
+
+# session_affinity: 可选会话亲和（默认关闭）。开启后 mode:auto 的
+# 多轮对话会钉在同一 model/channel（保上游 prompt cache 与一致性）。
+# session 来源优先级：X-Session-ID 请求头 > body user 字段 > system+首条 user 哈希。
+session_affinity:
+  enabled: false
+  ttl_sec: 3600
+  max_entries: 10000
+
 tokens:
   - key: sk-test-token-123
     name: test-token

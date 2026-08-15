@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -66,6 +67,16 @@ func (h *Handler) Routes() http.Handler {
 	// Public
 	r.Get("/login", h.LoginPage)
 	r.Post("/login", h.LoginSubmit)
+	r.Get("/register", h.RegisterPage)
+
+	// Any authenticated user (RoleUser +) — the self-service account
+	// page (API key, budget, redemption).
+	r.Group(func(r chi.Router) {
+		r.Use(SessionMiddleware(h.store))
+		r.Use(RequireRole(model.RoleUser))
+		r.Get("/me", h.MePage)
+		r.Get("/me/export.csv", h.MeUsageExportCSV)
+	})
 
 	// Authenticated — every route below manages gateway resources
 	// (channels, upstream keys, tokens, MCP servers, alerts). A
@@ -134,10 +145,23 @@ func (h *Handler) Routes() http.Handler {
 
 		// Plans
 		r.Get("/plans", h.PlansPage)
+		r.Get("/redeem-codes", h.RedeemCodesPage)
 		r.Get("/plans/new", h.PlanNewForm)
 		r.Get("/plans/{id}/edit", h.PlanEditForm)
 		r.Post("/plans", h.PlanCreate)
 		r.Post("/plans/{id}", h.PlanAction)
+
+		// Model costs (rate card)
+		r.Get("/model-costs", h.ModelCostsPage)
+		r.Post("/model-costs", h.ModelCostCreate)
+		r.Post("/model-costs/{model}", h.ModelCostUpdate)
+		r.Post("/model-costs/{model}/delete", h.ModelCostDelete)
+		r.Post("/model-costs/import", h.ModelCostImport)
+
+		// Per-user usage (admin)
+		r.Get("/usage", h.UsersUsagePage)
+		r.Get("/usage/{id}", h.UserUsagePage)
+		r.Get("/usage/{id}/export.csv", h.UserUsageExportCSV)
 
 		r.Get("/mcp-servers", h.MCPServersPage)
 		r.Post("/mcp-servers", h.MCPServerCreate)
@@ -305,12 +329,15 @@ func (h *Handler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 		Expires:  exp,
 		MaxAge:   int(DefaultSessionTTL.Seconds()),
 		SameSite: http.SameSiteStrictMode,
+		Secure:   r.TLS != nil,
 	})
 
-	// HTMX expects 200 + OOB swap to redirect (we use JS in template)
+	// HTMX expects 200 + OOB swap to redirect (we use JS in template).
+	// data-role lets the client send RoleUser to /admin/me and
+	// admins to /admin/dashboard.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`<div id="login-error"></div>`))
+	_, _ = fmt.Fprintf(w, `<div id="login-error" data-role="%d"></div>`, u.Role)
 }
 
 // LogoutSubmit clears the session and redirects to login.

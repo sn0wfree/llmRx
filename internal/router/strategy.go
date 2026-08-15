@@ -137,9 +137,164 @@ var strategyMap = map[model.CostStrategy]CostStrategy{
 	model.StrategyWeightedRandom: WeightedRandomStrategy{},
 }
 
-func strategyFromName(name model.CostStrategy) CostStrategy {
+// LatencyProvider supplies per-channel EWMA latency in ms. The
+// latency strategies need this to rank candidates; nil means
+// "no latency data" and the strategies fall back to cost order.
+type LatencyProvider interface {
+	LatencyMS(channelID int64) float64
+}
+
+// LatencyStrategy ranks candidates by their EWMA response time
+// (ascending - fastest first). Channels with no observations
+// (LatencyMS returns 0) stay in their input order at the end of
+// the list, so cold-start traffic still flows.
+//
+// The caller must wire the CostRouter's strategy interface via
+// SetLatencyProvider() before invoking Sort; otherwise Sort
+// returns the input unchanged.
+type LatencyStrategy struct {
+	Provider LatencyProvider
+}
+
+func (LatencyStrategy) Name() string { return string(model.StrategyLatency) }
+
+// Sort returns the channels sorted by EWMA latency ascending. The
+// implementation is stable for channels with equal latency (preserves
+// input order, which is normally the cost order from L3).
+func (s LatencyStrategy) Sort(channels []*model.Channel) []*model.Channel {
+	if len(channels) <= 1 || s.Provider == nil {
+		return channels
+	}
+	type indexed struct {
+		ch     *model.Channel
+		lat    float64
+		hasObs bool
+	}
+	items := make([]indexed, len(channels))
+	for i, ch := range channels {
+		lat := s.Provider.LatencyMS(ch.ID)
+		items[i] = indexed{ch: ch, lat: lat, hasObs: lat > 0}
+	}
+	out := make([]*model.Channel, 0, len(channels))
+	// Observed channels sorted ascending by latency (stable).
+	observed := make([]indexed, 0, len(channels))
+	for _, it := range items {
+		if it.hasObs {
+			observed = append(observed, it)
+		}
+	}
+	sort.SliceStable(observed, func(i, j int) bool {
+		return observed[i].lat < observed[j].lat
+	})
+	for _, it := range observed {
+		out = append(out, it.ch)
+	}
+	// Cold-start channels keep their input order at the end.
+	for _, it := range items {
+		if !it.hasObs {
+			out = append(out, it.ch)
+		}
+	}
+	return out
+}
+
+// CostLatencyBlendStrategy blends cost and EWMA latency into a
+// single score: score = costWeight*costNorm + latencyWeight*latencyNorm.
+// Weights are configurable; both are normalised 0..1 by the worst
+// value in the candidate set, so the relative gap matters more
+// than the absolute numbers.
+//
+// Default weights (set via SetCostWeight/SetLatencyWeight) are
+// 0.7/0.3 - same shape as LiteLLM's cost_quality_tradeoff.
+type CostLatencyBlendStrategy struct {
+	Provider     LatencyProvider
+	CostWeight   float64 // default 0.7
+	LatencyWeight float64 // default 0.3
+}
+
+func (CostLatencyBlendStrategy) Name() string { return string(model.StrategyCostLatency) }
+
+// Sort ranks channels by blended score ascending (lower = better).
+func (s CostLatencyBlendStrategy) Sort(channels []*model.Channel) []*model.Channel {
+	if len(channels) <= 1 {
+		return channels
+	}
+	cw := s.CostWeight
+	if cw <= 0 {
+		cw = 0.7
+	}
+	lw := s.LatencyWeight
+	if lw <= 0 {
+		lw = 0.3
+	}
+	// Find max for normalisation.
+	maxPrice, maxLat := 0.0, 0.0
+	for _, ch := range channels {
+		if p := totalPrice(ch); p > maxPrice {
+			maxPrice = p
+		}
+		if s.Provider != nil {
+			if l := s.Provider.LatencyMS(ch.ID); l > maxLat {
+				maxLat = l
+			}
+		}
+	}
+	type scored struct {
+		ch    *model.Channel
+		score float64
+	}
+	out := make([]scored, len(channels))
+	for i, ch := range channels {
+		price := totalPrice(ch)
+		priceNorm := 0.0
+		if maxPrice > 0 {
+			priceNorm = price / maxPrice
+		}
+		lat := 0.0
+		if s.Provider != nil {
+			lat = s.Provider.LatencyMS(ch.ID)
+		}
+		latNorm := 0.0
+		if maxLat > 0 {
+			latNorm = lat / maxLat
+		}
+		out[i] = scored{ch: ch, score: cw*priceNorm + lw*latNorm}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].score < out[j].score
+	})
+	result := make([]*model.Channel, len(out))
+	for i, s := range out {
+		result[i] = s.ch
+	}
+	return result
+}
+
+func strategyFromName(name model.CostStrategy, lp LatencyProvider) CostStrategy {
+	switch name {
+	case model.StrategyLatency:
+		return LatencyStrategy{Provider: lp}
+	case model.StrategyCostLatency:
+		return CostLatencyBlendStrategy{Provider: lp}
+	}
 	if s, ok := strategyMap[name]; ok {
 		return s
 	}
 	return CheapestStrategy{}
+}
+
+// strategyFromNameWeights is like strategyFromName but also
+// carries the configured blend weights for the
+// cost_latency_blend strategy. Used by CostRouter.SetStrategy
+// so config (latency_routing.cost_weight) reaches the strategy.
+func strategyFromNameWeights(name model.CostStrategy, lp LatencyProvider, costW, latW float64) CostStrategy {
+	switch name {
+	case model.StrategyCostLatency:
+		return CostLatencyBlendStrategy{
+			Provider:      lp,
+			CostWeight:    costW,
+			LatencyWeight: latW,
+		}
+	}
+	return strategyFromName(name, lp)
 }

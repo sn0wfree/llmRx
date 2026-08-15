@@ -22,6 +22,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/mcp"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/modelcost"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/provider"
 	"github.com/sn0wfree/llmRx/internal/router"
@@ -52,9 +53,22 @@ type Handler struct {
 	// state endpoint. Wired from the api handler via SetAutoStats;
 	// nil renders the state endpoint without the stats block.
 	autoStats *auto.Stats
+	// sessions exposes the session-affinity pin table size for the
+	// state endpoint. Wired via SetSessions; nil renders without it.
+	sessions SessionCounter
 	// reloadNotifier broadcasts local config writes to other
 	// replicas (P12 M2 PG NOTIFY). nil = no-op.
 	reloadNotifier func()
+	// modelCosts is the in-memory rate card. Wired from the api
+	// handler via SetModelCosts so admin edits reload the live cache.
+	// nil renders the model-costs endpoints read-only.
+	modelCosts *modelcost.Cache
+}
+
+// SessionCounter is the narrow slice of the session store the admin
+// state endpoint needs.
+type SessionCounter interface {
+	Count() int
 }
 
 // AlertReloader is the narrow contract the admin /reload handler
@@ -78,6 +92,14 @@ func (h *Handler) SetStore(st store.Store) { h.store = st }
 // SetAutoStats wires the auto-router decision counter accumulator
 // (owned by the api handler) into the state endpoint and /reload.
 func (h *Handler) SetAutoStats(s *auto.Stats) { h.autoStats = s }
+
+// SetModelCosts wires the shared rate-card cache (owned by the api
+// handler) so admin edits can reload it.
+func (h *Handler) SetModelCosts(c *modelcost.Cache) { h.modelCosts = c }
+
+// SetSessions wires the session-affinity pin store into the state
+// endpoint (session count). nil hides the block.
+func (h *Handler) SetSessions(s SessionCounter) { h.sessions = s }
 
 // SetAlertManager lets main.go inject the alert manager for /reload.
 // Accepts the AlertReloader interface to keep the import graph
@@ -166,6 +188,10 @@ func (h *Handler) Routes() http.Handler {
 		r.Get("/plans/{id}", h.GetPlan)
 		r.Put("/plans/{id}", h.UpdatePlan)
 		r.Delete("/plans/{id}", h.DeletePlan)
+		r.Get("/model-costs", h.ListModelCosts)
+		r.Put("/model-costs", h.UpsertModelCost)
+		r.Delete("/model-costs", h.DeleteModelCost)
+		r.Post("/model-costs/import", h.ImportModelCosts)
 		r.Get("/config", h.GetConfig)
 		r.Get("/effective", h.EffectiveConfig)
 		r.Get("/cache/stats", h.CacheStats)
@@ -196,6 +222,8 @@ func (h *Handler) Routes() http.Handler {
 		r.Put("/config", h.UpdateConfig)
 		r.Post("/reload", h.ReloadAll)
 		r.Post("/secrets/rotate", h.RotateSecrets)
+		r.Post("/redeem-codes", h.CreateRedeemCodes)
+		r.Get("/redeem-codes", h.ListRedeemCodes)
 	})
 	return r
 }
@@ -865,6 +893,14 @@ func (h *Handler) AutoRouterState(w http.ResponseWriter, r *http.Request) {
 	if h.autoStats != nil {
 		out["stats"] = h.autoStats.Snapshot()
 	}
+	// Per-channel EWMA latency (ms) when the latency tracker is live.
+	if lt := h.router.LatencyTracker(); lt != nil {
+		out["latency_ms"] = lt.Snapshot()
+	}
+	// Live session-affinity pins when configured.
+	if h.sessions != nil {
+		out["sessions"] = h.sessions.Count()
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -1317,6 +1353,7 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 		"breaker_reset_timeout_ms": h.rt.BreakerResetTimeoutMs(),
 		"alert_cooldown_sec":       h.rt.AlertCooldownSec(),
 		"log_retention_days":       h.rt.LogRetentionDays(),
+		"log_retention_mode":       h.rt.LogRetentionMode(),
 		"markup_ratio":             h.rt.MarkupRatio(),
 		"stream_timeout_sec":       h.rt.StreamTimeoutSec(),
 		"stream_max_body_bytes":    h.rt.StreamMaxBodyBytes(),
@@ -1332,6 +1369,7 @@ func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		BreakerResetTimeoutMs *int64   `json:"breaker_reset_timeout_ms,omitempty"`
 		AlertCooldownSec      *int64   `json:"alert_cooldown_sec,omitempty"`
 		LogRetentionDays      *int64   `json:"log_retention_days,omitempty"`
+		LogRetentionMode      *string  `json:"log_retention_mode,omitempty"`
 		MarkupRatio           *float64 `json:"markup_ratio,omitempty"`
 		StreamTimeoutSec      *int64   `json:"stream_timeout_sec,omitempty"`
 		StreamMaxBodyBytes    *int64   `json:"stream_max_body_bytes,omitempty"`
@@ -1382,6 +1420,15 @@ func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.rt.SetLogRetentionDays(*body.LogRetentionDays)
+	}
+	if body.LogRetentionMode != nil {
+		switch *body.LogRetentionMode {
+		case "delete", "archive":
+			h.rt.SetLogRetentionMode(*body.LogRetentionMode)
+		default:
+			writeErr(w, http.StatusBadRequest, "log_retention_mode must be delete|archive")
+			return
+		}
 	}
 	if body.MarkupRatio != nil {
 		if *body.MarkupRatio < 0.01 || *body.MarkupRatio > 1000 {

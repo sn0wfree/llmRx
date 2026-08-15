@@ -8,15 +8,17 @@ import (
 )
 
 type Config struct {
-	Server     ServerConfig     `yaml:"server"`
-	Database   DatabaseConfig   `yaml:"database"`
-	Strategy   StrategyConfig   `yaml:"strategy"`
-	Tokens     []TokenConfig    `yaml:"tokens"`
-	Channels   []ChannelConfig  `yaml:"channels"`
-	Secrets    SecretsConfig    `yaml:"secrets"`
-	BYOK       BYOKConfig       `yaml:"byok"`
-	Providers  []ProviderConfig `yaml:"providers"`
-	AutoRouter AutoRouterConfig `yaml:"auto_router"`
+	Server       ServerConfig       `yaml:"server"`
+	Database     DatabaseConfig     `yaml:"database"`
+	Strategy     StrategyConfig     `yaml:"strategy"`
+	Tokens       []TokenConfig      `yaml:"tokens"`
+	Channels     []ChannelConfig    `yaml:"channels"`
+	Secrets      SecretsConfig      `yaml:"secrets"`
+	BYOK         BYOKConfig         `yaml:"byok"`
+	Providers    []ProviderConfig   `yaml:"providers"`
+	AutoRouter   AutoRouterConfig   `yaml:"auto_router"`
+	LatencyRoute LatencyRouteConfig `yaml:"latency_routing"`
+	Session      SessionConfig      `yaml:"session_affinity"`
 }
 
 type ServerConfig struct {
@@ -25,7 +27,12 @@ type ServerConfig struct {
 	LogLevel         string `yaml:"log_level"`
 	AdminPassword    string `yaml:"admin_password"`
 	LogRetentionDays int    `yaml:"log_retention_days"`
-	LogDir           string `yaml:"log_dir"` // default "data/logs"
+	// LogRetentionMode selects what happens to log files that pass
+	// the retention window: "delete" (default) removes them;
+	// "archive" gzip-compresses each day to <day>.db.gz and keeps
+	// it on disk. "" = delete.
+	LogRetentionMode string `yaml:"log_retention_mode"`
+	LogDir           string `yaml:"log_dir"` // default: next to the SQLite DB (<dsn dir>/logs)
 	// LogstoreBackend selects the log storage driver: "sqlite"
 	// (per-date files), "postgres" (shared table, cluster mode) or
 	// "" (default: follow database.driver).
@@ -141,6 +148,38 @@ type StrategyConfig struct {
 	CostStrategy string `yaml:"cost_strategy"` // cheapest | fastest | balanced | weighted_random
 }
 
+// LatencyRouteConfig configures the latency-aware routing option:
+// a per-channel EWMA response-time tracker fed by real requests,
+// exposed to the routing strategies as `latency` and
+// `cost_latency_blend`.
+type LatencyRouteConfig struct {
+	// Enabled turns on latency-aware routing. When disabled the
+	// latency tracker still records (cheap) but no strategy uses
+	// the data.
+	Enabled bool `yaml:"enabled"`
+	// Alpha is the EWMA smoothing factor (0..1). Default 0.1.
+	Alpha float64 `yaml:"alpha"`
+	// Strategy is the cost strategy name to use when enabled:
+	// "latency" (EWMA only) or "cost_latency_blend" (default).
+	// When empty, "cost_latency_blend" is used.
+	Strategy string `yaml:"strategy"`
+	// CostWeight / LatencyWeight are the blend weights for
+	// cost_latency_blend (defaults 0.7 / 0.3).
+	CostWeight    float64 `yaml:"cost_weight"`
+	LatencyWeight float64 `yaml:"latency_weight"`
+}
+
+// SessionConfig configures session affinity for mode:auto combos.
+// When enabled, multi-turn conversations are pinned to the model
+// that served the first turn (preserving upstream prompt caches).
+type SessionConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// TTLSec bounds how long a pin stays valid. Default 3600.
+	TTLSec int `yaml:"ttl_sec"`
+	// MaxEntries caps the pin table. Default 10000.
+	MaxEntries int `yaml:"max_entries"`
+}
+
 // AutoRouterConfig configures the mode:auto combos: the global
 // tier thresholds and the optional LLM complexity classifier.
 type AutoRouterConfig struct {
@@ -153,6 +192,41 @@ type AutoRouterConfig struct {
 	// tier verdict (1.5s budget); any failure falls back to the
 	// heuristic scorer.
 	LLMClassifier LLMClassifierConfig `yaml:"llm_classifier"`
+	// LearnedRouter configures the trained ML model that predicts
+	// the best model for a given prompt. When enabled and a model
+	// file is loaded, the learned prior is blended with TS bandit
+	// and cost weights in SelectWithLearned.
+	LearnedRouter LearnedRouterConfig `yaml:"learned_router"`
+
+	// TaskSource selects how the task type is obtained for
+	// task_model_bias routing: "auto" (built-in keyword
+	// classifier), "header" (client X-Task-Type), or "" (disabled,
+	// pure v1 behavior).
+	TaskSource string `yaml:"task_source"`
+	// TaskModelBias maps a task type to preferred model names (in
+	// preference order). Candidates listed here move to the front
+	// of the tier's model list for that task. Any task not listed
+	// keeps the original cost order.
+	TaskModelBias map[string][]string `yaml:"task_model_bias"`
+	// SessionContinuation enables long-context sessions to prefer
+	// the model the session already used (tool-chain continuity
+	// beats a per-turn optimal pick on long agentic runs).
+	SessionContinuation bool `yaml:"session_continuation"`
+	// ContinuationThreshold is the estimated-context-token size at
+	// which session continuation kicks in. Default 100000.
+	ContinuationThreshold int `yaml:"continuation_threshold"`
+}
+
+// LearnedRouterConfig configures the learned router (trained ML model).
+type LearnedRouterConfig struct {
+	Enabled         bool    `yaml:"enabled"`
+	ModelPath       string  `yaml:"model_path"`
+	VocabPath       string  `yaml:"vocab_path"`
+	FeatureStatsPath string `yaml:"feature_stats_path"`
+	WeightTs        float64 `yaml:"weight_ts"`
+	WeightLearned   float64 `yaml:"weight_learned"`
+	WeightCost      float64 `yaml:"weight_cost"`
+	Fallback        bool    `yaml:"fallback"`
 }
 
 // LLMClassifierConfig describes the optional OpenAI-compatible

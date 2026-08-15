@@ -12,6 +12,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/provider"
 	"github.com/sn0wfree/llmRx/internal/router/auto"
+	"github.com/sn0wfree/llmRx/internal/router/session"
 	"github.com/sn0wfree/llmRx/internal/testhelper"
 )
 
@@ -19,17 +20,25 @@ import (
 // given tier table and fallback list.
 func addAutoCombo(t *testing.T, app *testhelper.App, tokenKey string, tiers map[string]model.TierConfig, fallback []string) {
 	t.Helper()
+	addAutoComboWithContextFallback(t, app, tokenKey, tiers, fallback, nil)
+}
+
+// addAutoComboWithContextFallback is addAutoCombo plus the combo's
+// context_fallback list.
+func addAutoComboWithContextFallback(t *testing.T, app *testhelper.App, tokenKey string, tiers map[string]model.TierConfig, fallback, contextFallback []string) {
+	t.Helper()
 	tok, err := app.Store.GetToken(tokenKey)
 	if err != nil {
 		t.Fatalf("lookup token: %v", err)
 	}
 	combo := &model.TokenComboModel{
-		TokenID:  tok.ID,
-		Name:     "auto",
-		Mode:     model.ComboModeAuto,
-		Tiers:    tiers,
-		Fallback: fallback,
-		Enabled:  true,
+		TokenID:         tok.ID,
+		Name:            "auto",
+		Mode:            model.ComboModeAuto,
+		Tiers:           tiers,
+		Fallback:        fallback,
+		ContextFallback: contextFallback,
+		Enabled:         true,
 	}
 	if err := app.Store.CreateComboModel(combo); err != nil {
 		t.Fatalf("CreateComboModel(auto): %v", err)
@@ -341,6 +350,211 @@ func TestAutoCombo_ContextBudget(t *testing.T) {
 	}
 	if got := rec.Header().Get("X-llmRx-Routed-Model"); got != "claude-3-5-sonnet" {
 		t.Errorf("huge prompt routed = %q, want claude-3-5-sonnet (context budget)", got)
+	}
+}
+
+// TestAutoCombo_ContextEscalation: when every tier candidate has a
+// context window too small for the prompt and the combo declares a
+// ContextFallback list, the router escalates to the fitting
+// context_fallback model (smallest window first) and logs the
+// decision as context_escalation.
+func TestAutoCombo_ContextEscalation(t *testing.T) {
+	app := testhelper.New(t)
+	app.AddToken("sk-t", "t")
+	app.AddChannel("c1", "openai", "https://x", []string{"deepseek-chat", "gpt-4o"}, "sk-1")
+	tiers := map[string]model.TierConfig{
+		"simple":   {Models: []string{"deepseek-chat"}}, // 64k window
+		"standard": {Models: []string{"deepseek-chat"}},
+		"complex":  {Models: []string{"deepseek-chat"}},
+		"agentic":  {Models: []string{"deepseek-chat"}},
+	}
+	addAutoComboWithContextFallback(t, app, "sk-t", tiers, []string{"m1"}, []string{"gpt-4o", "deepseek-chat"})
+
+	// Small prompt: no escalation, cold start picks deepseek-chat.
+	rec := doAutoChat(t, app, `{"model":"auto","messages":[{"role":"user","content":"hello"}]}`)
+	if got := rec.Header().Get("X-llmRx-Routed-Model"); got != "deepseek-chat" {
+		t.Errorf("small prompt routed = %q, want deepseek-chat", got)
+	}
+
+	// ~60k estimated tokens -> need 72k: deepseek-chat (64k)
+	// filtered, gpt-4o (128k) fits via context_fallback.
+	filler := strings.Repeat("a", 240000)
+	body, err := json.Marshal(map[string]any{
+		"model": "auto",
+		"messages": []map[string]string{
+			{"role": "user", "content": filler},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = doAutoChat(t, app, string(body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-llmRx-Routed-Model"); got != "gpt-4o" {
+		t.Errorf("escalated prompt routed = %q, want gpt-4o (context escalation)", got)
+	}
+	// The decision must be recorded as a context escalation.
+	stats := app.Chat.AutoStats().Snapshot()
+	if stats.Decisions < 2 {
+		t.Fatalf("expected >= 2 decisions, got %d", stats.Decisions)
+	}
+}
+
+// TestAutoCombo_ContextEscalationOnlyWhenDeclared: without a
+// ContextFallback list, an oversized prompt still attempts the tier
+// candidates (no escalation, no hard fail).
+func TestAutoCombo_ContextEscalationOnlyWhenDeclared(t *testing.T) {
+	app := testhelper.New(t)
+	app.AddToken("sk-t", "t")
+	app.AddChannel("c1", "openai", "https://x", []string{"deepseek-chat"}, "sk-1")
+	tiers := map[string]model.TierConfig{
+		"simple":   {Models: []string{"deepseek-chat"}},
+		"standard": {Models: []string{"deepseek-chat"}},
+		"complex":  {Models: []string{"deepseek-chat"}},
+		"agentic":  {Models: []string{"deepseek-chat"}},
+	}
+	addAutoCombo(t, app, "sk-t", tiers, []string{"deepseek-chat"})
+
+	filler := strings.Repeat("a", 240000)
+	body, err := json.Marshal(map[string]any{
+		"model": "auto",
+		"messages": []map[string]string{
+			{"role": "user", "content": filler},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No escalation possible: the request still flows through the
+	// (context-too-small) tier candidate — degraded attempt, not a
+	// hard failure.
+	rec := doAutoChat(t, app, string(body))
+	if got := rec.Header().Get("X-llmRx-Routed-Model"); got != "deepseek-chat" {
+		t.Errorf("routed = %q, want deepseek-chat (no context_fallback declared)", got)
+	}
+}
+
+// TestAutoCombo_SessionAffinity: with a session store wired in,
+// the second turn of a conversation (same session id) routes
+// straight to the first turn's model without re-sampling, and the
+// response carries X-llmRx-Session-Pinned.
+func TestAutoCombo_SessionAffinity(t *testing.T) {
+	app := testhelper.New(t)
+	app.AddToken("sk-t", "t")
+	app.AddChannel("c1", "openai", "https://x", []string{"m1"}, "sk-1")
+	app.AddChannel("c2", "openai", "https://x", []string{"m2"}, "sk-2")
+	addAutoCombo(t, app, "sk-t", autoComboTiers(), []string{"m2"})
+
+	sessStore := session.New(session.Config{TTL: time.Hour, MaxEntries: 100})
+	sessStore.StartCleanup(time.Hour)
+	defer sessStore.Stop()
+	app.Chat.SetSessions(sessStore)
+
+	// First turn with an explicit session id: cold start picks m1,
+	// pin created.
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+		`{"model":"auto","messages":[{"role":"user","content":"hello"}]}`))
+	req1.Header.Set("Authorization", "Bearer sk-t")
+	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("X-Session-ID", "sess-1")
+	rec1 := httptest.NewRecorder()
+	app.Mux.ServeHTTP(rec1, req1)
+	if got := rec1.Header().Get("X-llmRx-Routed-Model"); got != "m1" {
+		t.Fatalf("first turn routed = %q, want m1", got)
+	}
+	if sessStore.Count() != 1 {
+		t.Fatalf("after first turn pin count = %d, want 1", sessStore.Count())
+	}
+
+	// Second turn with the same session id: pinned to m1, and the
+	// pin header proves the affinity path was taken.
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+		`{"model":"auto","messages":[{"role":"user","content":"hello again"}]}`))
+	req.Header.Set("Authorization", "Bearer sk-t")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Session-ID", "sess-1")
+	rec2 := httptest.NewRecorder()
+	app.Mux.ServeHTTP(rec2, req)
+	if got := rec2.Header().Get("X-llmRx-Routed-Model"); got != "m1" {
+		t.Errorf("pinned turn routed = %q, want m1", got)
+	}
+	if got := rec2.Header().Get("X-llmRx-Session-Pinned"); got != "true" {
+		t.Errorf("expected X-llmRx-Session-Pinned=true, got %q", got)
+	}
+}
+
+// TestAutoCombo_SessionAffinityPinDropOnFailure: when the pinned
+// model fails (upstream 5xx), the pin is dropped and the request
+// re-decides through the normal path.
+func TestAutoCombo_SessionAffinityPinDropOnFailure(t *testing.T) {
+	app := testhelper.New(t)
+	app.AddToken("sk-t", "t")
+	app.AddChannel("c1", "openai", "https://x", []string{"m1"}, "sk-1")
+	app.AddChannel("c2", "openai", "https://x", []string{"m2"}, "sk-2")
+	addAutoCombo(t, app, "sk-t", autoComboTiers(), []string{"m2"})
+
+	sessStore := session.New(session.Config{TTL: time.Hour, MaxEntries: 100})
+	defer sessStore.Stop()
+	app.Chat.SetSessions(sessStore)
+
+	// Seed a pin for m1 on session "sess-2".
+	sessStore.Set("header:sess-2", "m1", "simple", 1)
+
+	// m1's pinned attempt fails AND the re-decision's first pick
+	// (m1 again, cold start) fails: the request fails over to m2.
+	app.Provider.Statuses = []int{500, 500}
+	app.Provider.Errs = []error{errors.New("boom"), errors.New("boom")}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+		`{"model":"auto","messages":[{"role":"user","content":"hello"}]}`))
+	req.Header.Set("Authorization", "Bearer sk-t")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Session-ID", "sess-2")
+	rec := httptest.NewRecorder()
+	app.Mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-llmRx-Routed-Model"); got != "m2" {
+		t.Errorf("after pin drop routed = %q, want m2", got)
+	}
+	// The pin was replaced with the new winning model.
+	if _, ok := sessStore.Get("header:sess-2"); !ok {
+		t.Fatal("expected a new pin after re-decision")
+	}
+}
+
+// TestAutoCombo_SessionAffinityDerivedHash: without an explicit
+// session id, the same system + first-user messages hash to the
+// same session, so the second turn is pinned.
+func TestAutoCombo_SessionAffinityDerivedHash(t *testing.T) {
+	app := testhelper.New(t)
+	app.AddToken("sk-t", "t")
+	app.AddChannel("c1", "openai", "https://x", []string{"m1"}, "sk-1")
+	app.AddChannel("c2", "openai", "https://x", []string{"m2"}, "sk-2")
+	addAutoCombo(t, app, "sk-t", autoComboTiers(), []string{"m2"})
+
+	sessStore := session.New(session.Config{TTL: time.Hour, MaxEntries: 100})
+	defer sessStore.Stop()
+	app.Chat.SetSessions(sessStore)
+
+	body := `{"model":"auto","messages":[{"role":"system","content":"you are a helpful bot"},{"role":"user","content":"hello"}]}`
+	rec := doAutoChat(t, app, body)
+	if got := rec.Header().Get("X-llmRx-Routed-Model"); got != "m1" {
+		t.Fatalf("first turn routed = %q, want m1", got)
+	}
+
+	// Second turn with an extra user message: same system + first
+	// user -> same hash -> pinned to m1.
+	rec2 := doAutoChat(t, app, `{"model":"auto","messages":[{"role":"system","content":"you are a helpful bot"},{"role":"user","content":"hello"},{"role":"assistant","content":"hi"},{"role":"user","content":"how are you"}]}`)
+	if got := rec2.Header().Get("X-llmRx-Session-Pinned"); got != "true" {
+		t.Errorf("expected derived-hash pin, got X-llmRx-Session-Pinned=%q", got)
+	}
+	if got := rec2.Header().Get("X-llmRx-Routed-Model"); got != "m1" {
+		t.Errorf("pinned routed = %q, want m1", got)
 	}
 }
 

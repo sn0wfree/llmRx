@@ -1,9 +1,11 @@
 package logstore
 
 import (
+	"compress/gzip"
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -131,10 +133,11 @@ func (d *SQLiteDriver) Insert(entry *model.Log) error {
 	}
 
 	if _, err := df.conn.Exec(
-		`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, cache_hit, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.TokenID, entry.ChannelID, entry.KeyID, entry.Model,
 		entry.PromptTokens, entry.CompletionTokens, entry.CachedTokens,
+		entry.ReasoningTokens, int64(boolToInt(entry.CacheHit)),
 		entry.RealCostUSD, entry.BilledCostUSD,
 		entry.DurationMs, entry.StatusCode, entry.RouterPath, entry.RequestIP,
 		entry.Endpoint, entry.Units,
@@ -174,8 +177,8 @@ func (d *SQLiteDriver) BatchInsert(entries []*model.Log) (int, error) {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(
-		`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, cache_hit, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return 0, fmt.Errorf("logstore: prepare %s: %w", dayFileKey, err)
 	}
@@ -185,6 +188,7 @@ func (d *SQLiteDriver) BatchInsert(entries []*model.Log) (int, error) {
 		if _, err := stmt.Exec(
 			entry.TokenID, entry.ChannelID, entry.KeyID, entry.Model,
 			entry.PromptTokens, entry.CompletionTokens, entry.CachedTokens,
+			entry.ReasoningTokens, int64(boolToInt(entry.CacheHit)),
 			entry.RealCostUSD, entry.BilledCostUSD,
 			entry.DurationMs, entry.StatusCode, entry.RouterPath, entry.RequestIP,
 			entry.Endpoint, entry.Units,
@@ -422,6 +426,12 @@ func ensureLogSchema(db *sql.DB) error {
 	if err := addLogColumn(db, "units", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	if err := addLogColumn(db, "reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := addLogColumn(db, "cache_hit", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -503,6 +513,12 @@ func (d *SQLiteDriver) QueryAcross(filter QueryFilter, days []string) ([]model.L
 			continue
 		}
 		path := filepath.Join(d.dir, day+".db")
+		// Migrate the file's schema before attaching: day files
+		// created by an older binary lack the newer columns.
+		if err := migrateDayFileSchema(path); err != nil {
+			detachAll(df.conn, attachAliases)
+			return nil, 0, fmt.Errorf("logstore: migrate %s: %w", day, err)
+		}
 		stmt := fmt.Sprintf(`ATTACH %q AS %s`, path, alias)
 		if _, err := df.conn.Exec(stmt); err != nil {
 			detachAll(df.conn, attachAliases)
@@ -514,7 +530,7 @@ func (d *SQLiteDriver) QueryAcross(filter QueryFilter, days []string) ([]model.L
 
 	// Build UNION ALL query.
 	var sb strings.Builder
-	sb.WriteString("SELECT id, token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at FROM (")
+	sb.WriteString("SELECT id, token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, cache_hit, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at FROM (")
 	for i := range days {
 		if i > 0 {
 			sb.WriteString(" UNION ALL ")
@@ -523,7 +539,7 @@ func (d *SQLiteDriver) QueryAcross(filter QueryFilter, days []string) ([]model.L
 		if i < len(attachAliases) && attachAliases[i] != "" {
 			source = attachAliases[i] + ".logs"
 		}
-		sb.WriteString("SELECT id, token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at FROM ")
+		sb.WriteString("SELECT id, token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, cache_hit, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at FROM ")
 		sb.WriteString(source)
 	}
 	sb.WriteString(")")
@@ -580,16 +596,31 @@ func (d *SQLiteDriver) QueryAcross(filter QueryFilter, days []string) ([]model.L
 	for rows.Next() {
 		var l model.Log
 		var created int64
+		var cacheHit int
 		if err := rows.Scan(&l.ID, &l.TokenID, &l.ChannelID, &l.KeyID, &l.Model,
 			&l.PromptTokens, &l.CompletionTokens, &l.CachedTokens,
+			&l.ReasoningTokens, &cacheHit,
 			&l.RealCostUSD, &l.BilledCostUSD, &l.DurationMs, &l.StatusCode,
 			&l.RouterPath, &l.RequestIP, &l.Endpoint, &l.Units, &created); err != nil {
 			return nil, 0, err
 		}
+		l.CacheHit = cacheHit != 0
 		l.CreatedAt = time.Unix(created, 0).UTC()
 		out = append(out, l)
 	}
 	return out, total, rows.Err()
+}
+
+// migrateDayFileSchema opens a day file and applies ensureLogSchema
+// so older files gain the newer columns before being attached for
+// cross-day queries. Idempotent (addLogColumn probes first).
+func migrateDayFileSchema(path string) error {
+	conn, err := sql.Open("sqlite3", path+"?_busy_timeout=5000")
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	return ensureLogSchema(conn)
 }
 
 // detachAll detaches any non-empty alias in the list. Errors are
@@ -613,6 +644,13 @@ func buildWhere(f QueryFilter) (string, []any) {
 		conds = append(conds, "token_id = ?")
 		args = append(args, f.TokenID)
 	}
+	if len(f.TokenIDs) > 0 {
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(f.TokenIDs)), ",")
+		conds = append(conds, "token_id IN ("+placeholders+")")
+		for _, id := range f.TokenIDs {
+			args = append(args, id)
+		}
+	}
 	if f.ChannelID > 0 {
 		conds = append(conds, "channel_id = ?")
 		args = append(args, f.ChannelID)
@@ -632,6 +670,9 @@ func buildWhere(f QueryFilter) (string, []any) {
 	if f.StatusCode > 0 {
 		conds = append(conds, "status_code = ?")
 		args = append(args, f.StatusCode)
+	}
+	if f.CacheHit {
+		conds = append(conds, "cache_hit = 1")
 	}
 	if f.CreatedFrom > 0 {
 		conds = append(conds, "created_at >= ?")
@@ -949,6 +990,86 @@ func (d *SQLiteDriver) DeleteFiles(days []string) error {
 		}
 	}
 	return nil
+}
+
+// ArchiveFiles compresses the named day files into .db.gz archives
+// (gzip) and removes the originals plus WAL/SHM sidecars. Idempotent:
+// missing files are skipped. Used by retention in "archive" mode so
+// old logs are retained on disk in compressed form instead of being
+// deleted.
+//
+// The compressed files use the `<day>.db.gz` basename so they never
+// match ListFiles' `*.db` glob — archived days automatically drop out
+// of admin queries (ATTACH unions) and out of future retention sweeps.
+func (d *SQLiteDriver) ArchiveFiles(days []string) error {
+	for _, day := range days {
+		d.mu.Lock()
+		if df, ok := d.conns[day]; ok {
+			// Compact the WAL so the archive is complete.
+			checkpointWithRetry(df.conn, "TRUNCATE", 20)
+			_ = df.conn.Close()
+			delete(d.conns, day)
+			if d.current[extractDate(day)] == day {
+				delete(d.current, extractDate(day))
+			}
+		}
+		d.mu.Unlock()
+
+		path := filepath.Join(d.dir, day+".db")
+		if _, err := os.Stat(path); err != nil {
+			// Already archived or already gone.
+			continue
+		}
+		if err := gzipFile(path); err != nil {
+			return fmt.Errorf("logstore: archive %s: %w", day, err)
+		}
+		// Remove the original plus WAL/SHM sidecars.
+		for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+			_ = os.Remove(path + suffix)
+		}
+	}
+	return nil
+}
+
+// gzipFile compresses path to path+".gz" using a temp file and
+// rename so a partially-written archive is never visible. Preserves
+// the file's modification time in the gzip header.
+func gzipFile(path string) error {
+	in, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	fi, err := in.Stat()
+	if err != nil {
+		return err
+	}
+
+	tmp := path + ".gz.tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp) }()
+
+	zw := gzip.NewWriter(out)
+	zw.Header.ModTime = fi.ModTime()
+	zw.Header.Name = filepath.Base(path)
+
+	if _, err := io.Copy(zw, in); err != nil {
+		_ = zw.Close()
+		_ = out.Close()
+		return err
+	}
+	if err := zw.Close(); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path+".gz")
 }
 
 // ---------- Filename helpers ----------

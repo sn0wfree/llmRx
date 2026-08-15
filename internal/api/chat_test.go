@@ -116,6 +116,7 @@ func (plainProvider) Chat(_ context.Context, req *provider.ChatRequest, _, _ str
 func TestChat_NoChannelForModel(t *testing.T) {
 	app := testhelper.New(t)
 	app.AddChannel("c", "openai", "https://x", []string{"known-model"}, "sk-key")
+	app.PriceModels([]string{"unknown"}, 1.0, 1.0)
 	app.AddToken("sk-t", "t")
 
 	rec := httptest.NewRecorder()
@@ -288,6 +289,7 @@ func TestChat_ListModels(t *testing.T) {
 func TestChat_ListModelsDetails(t *testing.T) {
 	app := testhelper.New(t)
 	app.AddChannel("c", "openai", "https://x", []string{"gpt-4o"}, "sk-k")
+	app.PriceModels([]string{"gpt-4o"}, 2.5, 10)
 	app.AddToken("sk-t", "t")
 
 	rec := httptest.NewRecorder()

@@ -63,6 +63,8 @@ func (p *PostgresDriver) Open(dir string) error {
 			prompt_tokens INTEGER NOT NULL DEFAULT 0,
 			completion_tokens INTEGER NOT NULL DEFAULT 0,
 			cached_tokens INTEGER NOT NULL DEFAULT 0,
+			reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_hit INTEGER NOT NULL DEFAULT 0,
 			real_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
 			billed_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
 			duration_ms BIGINT NOT NULL DEFAULT 0,
@@ -88,10 +90,11 @@ func (p *PostgresDriver) Open(dir string) error {
 // Insert appends one log entry.
 func (p *PostgresDriver) Insert(entry *model.Log) error {
 	_, err := p.db.Exec(p.d.RewriteQuery(
-		`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, cache_hit, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		entry.TokenID, entry.ChannelID, entry.KeyID, entry.Model,
 		entry.PromptTokens, entry.CompletionTokens, entry.CachedTokens,
+		entry.ReasoningTokens, int64(boolToInt(entry.CacheHit)),
 		entry.RealCostUSD, entry.BilledCostUSD,
 		entry.DurationMs, entry.StatusCode, entry.RouterPath, entry.RequestIP,
 		entry.Endpoint, entry.Units,
@@ -115,8 +118,8 @@ func (p *PostgresDriver) BatchInsert(entries []*model.Log) (int, error) {
 	defer func() { _ = tx.Rollback() }()
 	for _, e := range entries {
 		if _, err := tx.Exec(p.d.RewriteQuery(
-			`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, cache_hit, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 			e.TokenID, e.ChannelID, e.KeyID, e.Model,
 			e.PromptTokens, e.CompletionTokens, e.CachedTokens,
 			e.RealCostUSD, e.BilledCostUSD,
@@ -133,7 +136,7 @@ func (p *PostgresDriver) BatchInsert(entries []*model.Log) (int, error) {
 	return len(entries), nil
 }
 
-const logCols = "id, token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at"
+const logCols = "id, token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, cache_hit, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at"
 
 // QueryAcross returns rows matching filter, optionally restricted
 // to the given days, with total count and pagination.
@@ -192,12 +195,15 @@ func (p *PostgresDriver) QueryAcross(filter QueryFilter, days []string) ([]model
 	for rows.Next() {
 		var l model.Log
 		var created int64
+		var cacheHit int
 		if err := rows.Scan(&l.ID, &l.TokenID, &l.ChannelID, &l.KeyID, &l.Model,
 			&l.PromptTokens, &l.CompletionTokens, &l.CachedTokens,
+			&l.ReasoningTokens, &cacheHit,
 			&l.RealCostUSD, &l.BilledCostUSD, &l.DurationMs, &l.StatusCode,
 			&l.RouterPath, &l.RequestIP, &l.Endpoint, &l.Units, &created); err != nil {
 			return nil, 0, err
 		}
+		l.CacheHit = cacheHit != 0
 		l.CreatedAt = time.Unix(created, 0).UTC()
 		out = append(out, l)
 	}
@@ -344,6 +350,13 @@ func (p *PostgresDriver) DeleteFiles(days []string) error {
 	}
 	return nil
 }
+
+// ArchiveFiles is a no-op for the Postgres backend: there are no
+// per-date files to compress, the logs live in a shared table.
+// Retention in "archive" mode therefore keeps rows forever (nothing
+// is deleted); operators who want compressed long-term storage for
+// Postgres should export the table with pg_dump / COPY separately.
+func (p *PostgresDriver) ArchiveFiles(days []string) error { return nil }
 
 // Close releases the shared connection.
 func (p *PostgresDriver) Close() error { return p.db.Close() }

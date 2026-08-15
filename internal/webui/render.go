@@ -76,6 +76,19 @@ func NewRenderer() (*Renderer, error) {
 		},
 		"add": func(a, b int) int { return a + b },
 		"sub": func(a, b int) int { return a - b },
+		// percentage returns the percent used of budget (0..100).
+		"percentage": func(used, budget float64) float64 {
+			if budget <= 0 {
+				return 0
+			}
+			p := used / budget * 100
+			if p > 100 {
+				return 100
+			}
+			return p
+		},
+		// now returns the current unix seconds (template compare).
+		"now": func() int64 { return time.Now().Unix() },
 		"joinStrings": func(arr []string) string {
 			return strings.Join(arr, "\n")
 		},

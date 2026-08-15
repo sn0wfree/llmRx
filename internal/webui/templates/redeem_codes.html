@@ -1,0 +1,101 @@
+{{define "redeem_codes_body"}}<div>
+  <div class="mb-6 flex justify-between items-center">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">邀请码 / 充值码</h1>
+      <p class="mt-1 text-sm text-gray-500">生成一次性码：邀请码用于注册（含初始额度），充值码用于增加用户预算</p>
+    </div>
+  </div>
+
+  <div class="bg-white shadow rounded-lg p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-4">生成</h2>
+    <form id="gen-form" class="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <select id="kind" class="px-3 py-2 border border-gray-300 rounded-md text-sm">
+        <option value="invite">邀请码</option>
+        <option value="topup">充值码</option>
+      </select>
+      <input type="number" id="count" value="1" min="1" max="100"
+             class="px-3 py-2 border border-gray-300 rounded-md text-sm" title="数量">
+      <input type="number" id="amount" value="10" step="0.01" min="0"
+             class="px-3 py-2 border border-gray-300 rounded-md text-sm" title="充值面额 $ / 初始额度 $">
+      <input type="number" id="expires" value="0" min="0"
+             class="px-3 py-2 border border-gray-300 rounded-md text-sm" title="有效期（秒，0=永不过期）">
+      <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium">生成</button>
+    </form>
+    <p class="mt-2 text-xs text-gray-400">
+      邀请码：面额 = 注册初始额度（默认 $5）；充值码：面额 = 增加的预算 $
+    </p>
+    <div id="gen-result" class="mt-3"></div>
+  </div>
+
+  <div class="bg-white shadow rounded-lg overflow-hidden">
+    <table class="min-w-full divide-y divide-gray-200">
+      <thead class="bg-gray-50">
+        <tr>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">码</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">类型</th>
+          <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">面额/额度 ($)</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">状态</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">使用者</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">创建时间</th>
+        </tr>
+      </thead>
+      <tbody class="bg-white divide-y divide-gray-200">
+        {{range .Codes}}
+        <tr>
+          <td class="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-900">{{.Code}}</td>
+          <td class="px-6 py-4 whitespace-nowrap text-sm">
+            {{if eq .Kind "invite"}}<span class="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-xs">邀请</span>{{else}}<span class="px-2 py-0.5 bg-green-100 text-green-800 rounded text-xs">充值</span>{{end}}
+          </td>
+          <td class="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-700">
+            {{if eq .Kind "topup"}}{{printf "%.2f" .AmountUSD}}{{else}}{{printf "%.2f" .InitialQuota}}{{end}}
+          </td>
+          <td class="px-6 py-4 whitespace-nowrap text-sm">
+            {{if gt .UsedAt.Unix 0}}
+              <span class="px-2 py-0.5 bg-gray-100 text-gray-600 rounded text-xs">已使用</span>
+            {{else if and (gt .ExpiresAt.Unix 0) (lt .ExpiresAt.Unix now)}}
+              <span class="px-2 py-0.5 bg-red-100 text-red-800 rounded text-xs">已过期</span>
+            {{else}}
+              <span class="px-2 py-0.5 bg-green-100 text-green-800 rounded text-xs">可用</span>
+            {{end}}
+          </td>
+          <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{{if gt .UsedBy 0}}{{.UsedBy}}{{else}}—{{end}}</td>
+          <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{formatTime .CreatedAt}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="6" class="px-6 py-8 text-center text-sm text-gray-400">暂无码，先在上方生成</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+<script>
+document.getElementById('gen-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const box = document.getElementById('gen-result');
+  box.innerHTML = '';
+  const kind = document.getElementById('kind').value;
+  const count = parseInt(document.getElementById('count').value) || 1;
+  const amount = parseFloat(document.getElementById('amount').value) || 0;
+  const expires = parseInt(document.getElementById('expires').value) || 0;
+  try {
+    const resp = await fetch('/admin/api/v1/redeem-codes', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({kind, count, amount_usd: kind === 'topup' ? amount : 0,
+                            initial_quota: kind === 'invite' ? amount : 5,
+                            expires_in_sec: expires}),
+    });
+    const data = await resp.json();
+    if (resp.ok) {
+      const codes = (data.codes || []).map(c => c.code).join('<br>');
+      box.innerHTML = '<div class="p-3 rounded bg-green-100 text-green-800 border border-green-200 text-sm font-mono">' + codes + '</div>';
+      setTimeout(() => window.location.reload(), 1500);
+    } else {
+      box.innerHTML = '<div class="p-3 rounded bg-red-100 text-red-800 border border-red-200 text-sm">' + (data.error?.message || '生成失败') + '</div>';
+    }
+  } catch (err) {
+    box.innerHTML = '<div class="p-3 rounded bg-red-100 text-red-800 border border-red-200 text-sm">网络错误</div>';
+  }
+});
+</script>
+{{end}}

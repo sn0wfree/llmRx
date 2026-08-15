@@ -225,12 +225,27 @@ func (s *dbStore) migrate() error {
 			created_at INTEGER NOT NULL
 		)`,
 		// Note: the logs table is intentionally absent. Logs now live
-		// in per-date files under data/logs/YYYY-MM-DD.db via the
-		// logstore package. CreateLog/QueryLogs/etc. on this Store
-		// delegate there (see SetLogStore).
+		// in per-date files under logs/YYYY-MM-DD.db (defaulting to
+		// the SQLite DB's directory) via the logstore package.
+		// CreateLog/QueryLogs/etc. on this Store delegate there (see
+		// SetLogStore).
 		`CREATE INDEX IF NOT EXISTS idx_keys_channel ON keys(channel_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_tokens_plan ON tokens(plan_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_users_session_exp ON users(session_exp) WHERE session_exp > 0`,
+		`CREATE TABLE IF NOT EXISTS redeem_codes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			code TEXT UNIQUE NOT NULL,
+			kind TEXT NOT NULL DEFAULT 'invite',
+			amount_usd REAL NOT NULL DEFAULT 0,
+			initial_quota REAL NOT NULL DEFAULT 5,
+			role INTEGER NOT NULL DEFAULT 0,
+			created_by INTEGER NOT NULL DEFAULT 0,
+			expires_at INTEGER NOT NULL DEFAULT 0,
+			used_by INTEGER NOT NULL DEFAULT 0,
+			used_at INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_redeem_codes_kind ON redeem_codes(kind)`,
 		`CREATE TABLE IF NOT EXISTS alerts (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
@@ -278,6 +293,7 @@ func (s *dbStore) migrate() error {
 			strategy TEXT NOT NULL DEFAULT '',
 			tiers TEXT NOT NULL DEFAULT '',
 			fallback TEXT NOT NULL DEFAULT '[]',
+			context_fallback TEXT NOT NULL DEFAULT '[]',
 			enabled INTEGER NOT NULL DEFAULT 1,
 			is_default INTEGER NOT NULL DEFAULT 0,
 			created_at INTEGER NOT NULL,
@@ -350,6 +366,24 @@ func (s *dbStore) migrate() error {
 			price_per_call_usd REAL NOT NULL DEFAULT 0,
 			FOREIGN KEY (mcp_tool_id) REFERENCES mcp_tools(id) ON DELETE CASCADE
 		)`,
+		`CREATE TABLE IF NOT EXISTS model_costs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			model TEXT UNIQUE NOT NULL,
+			provider TEXT NOT NULL DEFAULT '',
+			input_price_per_1m REAL NOT NULL DEFAULT 0,
+			output_price_per_1m REAL NOT NULL DEFAULT 0,
+			cache_read_price_per_1m REAL NOT NULL DEFAULT 0,
+			cache_write_price_per_1m REAL NOT NULL DEFAULT 0,
+			reasoning_price_per_1m REAL NOT NULL DEFAULT 0,
+			image_price REAL NOT NULL DEFAULT 0,
+			input_price_per_1m_above_128k REAL NOT NULL DEFAULT 0,
+			output_price_per_1m_above_128k REAL NOT NULL DEFAULT 0,
+			input_price_per_1m_above_200k REAL NOT NULL DEFAULT 0,
+			output_price_per_1m_above_200k REAL NOT NULL DEFAULT 0,
+			context_window INTEGER NOT NULL DEFAULT 0,
+			max_output INTEGER NOT NULL DEFAULT 0,
+			updated_at INTEGER NOT NULL
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.exec(s.d.RewriteDDL(q)); err != nil {
@@ -380,6 +414,9 @@ func (s *dbStore) migrate() error {
 	if err := s.addColumn("tokens", "key_ciphertext", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := s.addColumn("tokens", "user_id", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	if err := s.addColumn("alerts", "disabled_reason", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
@@ -390,6 +427,9 @@ func (s *dbStore) migrate() error {
 		return err
 	}
 	if err := s.addColumn("token_combo_models", "fallback", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
+	if err := s.addColumn("token_combo_models", "context_fallback", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
 	}
 	if err := s.addColumn("mcp_servers", "transport", "TEXT NOT NULL DEFAULT 'http'"); err != nil {
@@ -517,8 +557,21 @@ func (s *dbStore) addColumnIfMissing(table, column, decl string) error {
 	return err
 }
 
-func toUnix(t time.Time) int64   { return t.Unix() }
-func fromUnix(s int64) time.Time { return time.Unix(s, 0).UTC() }
+// toUnix maps a time to epoch seconds; zero values (never set)
+// become 0 so "0 means unset/never" semantics hold in SQL.
+func toUnix(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
+
+func fromUnix(s int64) time.Time {
+	if s == 0 {
+		return time.Time{}
+	}
+	return time.Unix(s, 0).UTC()
+}
 
 func encodeStrings(xs []string) string {
 	if xs == nil {
@@ -932,7 +985,7 @@ func (s *dbStore) GetToken(key string) (*model.Token, error) {
 	// all rows and comparing in plaintext — production callers
 	// go through tokencache (in-memory), so this path is for
 	// tests / recovery tools only.
-	rows, err := s.query(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens`)
+	rows, err := s.query(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at, user_id FROM tokens`)
 	if err != nil {
 		return nil, err
 	}
@@ -950,12 +1003,41 @@ func (s *dbStore) GetToken(key string) (*model.Token, error) {
 }
 
 func (s *dbStore) GetTokenByID(id int64) (*model.Token, error) {
-	row := s.queryRow(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens WHERE id = ?`, id)
+	row := s.queryRow(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at, user_id FROM tokens WHERE id = ?`, id)
 	return scanTokenRow(s, row)
 }
 
+// GetTokenByName returns the token whose name matches. Primarily
+// used to resolve the dedicated token created at registration
+// (name == username). Name is not unique at the schema level, so
+// prefer the registration-flow contract (one token per user name).
+func (s *dbStore) GetTokenByName(name string) (*model.Token, error) {
+	row := s.queryRow(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at, user_id FROM tokens WHERE name = ? ORDER BY id LIMIT 1`, name)
+	return scanTokenRow(s, row)
+}
+
+// GetTokensByUserID returns all tokens owned by a user (user_id
+// linkage, backfilled at startup). Empty result when the user has no
+// tokens (admin-created users).
+func (s *dbStore) GetTokensByUserID(userID int64) ([]model.Token, error) {
+	rows, err := s.query(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at, user_id FROM tokens WHERE user_id = ? ORDER BY id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.Token
+	for rows.Next() {
+		t, err := scanTokenRow(s, rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *t)
+	}
+	return out, rows.Err()
+}
+
 func (s *dbStore) GetTokens() ([]model.Token, error) {
-	rows, err := s.query(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens ORDER BY id`)
+	rows, err := s.query(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at, user_id FROM tokens ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -997,11 +1079,11 @@ func (s *dbStore) CreateToken(t *model.Token) error {
 		storedPlain = "__enc_pending__"
 	}
 	id, err := dialect.InsertOne(s.d, s.db,
-		`INSERT INTO tokens(plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO tokens(plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at, user_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.PlanID, storedPlain, cipher, t.Name, int(t.Status), t.RPM, t.TPM, t.UsedUSD,
 		encodeStrings(t.ModelsWhitelist), encodeStrings(t.IPWhitelist),
-		toUnix(t.ExpiresAt), toUnix(t.LastUsedAt), toUnix(t.CreatedAt),
+		toUnix(t.ExpiresAt), toUnix(t.LastUsedAt), toUnix(t.CreatedAt), t.UserID,
 	)
 	if err != nil {
 		return err
@@ -1198,7 +1280,7 @@ func scanTokenRow(s *dbStore, r interface {
 	var expires, lastUsed, created int64
 	var plain, cipher string
 	if err := r.Scan(&t.ID, &t.PlanID, &plain, &cipher, &t.Name, &status, &t.RPM, &t.TPM,
-		&t.UsedUSD, &mwJSON, &ipwJSON, &expires, &lastUsed, &created); err != nil {
+		&t.UsedUSD, &mwJSON, &ipwJSON, &expires, &lastUsed, &created, &t.UserID); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
 		}
@@ -1770,10 +1852,10 @@ func (s *dbStore) DeleteProviderDef(id int64) error {
 
 func (s *dbStore) scanComboRow(r interface{ Scan(dest ...any) error }) (*model.TokenComboModel, error) {
 	var c model.TokenComboModel
-	var modelsJSON, mode, strategy, tiersJSON, fallbackJSON string
+	var modelsJSON, mode, strategy, tiersJSON, fallbackJSON, ctxFallbackJSON string
 	var enabled, isDefault any
 	var created, updated int64
-	if err := r.Scan(&c.ID, &c.TokenID, &c.Name, &modelsJSON, &mode, &strategy, &tiersJSON, &fallbackJSON, &enabled, &isDefault, &created, &updated); err != nil {
+	if err := r.Scan(&c.ID, &c.TokenID, &c.Name, &modelsJSON, &mode, &strategy, &tiersJSON, &fallbackJSON, &ctxFallbackJSON, &enabled, &isDefault, &created, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -1784,6 +1866,7 @@ func (s *dbStore) scanComboRow(r interface{ Scan(dest ...any) error }) (*model.T
 	c.Strategy = model.CostStrategy(strategy)
 	c.Tiers = decodeTiers(tiersJSON)
 	c.Fallback = decodeStrings(fallbackJSON)
+	c.ContextFallback = decodeStrings(ctxFallbackJSON)
 	c.Enabled = s.d.ParseBool(enabled)
 	c.IsDefault = s.d.ParseBool(isDefault)
 	c.CreatedAt = fromUnix(created)
@@ -1791,7 +1874,7 @@ func (s *dbStore) scanComboRow(r interface{ Scan(dest ...any) error }) (*model.T
 	return &c, nil
 }
 
-const comboCols = `id, token_id, name, models, mode, strategy, tiers, fallback, enabled, is_default, created_at, updated_at`
+const comboCols = `id, token_id, name, models, mode, strategy, tiers, fallback, context_fallback, enabled, is_default, created_at, updated_at`
 
 func (s *dbStore) GetComboModels(tokenID int64) ([]model.TokenComboModel, error) {
 	rows, err := s.query(`SELECT `+comboCols+` FROM token_combo_models WHERE token_id = ? ORDER BY id`, tokenID)
@@ -1864,8 +1947,8 @@ func (s *dbStore) CreateComboModel(c *model.TokenComboModel) error {
 	}
 	now := time.Now().Unix()
 	comboID, err := dialect.InsertOne(s.d, s.db,
-		`INSERT INTO token_combo_models (token_id, name, models, mode, strategy, tiers, fallback, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.TokenID, c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), encodeTiers(c.Tiers), encodeStrings(c.Fallback), s.d.Bool(c.Enabled), s.d.Bool(c.IsDefault), now, now,
+		`INSERT INTO token_combo_models (token_id, name, models, mode, strategy, tiers, fallback, context_fallback, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.TokenID, c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), encodeTiers(c.Tiers), encodeStrings(c.Fallback), encodeStrings(c.ContextFallback), s.d.Bool(c.Enabled), s.d.Bool(c.IsDefault), now, now,
 	)
 	if err != nil {
 		return err
@@ -1967,6 +2050,11 @@ func validateAutoCombo(c *model.TokenComboModel) error {
 			return fmt.Errorf("auto combo fallback model %q must match ^[a-zA-Z0-9._-]{1,128}$", m)
 		}
 	}
+	for _, m := range c.ContextFallback {
+		if !comboModelRe.MatchString(m) {
+			return fmt.Errorf("auto combo context_fallback model %q must match ^[a-zA-Z0-9._-]{1,128}$", m)
+		}
+	}
 	return nil
 }
 
@@ -1978,8 +2066,8 @@ func (s *dbStore) UpdateComboModel(c *model.TokenComboModel) error {
 	}
 	now := time.Now().Unix()
 	_, err := s.exec(
-		`UPDATE token_combo_models SET name=?, models=?, mode=?, strategy=?, tiers=?, fallback=?, enabled=?, is_default=?, updated_at=? WHERE id=?`,
-		c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), encodeTiers(c.Tiers), encodeStrings(c.Fallback), s.d.Bool(c.Enabled), s.d.Bool(c.IsDefault), now, c.ID,
+		`UPDATE token_combo_models SET name=?, models=?, mode=?, strategy=?, tiers=?, fallback=?, context_fallback=?, enabled=?, is_default=?, updated_at=? WHERE id=?`,
+		c.Name, encodeStrings(c.Models), string(c.Mode), string(c.Strategy), encodeTiers(c.Tiers), encodeStrings(c.Fallback), encodeStrings(c.ContextFallback), s.d.Bool(c.Enabled), s.d.Bool(c.IsDefault), now, c.ID,
 	)
 	if err != nil {
 		return err
