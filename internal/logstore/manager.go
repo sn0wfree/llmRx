@@ -77,6 +77,11 @@ type Manager struct {
 	// channels); Insert/Flush snapshot the pointers under mu so
 	// they never touch a half-rebuilt worker.
 	workerAlive bool
+
+	// retentionMode returns the retention action: "delete" or
+	// "archive". Read on every sweep tick so admin changes take
+	// effect live. A nil func means "delete".
+	retentionMode func() string
 }
 
 // New constructs a Manager rooted at dir using the provided
@@ -203,6 +208,20 @@ func (m *Manager) ListFiles() ([]string, error) {
 // retention window manually.
 func (m *Manager) DeleteFiles(days []string) error {
 	return m.driver.DeleteFiles(days)
+}
+
+// ArchiveFiles is exposed so admin tooling can compress specific
+// days manually without waiting for the retention sweep.
+func (m *Manager) ArchiveFiles(days []string) error {
+	return m.driver.ArchiveFiles(days)
+}
+
+// SetRetentionMode sets a provider function returning the retention
+// action ("delete" or "archive"). Read live on each sweep tick so
+// admin changes take effect without a restart. A nil func (default)
+// means "delete".
+func (m *Manager) SetRetentionMode(mode func() string) {
+	m.retentionMode = mode
 }
 
 // Close flushes any pending entries and releases driver resources.
@@ -371,11 +390,15 @@ func (m *Manager) RunCheckpoints(ctx context.Context) {
 	}
 }
 
-// RunRetention periodically deletes log files older than the
+// RunRetention periodically processes log files older than the
 // number of days reported by retentionDays() on each tick. The
 // caller passes a function so admin updates to the retention
 // window take effect on the next sweep instead of being frozen
 // at goroutine start.
+//
+// The action taken on expired files is controlled by SetRetentionMode:
+// "archive" compresses each day into a .db.gz archive (keeping the
+// data on disk), "delete" removes the files. Default "delete".
 //
 // retentionDays() <= 0 disables the sweep entirely. The sweep
 // runs once on entry (so admin changes don't have to wait 24h)
@@ -401,24 +424,44 @@ func (m *Manager) RunRetention(ctx context.Context, retentionDays func() int) {
 			return
 		}
 
-		var toDelete []string
+		var expired []string
 		for _, f := range files {
 			date := extractDate(f)
 			if date < cutoffDay {
-				toDelete = append(toDelete, f)
+				expired = append(expired, f)
 			}
 		}
-		if len(toDelete) == 0 {
+		if len(expired) == 0 {
 			return
 		}
-		if err := m.driver.DeleteFiles(toDelete); err != nil {
-			logging.Warn("logstore retention delete failed", logging.F("error", err.Error()))
-			return
+
+		// Resolve the retention action live so admin flips between
+		// "archive" and "delete" apply on the next tick.
+		mode := "delete"
+		if m.retentionMode != nil {
+			mode = m.retentionMode()
 		}
-		logging.Info("logstore retention deleted files",
-			logging.F("files", len(toDelete)),
-			logging.F("days", days),
-		)
+
+		switch mode {
+		case "archive":
+			if err := m.driver.ArchiveFiles(expired); err != nil {
+				logging.Warn("logstore retention archive failed", logging.F("error", err.Error()))
+				return
+			}
+			logging.Info("logstore retention archived files",
+				logging.F("files", len(expired)),
+				logging.F("days", days),
+			)
+		default:
+			if err := m.driver.DeleteFiles(expired); err != nil {
+				logging.Warn("logstore retention delete failed", logging.F("error", err.Error()))
+				return
+			}
+			logging.Info("logstore retention deleted files",
+				logging.F("files", len(expired)),
+				logging.F("days", days),
+			)
+		}
 	}
 
 	sweep()

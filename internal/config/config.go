@@ -27,6 +27,11 @@ type ServerConfig struct {
 	LogLevel         string `yaml:"log_level"`
 	AdminPassword    string `yaml:"admin_password"`
 	LogRetentionDays int    `yaml:"log_retention_days"`
+	// LogRetentionMode selects what happens to log files that pass
+	// the retention window: "delete" (default) removes them;
+	// "archive" gzip-compresses each day to <day>.db.gz and keeps
+	// it on disk. "" = delete.
+	LogRetentionMode string `yaml:"log_retention_mode"`
 	LogDir           string `yaml:"log_dir"` // default: next to the SQLite DB (<dsn dir>/logs)
 	// LogstoreBackend selects the log storage driver: "sqlite"
 	// (per-date files), "postgres" (shared table, cluster mode) or

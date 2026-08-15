@@ -1,9 +1,11 @@
 package logstore
 
 import (
+	"compress/gzip"
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -988,6 +990,86 @@ func (d *SQLiteDriver) DeleteFiles(days []string) error {
 		}
 	}
 	return nil
+}
+
+// ArchiveFiles compresses the named day files into .db.gz archives
+// (gzip) and removes the originals plus WAL/SHM sidecars. Idempotent:
+// missing files are skipped. Used by retention in "archive" mode so
+// old logs are retained on disk in compressed form instead of being
+// deleted.
+//
+// The compressed files use the `<day>.db.gz` basename so they never
+// match ListFiles' `*.db` glob — archived days automatically drop out
+// of admin queries (ATTACH unions) and out of future retention sweeps.
+func (d *SQLiteDriver) ArchiveFiles(days []string) error {
+	for _, day := range days {
+		d.mu.Lock()
+		if df, ok := d.conns[day]; ok {
+			// Compact the WAL so the archive is complete.
+			checkpointWithRetry(df.conn, "TRUNCATE", 20)
+			_ = df.conn.Close()
+			delete(d.conns, day)
+			if d.current[extractDate(day)] == day {
+				delete(d.current, extractDate(day))
+			}
+		}
+		d.mu.Unlock()
+
+		path := filepath.Join(d.dir, day+".db")
+		if _, err := os.Stat(path); err != nil {
+			// Already archived or already gone.
+			continue
+		}
+		if err := gzipFile(path); err != nil {
+			return fmt.Errorf("logstore: archive %s: %w", day, err)
+		}
+		// Remove the original plus WAL/SHM sidecars.
+		for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+			_ = os.Remove(path + suffix)
+		}
+	}
+	return nil
+}
+
+// gzipFile compresses path to path+".gz" using a temp file and
+// rename so a partially-written archive is never visible. Preserves
+// the file's modification time in the gzip header.
+func gzipFile(path string) error {
+	in, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	fi, err := in.Stat()
+	if err != nil {
+		return err
+	}
+
+	tmp := path + ".gz.tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp) }()
+
+	zw := gzip.NewWriter(out)
+	zw.Header.ModTime = fi.ModTime()
+	zw.Header.Name = filepath.Base(path)
+
+	if _, err := io.Copy(zw, in); err != nil {
+		_ = zw.Close()
+		_ = out.Close()
+		return err
+	}
+	if err := zw.Close(); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path+".gz")
 }
 
 // ---------- Filename helpers ----------

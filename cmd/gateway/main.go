@@ -309,6 +309,9 @@ func main() {
 	rt.SetBreakerResetTimeoutMs(int64(cfg.Server.BreakerResetMs))
 	rt.SetAlertCooldownSec(int64(cfg.Server.AlertCooldownSec))
 	rt.SetLogRetentionDays(int64(cfg.Server.LogRetentionDays))
+	if m := cfg.Server.LogRetentionMode; m != "" {
+		rt.SetLogRetentionMode(m)
+	}
 	rt.SetStreamTimeoutSec(int64(cfg.Server.StreamTimeoutSec))
 	rt.SetStreamMaxBodyBytes(int64(cfg.Server.StreamMaxBodyBytes))
 	rt.SetMaxLogSubscribers(int64(cfg.Server.MaxLogSubscribers))
@@ -387,7 +390,9 @@ func main() {
 	go cleanupLoop(ctx, st)
 	// Pass a provider function so admin updates to
 	// log_retention_days take effect on the next sweep instead
-	// of being frozen at goroutine start.
+	// of being frozen at goroutine start. The retention action
+	// (delete vs archive) is likewise read live via SetRetentionMode.
+	logStore.SetRetentionMode(func() string { return rt.LogRetentionMode() })
 	go logStore.RunRetention(ctx, func() int { return int(rt.LogRetentionDays()) })
 	go logStore.RunCheckpoints(ctx)
 	go alertMgr.Start(ctx)

@@ -48,6 +48,11 @@ func TestAdmin_UpdateConfig_BoundaryValues(t *testing.T) {
 		{"log_retention max", `{"log_retention_days":3650}`, http.StatusOK},
 		{"log_retention over max", `{"log_retention_days":3651}`, http.StatusBadRequest},
 
+		// log_retention_mode
+		{"log_retention_mode delete", `{"log_retention_mode":"delete"}`, http.StatusOK},
+		{"log_retention_mode archive", `{"log_retention_mode":"archive"}`, http.StatusOK},
+		{"log_retention_mode invalid", `{"log_retention_mode":"compress"}`, http.StatusBadRequest},
+
 		// markup_ratio
 		{"markup below min", `{"markup_ratio":0.009}`, http.StatusBadRequest},
 		{"markup min", `{"markup_ratio":0.01}`, http.StatusOK},

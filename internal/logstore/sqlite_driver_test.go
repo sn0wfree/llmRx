@@ -1,9 +1,11 @@
 package logstore
 
 import (
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -803,6 +805,103 @@ func TestSQLiteDriver_DeleteFilesClosesConnection(t *testing.T) {
 	}
 }
 
+// ---------- ArchiveFiles ----------
+
+func TestSQLiteDriver_ArchiveFiles(t *testing.T) {
+	d, dir := newTestDriver(t)
+	day1 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	day2 := time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC)
+	_ = d.Insert(makeLog(1, 1, "m", 200, day1))
+	_ = d.Insert(makeLog(1, 1, "m", 200, day2))
+
+	if err := d.ArchiveFiles([]string{"2026-07-01"}); err != nil {
+		t.Fatalf("ArchiveFiles: %v", err)
+	}
+
+	// Original is gone, .gz archive exists.
+	if _, err := os.Stat(filepath.Join(dir, "2026-07-01.db")); !os.IsNotExist(err) {
+		t.Fatal("expected original .db to be removed")
+	}
+	gz, err := os.Stat(filepath.Join(dir, "2026-07-01.db.gz"))
+	if err != nil {
+		t.Fatalf("expected .db.gz archive: %v", err)
+	}
+	if gz.Size() == 0 {
+		t.Fatal("archive is empty")
+	}
+
+	// Archived day no longer appears in ListFiles (no .db glob match).
+	files, _ := d.ListFiles()
+	if len(files) != 1 || files[0] != "2026-07-02" {
+		t.Fatalf("expected only 2026-07-02, got %v", files)
+	}
+
+	// The archive decompresses back to a valid SQLite DB with the row.
+	f, err := os.Open(filepath.Join(dir, "2026-07-01.db.gz"))
+	if err != nil {
+		t.Fatalf("open gz: %v", err)
+	}
+	defer f.Close()
+	gzr, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatalf("gzip reader: %v", err)
+	}
+	defer gzr.Close()
+	plain, err := os.CreateTemp(dir, "restore-*.db")
+	if err != nil {
+		t.Fatalf("create temp: %v", err)
+	}
+	defer os.Remove(plain.Name())
+	defer plain.Close()
+	if _, err := io.Copy(plain, gzr); err != nil {
+		t.Fatalf("decompress: %v", err)
+	}
+	plain.Close()
+	db, err := sql.Open("sqlite3", plain.Name())
+	if err != nil {
+		t.Fatalf("open restored db: %v", err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow("SELECT COUNT(*) FROM logs").Scan(&n); err != nil {
+		t.Fatalf("query restored: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("restored rows: %d, want 1", n)
+	}
+}
+
+func TestSQLiteDriver_ArchiveFilesIdempotent(t *testing.T) {
+	d, _ := newTestDriver(t)
+	_ = d.Insert(makeLog(1, 1, "m", 200, time.Now()))
+	// Missing day — should not error.
+	if err := d.ArchiveFiles([]string{"2099-01-01"}); err != nil {
+		t.Fatalf("ArchiveFiles of missing: %v", err)
+	}
+	// Double-archive a present day: second pass sees no .db and no-ops.
+	if err := d.ArchiveFiles([]string{time.Now().UTC().Format("2006-01-02")}); err != nil {
+		t.Fatalf("first archive: %v", err)
+	}
+	if err := d.ArchiveFiles([]string{time.Now().UTC().Format("2006-01-02")}); err != nil {
+		t.Fatalf("second archive: %v", err)
+	}
+}
+
+func TestSQLiteDriver_ArchiveFilesClosesConnection(t *testing.T) {
+	d, _ := newTestDriver(t)
+	day := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	_ = d.Insert(makeLog(1, 1, "m", 200, day))
+	_ = d.Insert(makeLog(1, 1, "m", 200, day.Add(time.Second)))
+
+	if err := d.ArchiveFiles([]string{"2026-07-01"}); err != nil {
+		t.Fatalf("ArchiveFiles: %v", err)
+	}
+	// Re-insert should work (reopens connection).
+	if err := d.Insert(makeLog(1, 1, "m", 200, day)); err != nil {
+		t.Fatalf("Insert after archive: %v", err)
+	}
+}
+
 // ---------- buildWhere ----------
 
 func TestBuildWhere(t *testing.T) {
@@ -989,6 +1088,82 @@ func TestRunRetentionKeepsRecentFiles(t *testing.T) {
 	files, _ := m.ListFiles()
 	if len(files) == 0 {
 		t.Fatal("recent file was deleted")
+	}
+}
+
+func TestRunRetentionArchivesOldFiles(t *testing.T) {
+	m, dir := newTestManager(t)
+	old := time.Now().UTC().AddDate(0, 0, -10)
+	recent := time.Now().UTC()
+	_ = m.Insert(makeLog(1, 1, "m", 200, old))
+	_ = m.Insert(makeLog(1, 1, "m", 200, recent))
+
+	// Archive mode: expired files become .db.gz, recent stay live.
+	m.SetRetentionMode(func() string { return "archive" })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		m.RunRetention(ctx, func() int { return 5 })
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	archived := false
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(filepath.Join(dir, old.UTC().Format("2006-01-02")+".db.gz")); err == nil {
+			archived = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	if !archived {
+		t.Fatal("retention did not archive old file")
+	}
+
+	// Original gone, recent file still live and listed.
+	if _, err := os.Stat(filepath.Join(dir, old.UTC().Format("2006-01-02")+".db")); !os.IsNotExist(err) {
+		t.Fatal("old .db should be removed after archive")
+	}
+	files, _ := m.ListFiles()
+	if len(files) != 1 || files[0] != recent.UTC().Format("2006-01-02") {
+		t.Fatalf("expected only recent file, got %v", files)
+	}
+}
+
+func TestRunRetention_ArchiveModeLiveSwitch(t *testing.T) {
+	m, dir := newTestManager(t)
+	old := time.Now().UTC().AddDate(0, 0, -10)
+	_ = m.Insert(makeLog(1, 1, "m", 200, old))
+
+	// Mode is read live from the provider on each sweep. Starting
+	// with archive means the initial sweep archives the old day.
+	var mode atomic.Value
+	mode.Store("archive")
+	m.SetRetentionMode(func() string { return mode.Load().(string) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		m.RunRetention(ctx, func() int { return 5 })
+		close(done)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	archived := false
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(filepath.Join(dir, old.UTC().Format("2006-01-02")+".db.gz")); err == nil {
+			archived = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if !archived {
+		t.Fatal("retention did not archive old file with live-read mode")
 	}
 }
 

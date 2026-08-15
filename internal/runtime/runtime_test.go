@@ -124,6 +124,26 @@ func TestLogRetentionDefaults(t *testing.T) {
 	}
 }
 
+func TestLogRetentionMode(t *testing.T) {
+	d := New()
+	if got := d.LogRetentionMode(); got != "delete" {
+		t.Fatalf("default: %q", got)
+	}
+	d.SetLogRetentionMode("archive")
+	if got := d.LogRetentionMode(); got != "archive" {
+		t.Fatalf("after set: %q", got)
+	}
+	// Unknown values are rejected (kept as-is).
+	d.SetLogRetentionMode("compress")
+	if got := d.LogRetentionMode(); got != "archive" {
+		t.Fatalf("invalid value should be rejected, got %q", got)
+	}
+	d.SetLogRetentionMode("delete")
+	if got := d.LogRetentionMode(); got != "delete" {
+		t.Fatalf("after set back: %q", got)
+	}
+}
+
 func TestSnapshotRoundtrip(t *testing.T) {
 	d := New()
 	d.SetCostStrategy("balanced")
@@ -132,6 +152,7 @@ func TestSnapshotRoundtrip(t *testing.T) {
 	d.SetBreakerResetTimeoutMs(45000)
 	d.SetAlertCooldownSec(600)
 	d.SetLogRetentionDays(14)
+	d.SetLogRetentionMode("archive")
 	d.SetStreamTimeoutSec(120)
 	d.SetStreamMaxBodyBytes(16 * 1024 * 1024)
 	d.SetMaxLogSubscribers(64)
@@ -153,6 +174,7 @@ func TestSnapshotRoundtrip(t *testing.T) {
 		BreakerResetMs:     45000,
 		AlertCooldownSec:   600,
 		LogRetentionDays:   14,
+		LogRetentionMode:   "archive",
 		StreamTimeoutSec:   120,
 		StreamMaxBodyBytes: 16 * 1024 * 1024,
 		MaxLogSubscribers:  64,
@@ -185,6 +207,9 @@ func TestSnapshotRoundtrip(t *testing.T) {
 	}
 	if got := d2.LogRetentionDays(); got != 14 {
 		t.Fatalf("retention: %d", got)
+	}
+	if got := d2.LogRetentionMode(); got != "archive" {
+		t.Fatalf("retention mode: %q", got)
 	}
 	if got := d2.StreamTimeoutSec(); got != 120 {
 		t.Fatalf("stream timeout: %d", got)

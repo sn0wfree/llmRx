@@ -1353,6 +1353,7 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 		"breaker_reset_timeout_ms": h.rt.BreakerResetTimeoutMs(),
 		"alert_cooldown_sec":       h.rt.AlertCooldownSec(),
 		"log_retention_days":       h.rt.LogRetentionDays(),
+		"log_retention_mode":       h.rt.LogRetentionMode(),
 		"markup_ratio":             h.rt.MarkupRatio(),
 		"stream_timeout_sec":       h.rt.StreamTimeoutSec(),
 		"stream_max_body_bytes":    h.rt.StreamMaxBodyBytes(),
@@ -1368,6 +1369,7 @@ func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		BreakerResetTimeoutMs *int64   `json:"breaker_reset_timeout_ms,omitempty"`
 		AlertCooldownSec      *int64   `json:"alert_cooldown_sec,omitempty"`
 		LogRetentionDays      *int64   `json:"log_retention_days,omitempty"`
+		LogRetentionMode      *string  `json:"log_retention_mode,omitempty"`
 		MarkupRatio           *float64 `json:"markup_ratio,omitempty"`
 		StreamTimeoutSec      *int64   `json:"stream_timeout_sec,omitempty"`
 		StreamMaxBodyBytes    *int64   `json:"stream_max_body_bytes,omitempty"`
@@ -1418,6 +1420,15 @@ func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.rt.SetLogRetentionDays(*body.LogRetentionDays)
+	}
+	if body.LogRetentionMode != nil {
+		switch *body.LogRetentionMode {
+		case "delete", "archive":
+			h.rt.SetLogRetentionMode(*body.LogRetentionMode)
+		default:
+			writeErr(w, http.StatusBadRequest, "log_retention_mode must be delete|archive")
+			return
+		}
 	}
 	if body.MarkupRatio != nil {
 		if *body.MarkupRatio < 0.01 || *body.MarkupRatio > 1000 {

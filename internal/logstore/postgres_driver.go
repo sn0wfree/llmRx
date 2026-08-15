@@ -351,6 +351,13 @@ func (p *PostgresDriver) DeleteFiles(days []string) error {
 	return nil
 }
 
+// ArchiveFiles is a no-op for the Postgres backend: there are no
+// per-date files to compress, the logs live in a shared table.
+// Retention in "archive" mode therefore keeps rows forever (nothing
+// is deleted); operators who want compressed long-term storage for
+// Postgres should export the table with pg_dump / COPY separately.
+func (p *PostgresDriver) ArchiveFiles(days []string) error { return nil }
+
 // Close releases the shared connection.
 func (p *PostgresDriver) Close() error { return p.db.Close() }
 

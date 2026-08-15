@@ -113,6 +113,9 @@ func (b *blockingDriver) TopByField(f QueryFilter, field string, limit int, days
 }
 func (b *blockingDriver) ListFiles() ([]string, error)    { return b.inner.ListFiles() }
 func (b *blockingDriver) DeleteFiles(days []string) error { return b.inner.DeleteFiles(days) }
+func (b *blockingDriver) ArchiveFiles(days []string) error {
+	return b.inner.ArchiveFiles(days)
+}
 func (b *blockingDriver) LogStats(days []string) (LogStatsResult, error) {
 	return b.inner.LogStats(days)
 }
@@ -377,6 +380,9 @@ func (p *panicDriver) TopByField(f QueryFilter, field string, limit int, days []
 }
 func (p *panicDriver) ListFiles() ([]string, error)    { return p.inner.ListFiles() }
 func (p *panicDriver) DeleteFiles(days []string) error { return p.inner.DeleteFiles(days) }
+func (p *panicDriver) ArchiveFiles(days []string) error {
+	return p.inner.ArchiveFiles(days)
+}
 func (p *panicDriver) LogStats(days []string) (LogStatsResult, error) {
 	return p.inner.LogStats(days)
 }

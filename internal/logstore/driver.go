@@ -69,6 +69,15 @@ type Driver interface {
 	// error.
 	DeleteFiles(days []string) error
 
+	// ArchiveFiles compresses the named files into .db.gz archives
+	// and removes the originals (closing any open connections
+	// first). Used by retention in "archive" mode so old logs are
+	// kept on disk in compressed form instead of being deleted.
+	// Idempotent: missing files are skipped. Backends without
+	// per-day files (Postgres shared table) treat this as a no-op,
+	// which makes archive mode equivalent to "keep rows forever".
+	ArchiveFiles(days []string) error
+
 	// Close releases all open connections. Subsequent Insert or
 	// Query calls return an error.
 	Close() error
