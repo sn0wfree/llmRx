@@ -1,12 +1,13 @@
 package api_test
 
 import (
-	"time"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/testhelper"
@@ -203,5 +204,36 @@ func TestMeAndRedeem(t *testing.T) {
 	app.Chat.Redeem(rdRec2, rdReq2)
 	if rdRec2.Code != http.StatusBadRequest {
 		t.Errorf("reuse topup: want 400, got %d", rdRec2.Code)
+	}
+}
+
+func TestRegisterTokenReloadFailOpen(t *testing.T) {
+	app := testhelper.New(t)
+	seedInviteCode(t, app, "RXM-FAILOP1", 5)
+
+	// Simulate a broken cache reloader: registration must still
+	// succeed (fail-open), because user/plan/token are durable.
+	app.Chat.SetTokenReloader(func() error { return errors.New("cache down") })
+
+	body := `{"username":"frank","password":"password123","invite_code":"RXM-FAILOP1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/register", strings.NewReader(body))
+	req.RemoteAddr = "1.2.3.4:9999"
+	rec := httptest.NewRecorder()
+	app.Chat.Register(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register should fail-open, got %d %s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["api_key"] == nil {
+		t.Errorf("expected api_key despite reload failure: %+v", out)
+	}
+	// User must exist in the DB.
+	u, err := app.Store.GetUserByUsername("frank")
+	if err != nil || u == nil {
+		t.Fatalf("user must be persisted despite reload failure: %v", err)
 	}
 }

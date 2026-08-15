@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/auth"
+	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/store"
 )
@@ -161,13 +162,17 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The new token must be visible to the bearer middleware. A
-	// cache-refresh failure must not abort registration: the token
-	// is already durable in the DB and becomes usable on the next
-	// reload (startup / admin reload). Fail-open, log loudly.
+	// cache-refresh failure must NOT abort registration: the user,
+	// plan and token are already durable in the DB (single
+	// transaction), so the key simply becomes usable on the next
+	// reload (startup / admin reload). Fail-open: log loudly and
+	// complete the registration.
 	if h.tokenReload != nil {
 		if err := h.tokenReload(); err != nil {
-			writeError(w, http.StatusInternalServerError, "token cache refresh failed", "cache_failed")
-			return
+			logging.Warn("billing.register_cache_reload_failed",
+				logging.F("username", body.Username),
+				logging.F("error", err),
+			)
 		}
 	}
 	http.SetCookie(w, &http.Cookie{
