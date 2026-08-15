@@ -46,6 +46,10 @@ func (h *Handler) SetRegisterLimit(limit int, win time.Duration) {
 	h.regLimiter = newRegisterLimiter(limit, win)
 }
 
+// SetTokenReloader wires the bearer-token cache refresh (called
+// after registration creates a new token).
+func (h *Handler) SetTokenReloader(fn func() error) { h.tokenReload = fn }
+
 func (l *registerLimiter) allow(ip string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -143,6 +147,13 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.UpdateUser(res.User); err != nil {
 		writeError(w, http.StatusInternalServerError, "session setup failed", "session_failed")
 		return
+	}
+	// The new token must be visible to the bearer middleware.
+	if h.tokenReload != nil {
+		if err := h.tokenReload(); err != nil {
+			writeError(w, http.StatusInternalServerError, "token cache refresh failed", "cache_failed")
+			return
+		}
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "llmrx_session",

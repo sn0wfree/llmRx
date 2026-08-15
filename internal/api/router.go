@@ -185,6 +185,11 @@ type Handler struct {
 
 	// regLimiter throttles public registration per IP.
 	regLimiter *registerLimiter
+
+	// tokenReload refreshes the bearer-token cache after
+	// registration creates a new token (the cache is owned by the
+	// server). nil = no refresh (tests).
+	tokenReload func() error
 }
 
 func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, ls *logstore.Manager, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Handler {

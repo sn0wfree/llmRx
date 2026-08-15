@@ -296,6 +296,7 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	// Public self-service billing endpoints (no bearer token; the
 	// /me/* routes authenticate via the llmrx_session cookie):
 	// invite-code registration + top-up redemption.
+	handler.SetTokenReloader(s.tokens.Reload)
 	s.engine.Post("/api/v1/register", handler.Register)
 	s.engine.Get("/api/v1/me", handler.Me)
 	s.engine.Post("/api/v1/me/redeem", handler.Redeem)
