@@ -122,6 +122,7 @@ func (p *PostgresDriver) BatchInsert(entries []*model.Log) (int, error) {
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 			e.TokenID, e.ChannelID, e.KeyID, e.Model,
 			e.PromptTokens, e.CompletionTokens, e.CachedTokens,
+			e.ReasoningTokens, int64(boolToInt(e.CacheHit)),
 			e.RealCostUSD, e.BilledCostUSD,
 			e.DurationMs, e.StatusCode, e.RouterPath, e.RequestIP,
 			e.Endpoint, e.Units,
@@ -265,6 +266,14 @@ func (p *PostgresDriver) TimeSeries(filter QueryFilter, bucketSec int64, days []
 // TopByField groups by model/channel_id/token_id and returns the
 // top `limit` labels by row count.
 func (p *PostgresDriver) TopByField(filter QueryFilter, field string, limit int, days []string) ([]NamedMetric, error) {
+	// Validate field to prevent SQL injection (defense-in-depth).
+	switch field {
+	case "model", "channel_id", "token_id":
+		// allow
+	default:
+		return nil, fmt.Errorf("logstore: TopByField invalid field %q", field)
+	}
+
 	where, args := buildWhere(filter)
 	dayConds, dayArgs := dayRangeConds(days)
 	if dayConds != "" {

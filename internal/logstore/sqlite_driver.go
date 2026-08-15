@@ -164,7 +164,37 @@ func (d *SQLiteDriver) BatchInsert(entries []*model.Log) (int, error) {
 		}
 	}
 
-	date := entries[0].CreatedAt.UTC().Format("2006-01-02")
+	// Group entries by UTC date to handle midnight-crossing batches.
+	type dateBatch struct {
+		date    string
+		entries []*model.Log
+	}
+	batches := make(map[string]*dateBatch)
+	order := make([]string, 0, 1)
+	for _, e := range entries {
+		date := e.CreatedAt.UTC().Format("2006-01-02")
+		b, ok := batches[date]
+		if !ok {
+			b = &dateBatch{date: date}
+			batches[date] = b
+			order = append(order, date)
+		}
+		b.entries = append(b.entries, e)
+	}
+
+	total := 0
+	for _, date := range order {
+		batch := batches[date]
+		n, err := d.batchInsertForDate(batch.date, batch.entries)
+		if err != nil {
+			return total, err
+		}
+		total += n
+	}
+	return total, nil
+}
+
+func (d *SQLiteDriver) batchInsertForDate(date string, entries []*model.Log) (int, error) {
 	df, dayFileKey, err := d.acquire(date, 0)
 	if err != nil {
 		return 0, err

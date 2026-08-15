@@ -236,7 +236,7 @@ func TestGateway_ModelWhitelistEnforced(t *testing.T) {
 	app.Chat.SetProviders(map[string]provider.Provider{"": cp, "openai": cp})
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions",
-		strings.NewReader(`{"model":"forbidden-model","messages":[]}`))
+		strings.NewReader(`{"model":"forbidden-model","messages":[{"role":"user","content":"hi"}]}`))
 	req.Header.Set("Authorization", "Bearer sk-t")
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

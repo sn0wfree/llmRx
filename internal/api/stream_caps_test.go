@@ -125,7 +125,7 @@ func TestStream_HappyPathStillCompletes(t *testing.T) {
 	}
 	app.RT.SetStreamTimeoutSec(30)
 
-	body := `{"model":"m","stream":true,"messages":[]}`
+	body := `{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer sk-tok")

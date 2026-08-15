@@ -471,7 +471,7 @@ func (s *Server) Start(ctx context.Context) error {
 		Handler:           s.engine,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       0, // unbounded body read; chi middleware applies timeouts per route
-		WriteTimeout:      0,
+		WriteTimeout:      10 * time.Minute, // generous upper bound; chi per-route timeouts handle tighter limits
 		IdleTimeout:       120 * time.Second,
 	}
 	if s.tokens != nil {

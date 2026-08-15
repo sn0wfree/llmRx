@@ -48,7 +48,7 @@ make docker-build && make docker-run # 升级（代码变了就重新 build）
 ### 1.3 存储与备份空间
 
 - **数据库**：SQLite 单文件 `llmrx.db`，带 WAL（`-shm` + `-wal` 三个一起拷）。
-- **日志**：每条请求一行进 `logs` 表；高频场景一天可涨几百 MB。建议定期 PUT `/api/v1/config` 设 `log_retention_days`。默认保留策略是删除过期日志；设 `log_retention_mode: "archive"` 可将过期日志 gzip 压缩为 `<日期>.db.gz` 归档保留（不删除），归档文件不参与 admin 查询。
+- **日志**：每条请求一行进 `logs` 表；高频场景一天可涨几百 MB。建议定期 PUT `/admin/api/v1/config` 设 `log_retention_days`。默认保留策略是删除过期日志；设 `log_retention_mode: "archive"` 可将过期日志 gzip 压缩为 `<日期>.db.gz` 归档保留（不删除），归档文件不参与 admin 查询。
 - **备份预算**：`/data` 整体备份（`llmrx.db` + `llmrx.db-shm` + `llmrx.db-wal` + `llmrx.key` + `config.yml`）。
 
 ---
@@ -321,11 +321,11 @@ http://localhost:8787/admin/
 **API**：
 
 ```bash
-TOKEN=$(curl -s -X POST http://localhost:8787/api/v1/login \
+TOKEN=$(curl -s -X POST http://localhost:8787/admin/api/v1/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"admin","password":"admin"}' | jq -r .session_token)
 
-curl -X POST http://localhost:8787/api/v1/users/1/password \
+curl -X POST http://localhost:8787/admin/api/v1/users/1/password \
   -H "X-Session-Token: $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"old_password":"admin","new_password":"<新密码>"}'
@@ -338,7 +338,7 @@ curl -X POST http://localhost:8787/api/v1/users/1/password \
 **API**：
 
 ```bash
-curl -X POST http://localhost:8787/api/v1/channels \
+curl -X POST http://localhost:8787/admin/api/v1/channels \
   -H "X-Session-Token: $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
@@ -353,7 +353,7 @@ curl -X POST http://localhost:8787/api/v1/channels \
     "status": 1
   }'
 
-curl -X POST http://localhost:8787/api/v1/channels/1/keys \
+curl -X POST http://localhost:8787/admin/api/v1/channels/1/keys \
   -H "X-Session-Token: $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"key": "sk-..."}'
@@ -368,7 +368,7 @@ curl -X POST http://localhost:8787/api/v1/channels/1/keys \
 **API**：
 
 ```bash
-curl -X POST http://localhost:8787/api/v1/tokens \
+curl -X POST http://localhost:8787/admin/api/v1/tokens \
   -H "X-Session-Token: $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
@@ -388,7 +388,7 @@ Web UI：Logs 页面会自动订阅。也可以直接连：
 
 ```bash
 curl -N -H 'X-Session-Token: <admin_token>' \
-  http://localhost:8787/api/v1/logs/stream
+  http://localhost:8787/admin/api/v1/logs/stream
 ```
 
 SSE 通过 EventSource，不能设自定义 header。Web UI 的 EventSource 自动通过 `/admin/login` 拿到的 cookie 鉴权；外部脚本用上面的 curl。
@@ -450,7 +450,7 @@ docker compose up -d --force-recreate
 大部分 runtime 参数可以**不重启**就改：
 
 ```bash
-curl -X PUT http://localhost:8787/api/v1/config \
+curl -X PUT http://localhost:8787/admin/api/v1/config \
   -H "X-Session-Token: $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
@@ -472,7 +472,7 @@ curl -X PUT http://localhost:8787/api/v1/config \
 新增 / 删除 channel、改了 key 之后不需要重载。但如果改了 `config.yml` 的 channel/token，需要：
 
 ```bash
-curl -X POST http://localhost:8787/api/v1/reload \
+curl -X POST http://localhost:8787/admin/api/v1/reload \
   -H "X-Session-Token: $TOKEN"
 ```
 
@@ -480,7 +480,7 @@ curl -X POST http://localhost:8787/api/v1/reload \
 
 ```bash
 # 1. 设保留天数（立即生效）
-curl -X PUT http://localhost:8787/api/v1/config \
+curl -X PUT http://localhost:8787/admin/api/v1/config \
   -H "X-Session-Token: $TOKEN" \
   -d '{"log_retention_days": 7}'
 
@@ -633,7 +633,7 @@ Caddy 自动申请 Let's Encrypt 证书。
 ### 9.3 路径分流
 
 - `/v1/...` → 任意 Bearer token（业务方调）
-- `/api/v1/...` → admin session_token（管理操作）
+- `/admin/api/v1/...` → admin session_token（管理操作）
 - `/admin/` → admin session_token（web UI）
 - `/health`, `/metrics` → 按需鉴权（/metrics 强烈建议鉴权）
 
@@ -837,7 +837,7 @@ L2 熔断器 5 次失败会打开 channel。检查：
 - 上游是否限流（429）
 - base_url 是否正确
 
-看熔断状态：Web UI Dashboard / `GET /api/v1/channels` 看 `circuit_breaker`。
+看熔断状态：Web UI Dashboard / `GET /admin/api/v1/channels` 看 `circuit_breaker`。
 
 ### 11.8 高负载下日志写饱和 / 吞吐骤降（runbook）
 
@@ -873,7 +873,7 @@ ps -o rss,vsz,pcpu -p $(pgrep llmRx)
 **处置阶梯**（从轻到重）：
 
 1. 手动 checkpoint 截断 WAL（上面的 sqlite3 命令；网关每 60s 也会自动做，等下一轮即可）
-2. 调大/清理日志保留窗口：`PUT /api/v1/config` 设 `log_retention_days`（默认删除过期文件；设 `log_retention_mode: "archive"` 改为 gzip 归档保留，`<日期>.db.gz` 可直接 gunzip 还原查询）
+2. 调大/清理日志保留窗口：`PUT /admin/api/v1/config` 设 `log_retention_days`（默认删除过期文件；设 `log_retention_mode: "archive"` 改为 gzip 归档保留，`<日期>.db.gz` 可直接 gunzip 还原查询）
 3. 若为日志写入瓶颈且可接受崩溃丢 <1s 日志：config 设 `logstore.synchronous: off` 后重启（写入吞吐 2-5x）
 4. 仍过载：确认 `server.max_inflight_requests`（默认 10000）生效——超限请求直接 503，保护进程不雪崩
 5. 长期：升 Postgres logstore（`logstore_backend: postgres`），或把 `/metrics` 接入 Prometheus 提前预警
@@ -930,43 +930,43 @@ ps -o rss,vsz,pcpu -p $(pgrep llmRx)
 
 ```bash
 # Auth
-POST /api/v1/login                            {username, password} → {session_token, user}
-POST /api/v1/logout
-POST /api/v1/users/{id}/password              {old_password, new_password}
+POST /admin/api/v1/login                            {username, password} → {session_token, user}
+POST /admin/api/v1/logout
+POST /admin/api/v1/users/{id}/password              {old_password, new_password}
 
 # Dashboard
-GET  /api/v1/dashboard                        总览（请求量、spend、错误率）
+GET  /admin/api/v1/dashboard                        总览（请求量、spend、错误率）
 GET  /api/v1/health                           liveness（无需鉴权）
 
 # Channels
-GET  /api/v1/channels
-POST /api/v1/channels                         {name, provider, base_url, models, priority, ...}
-PUT  /api/v1/channels/{id}                    patch
-DELETE /api/v1/channels/{id}                  级联删 keys
-POST /api/v1/channels/{id}/keys               {key}
-DELETE /api/v1/channels/{id}/keys/{keyId}
+GET  /admin/api/v1/channels
+POST /admin/api/v1/channels                         {name, provider, base_url, models, priority, ...}
+PUT  /admin/api/v1/channels/{id}                    patch
+DELETE /admin/api/v1/channels/{id}                  级联删 keys
+POST /admin/api/v1/channels/{id}/keys               {key}
+DELETE /admin/api/v1/channels/{id}/keys/{keyId}
 
 # Tokens
-GET  /api/v1/tokens
-POST /api/v1/tokens                           {name, plan_id, rpm, tpm, models_whitelist}
-PUT  /api/v1/tokens/{id}                      patch
-DELETE /api/v1/tokens/{id}
+GET  /admin/api/v1/tokens
+POST /admin/api/v1/tokens                           {name, plan_id, rpm, tpm, models_whitelist}
+PUT  /admin/api/v1/tokens/{id}                      patch
+DELETE /admin/api/v1/tokens/{id}
 
 # Users / Plans / Alerts
-GET/POST/PUT/DELETE /api/v1/users
-GET/POST/PUT/DELETE /api/v1/plans
-GET/POST/PUT/DELETE /api/v1/alerts
-GET  /api/v1/alerts/events
-POST /api/v1/alerts/events/{id}/ack
+GET/POST/PUT/DELETE /admin/api/v1/users
+GET/POST/PUT/DELETE /admin/api/v1/plans
+GET/POST/PUT/DELETE /admin/api/v1/alerts
+GET  /admin/api/v1/alerts/events
+POST /admin/api/v1/alerts/events/{id}/ack
 
 # Logs
-GET  /api/v1/logs?limit=N&channel=X&since=T  分页历史
-GET  /api/v1/logs/stream                      SSE 实时（X-Session-Token 或 ?session_token=）
+GET  /admin/api/v1/logs?limit=N&channel=X&since=T  分页历史
+GET  /admin/api/v1/logs/stream                      SSE 实时（X-Session-Token 或 ?session_token=）
 
 # Runtime config
-GET  /api/v1/config
-PUT  /api/v1/config                           {cost_strategy, markup_ratio, log_retention_days, ...}
-POST /api/v1/reload                           强制重载 channel + token 池
+GET  /admin/api/v1/config
+PUT  /admin/api/v1/config                           {cost_strategy, markup_ratio, log_retention_days, ...}
+POST /admin/api/v1/reload                           强制重载 channel + token 池
 
 # Proxy (用户面向)
 POST /v1/chat/completions                     OpenAI 兼容

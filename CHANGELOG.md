@@ -52,6 +52,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **docker-compose.yml**: Removed invalid empty `environment:` mapping
   (newer Docker Compose rejects it).
 
+### Security
+- **Postgres BatchInsert missing columns**: `reasoning_tokens` and
+  `cache_hit` were not passed in the batch INSERT, causing a runtime
+  column-count mismatch that silently lost all batched log entries.
+- **retryingCache atomic race** (`api/router.go`): Concurrent cache
+  rebuilds could overwrite each other's protocol entries. Added mutex
+  to serialize cache updates.
+- **`HasModelAccess("auto")` whitelist bypass**: Tokens with strict
+  model whitelists could request `model="auto"` which resolved to
+  any combo model. Removed unconditional `"auto"` bypass; "auto" is
+  now checked like any other combo model name.
+- **Admin session cookie CSRF** (`admin/handler.go`): Login and
+  logout cookies now set `SameSite=Strict` and `Secure` flags,
+  matching the WebUI and billing API handlers.
+- **Rate-limit bypass** (`middleware/auth.go`): When token lookup
+  returned `ID==0` after base auth, the request bypassed all rate
+  limiting and budget checks. Now returns 401 instead of passing
+  through.
+- **TrafficObserver data race** (`router/engine.go`): Replaced
+  unsynchronized slice with `atomic.Value` to prevent races between
+  observer registration and concurrent RecordSuccess/RecordFailure.
+- **Postgres SQL field interpolation** (`logstore/postgres_driver.go`):
+  Added allowlist validation for `TopByField` `field` parameter,
+  matching the SQLite driver's existing validation.
+
 ### Added
 
 #### Streaming + cap hardening

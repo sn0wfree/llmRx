@@ -140,6 +140,7 @@ type Handler struct {
 	// atomic.Load — lock-free. The write path (admin config change)
 	// atomically swaps the whole snapshot.
 	retryingCache atomic.Value // holds *retryingCache
+	retryingMu    sync.Mutex   // serializes cache rebuilds to prevent lost entries
 
 	// modelsCache caches the /models response for 30s to avoid
 	// scanning all channels on every ListModels call.
@@ -406,6 +407,19 @@ func (h *Handler) providerFor(channelProtocol string, streaming bool) provider.P
 	}
 
 	// Cache miss: (re)build the wrapped provider for this protocol.
+	// Serialize rebuilds so two concurrent misses don't overwrite
+	// each other's protocol entries.
+	h.retryingMu.Lock()
+	defer h.retryingMu.Unlock()
+	// Double-check after acquiring the lock.
+	if v := h.retryingCache.Load(); v != nil {
+		c := v.(*retryingCache)
+		if c.cfg == cfg {
+			if cached, ok := c.wrapped[channelProtocol]; ok {
+				return cached
+			}
+		}
+	}
 	wrapped := provider.NewRetryingProvider(p, cfg)
 	snap := &retryingCache{
 		cfg:     cfg,
@@ -415,7 +429,6 @@ func (h *Handler) providerFor(channelProtocol string, streaming bool) provider.P
 	// previously-wrapped protocols.
 	if v := h.retryingCache.Load(); v != nil {
 		c := v.(*retryingCache)
-		snap.wrapped[channelProtocol] = wrapped
 		for k, v := range c.wrapped {
 			snap.wrapped[k] = v
 		}
@@ -619,6 +632,11 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	if req.Model == "" {
 		writeError(w, http.StatusBadRequest, "model is required", "missing_model")
+		return
+	}
+
+	if len(req.Messages) == 0 {
+		writeError(w, http.StatusBadRequest, "messages array must not be empty", "missing_messages")
 		return
 	}
 

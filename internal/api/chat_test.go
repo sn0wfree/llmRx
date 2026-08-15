@@ -37,7 +37,7 @@ func do(t *testing.T, h http.Handler, method, path, body string) *httptest.Respo
 func TestChat_NoAuth(t *testing.T) {
 	app := testhelper.New(t)
 	rec := do(t, app.Mux, http.MethodPost, "/v1/chat/completions",
-		`{"model":"x","messages":[]}`)
+		`{"model":"x","messages":[{"role":"user","content":"hi"}]}`)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d %s", rec.Code, rec.Body.String())
 	}
@@ -46,12 +46,12 @@ func TestChat_NoAuth(t *testing.T) {
 func TestChat_BadToken(t *testing.T) {
 	app := testhelper.New(t)
 	rec := do(t, app.Mux, http.MethodPost, "/v1/chat/completions",
-		`{"model":"x","messages":[]}`)
+		`{"model":"x","messages":[{"role":"user","content":"hi"}]}`)
 	_ = rec
 
 	rec2 := httptest.NewRecorder()
 	r2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
-		strings.NewReader(`{"model":"x","messages":[]}`))
+		strings.NewReader(`{"model":"x","messages":[{"role":"user","content":"hi"}]}`))
 	r2.Header.Set("Content-Type", "application/json")
 	r2.Header.Set("Authorization", "Bearer bogus")
 	app.Mux.ServeHTTP(rec2, r2)
@@ -67,7 +67,7 @@ func TestChat_MissingModel(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
-		strings.NewReader(`{"messages":[]}`))
+		strings.NewReader(`{"messages":[{"role":"user","content":"hi"}]}`))
 	r.Header.Set("Authorization", "Bearer sk-t")
 	r.Header.Set("Content-Type", "application/json")
 	app.Mux.ServeHTTP(rec, r)
@@ -95,7 +95,7 @@ func TestChat_StreamNotSupported(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
-		strings.NewReader(`{"model":"m","stream":true,"messages":[]}`))
+		strings.NewReader(`{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
 	r.Header.Set("Authorization", "Bearer sk-t")
 	r.Header.Set("Content-Type", "application/json")
 	app.Mux.ServeHTTP(rec, r)
@@ -121,7 +121,7 @@ func TestChat_NoChannelForModel(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
-		strings.NewReader(`{"model":"unknown","messages":[]}`))
+		strings.NewReader(`{"model":"unknown","messages":[{"role":"user","content":"hi"}]}`))
 	r.Header.Set("Authorization", "Bearer sk-t")
 	r.Header.Set("Content-Type", "application/json")
 	app.Mux.ServeHTTP(rec, r)
@@ -230,7 +230,7 @@ func TestChat_UpstreamErrorLogged(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
-		strings.NewReader(`{"model":"m","messages":[]}`))
+		strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
 	r.Header.Set("Authorization", "Bearer sk-t")
 	r.Header.Set("Content-Type", "application/json")
 	app.Mux.ServeHTTP(rec, r)
@@ -457,7 +457,7 @@ func TestChat_StreamingUpstreamError(t *testing.T) {
 	app.AddToken("sk-tok", "t")
 	app.Provider.StreamErr = errors.New("upstream died")
 
-	body := `{"model":"m","stream":true,"messages":[]}`
+	body := `{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer sk-tok")

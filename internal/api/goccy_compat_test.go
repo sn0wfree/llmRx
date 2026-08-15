@@ -41,13 +41,13 @@ func TestGoccy_InterfaceFields_RoundTrip(t *testing.T) {
 		name string
 		body string
 	}{
-		{"stop_string", `{"model":"gpt-4","messages":[],"stop":"\n"}`},
-		{"stop_array", `{"model":"gpt-4","messages":[],"stop":["a","b"]}`},
-		{"toolchoice_string", `{"model":"gpt-4","messages":[],"tool_choice":"auto"}`},
-		{"toolchoice_object", `{"model":"gpt-4","messages":[],"tool_choice":{"type":"function","function":{"name":"x"}}}`},
+		{"stop_string", `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stop":"\n"}`},
+		{"stop_array", `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stop":["a","b"]}`},
+		{"toolchoice_string", `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"tool_choice":"auto"}`},
+		{"toolchoice_object", `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"tool_choice":{"type":"function","function":{"name":"x"}}}`},
 		{"content_string", `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`},
 		{"content_array", `{"model":"gpt-4","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`},
-		{"metadata_mixed", `{"model":"gpt-4","messages":[],"metadata":{"k1":"v1","k2":42,"k3":true,"k4":null}}`},
+		{"metadata_mixed", `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"metadata":{"k1":"v1","k2":42,"k3":true,"k4":null}}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

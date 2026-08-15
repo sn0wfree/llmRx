@@ -297,6 +297,8 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name: "llmrx_session", Value: tok, Path: "/", HttpOnly: true,
 		Expires: exp, MaxAge: int(h.sessionTTL.Seconds()),
+		SameSite: http.SameSiteStrictMode,
+		Secure:   r.TLS != nil,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"session_token":      tok,
@@ -321,7 +323,10 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 			_ = h.store.UpdateUser(u)
 		}
 	}
-	http.SetCookie(w, &http.Cookie{Name: "llmrx_session", Value: "", Path: "/", MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{
+		Name: "llmrx_session", Value: "", Path: "/", MaxAge: -1,
+		SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

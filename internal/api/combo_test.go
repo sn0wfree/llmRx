@@ -39,7 +39,7 @@ func TestCombo_LoadBalance_NoChannel(t *testing.T) {
 	app.AddComboModel("sk-t", "combo-lb", []string{"nonexistent"}, model.ComboModeLoadBalance)
 	app.PriceModels([]string{"nonexistent"}, 1.0, 1.0)
 
-	body := `{"model":"combo-lb","messages":[]}`
+	body := `{"model":"combo-lb","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer sk-t")
 	req.Header.Set("Content-Type", "application/json")
@@ -59,7 +59,7 @@ func TestCombo_LoadBalance_UpstreamError(t *testing.T) {
 	app.Provider.Errs = []error{errors.New("boom")}
 	app.Provider.Statuses = []int{502}
 
-	body := `{"model":"combo-lb","messages":[]}`
+	body := `{"model":"combo-lb","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer sk-t")
 	req.Header.Set("Content-Type", "application/json")
@@ -103,7 +103,7 @@ func TestCombo_Serial_FailoverSuccess(t *testing.T) {
 		{ID: "ok", Model: "m2", Choices: []provider.Choice{{Index: 0, Message: provider.Message{Role: "assistant", Content: "ok"}, FinishReason: "stop"}}},
 	}
 
-	body := `{"model":"combo-serial","messages":[]}`
+	body := `{"model":"combo-serial","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer sk-t")
 	req.Header.Set("Content-Type", "application/json")
@@ -125,7 +125,7 @@ func TestCombo_Serial_AllFail(t *testing.T) {
 	app.Provider.Errs = []error{errors.New("m1 down"), errors.New("m2 down")}
 	app.Provider.Statuses = []int{503, 503}
 
-	body := `{"model":"combo-serial","messages":[]}`
+	body := `{"model":"combo-serial","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer sk-t")
 	req.Header.Set("Content-Type", "application/json")
@@ -147,7 +147,7 @@ func TestCombo_Serial_NoChannel(t *testing.T) {
 	app.AddComboModel("sk-t", "combo-serial", []string{"nonexistent"}, model.ComboModeSerial)
 	app.PriceModels([]string{"nonexistent"}, 1.0, 1.0)
 
-	body := `{"model":"combo-serial","messages":[]}`
+	body := `{"model":"combo-serial","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer sk-t")
 	req.Header.Set("Content-Type", "application/json")

@@ -107,30 +107,62 @@ Management API (/admin/api/v1) + HTML UI (/admin/, go:embed templates)
 
 ```
 cmd/gateway/
-└── main.go                  # 入口
+└── main.go                  # 入口 + bootstrap
 
 internal/
-├── config/                  # YAML 配置加载
-│   └── config.go
-├── model/                   # 数据模型
-│   └── types.go
-├── server/                  # HTTP 服务器
-│   └── server.go
-├── middleware/              # HTTP 中间件
-│   └── auth.go
+├── config/                  # YAML 配置加载 + 验证
+├── model/                   # 数据模型 (Channel, Token, Log, etc.)
+├── server/                  # HTTP 服务器 + 路由注册
+├── middleware/              # HTTP 中间件 (auth, rate-limit, CORS)
 ├── router/                  # 路由引擎 (L1-L5)
 │   ├── engine.go            # Pipeline 编排
 │   ├── static.go            # L1: 静态匹配
 │   ├── breaker.go           # L2: 熔断器
-│   └── cost.go              # L3: 成本优化
+│   ├── cost.go              # L3: 成本优化
+│   ├── strategy.go          # 路由策略 (cheapest/balanced/preferred)
+│   ├── auto/                # L4-L5: 自动路由
+│   │   ├── task.go          # 任务分类器
+│   │   ├── pool.go          # Thompson arm 采样池
+│   │   └── learned.go       # 学习型路由器
+│   ├── latency/             # 延迟感知路由 (EWMA)
+│   ├── session/             # 会话亲和性
+│   └── thompson/            # Thompson 采样实现
 ├── pool/                    # Channel 连接池 + Key 管理
-│   └── pool.go
-├── provider/                # Provider 适配层
-│   └── adapter.go
-├── store/                   # 存储接口
-│   └── store.go
-└── api/                     # 管理 API + 代理端点
-    └── router.go
+├── provider/                # Provider 适配层 (OpenAI/Anthropic/Gemini)
+├── store/                   # 存储接口 + SQLite/Postgres 实现
+├── api/                     # Chat Completions API + 代理端点
+├── admin/                   # Admin API (channels, tokens, config)
+├── webui/                   # Web UI (Go html/template + HTMX)
+├── logstore/                # 日志存储 (SQLite per-day files / Postgres)
+├── middleware/              # HTTP 中间件
+├── ratelimit/               # 速率限制 (sliding window)
+├── auth/                    # 密码 hash (Argon2id)
+├── secrets/                 # 密钥加密 (AES-256-GCM)
+├── broker/                  # 实时日志广播 (SSE)
+├── sse/                     # Server-Sent Events 工具
+├── alert/                   # 告警子系统 (webhook + 内建)
+├── guardrail/               # 内容安全规则引擎
+├── intent/                  # L4 意图分类 (Rust cdylib)
+├── mcp/                     # MCP 网关 (工具代理)
+├── cache/                   # 响应缓存
+├── prober/                  # 上游探测器
+├── runtime/                 # 运行时配置 (atomic, 热重载)
+├── observability/           # Prometheus 指标 + OTel
+├── logging/                 # 结构化 JSON 日志
+├── dialect/                 # 数据库方言抽象 (SQLite/Postgres)
+├── modelmeta/               # 模型元数据
+├── modelcost/               # 模型成本表
+├── requestid/               # 请求 ID 追踪
+├── rbac/                    # 角色权限
+├── tokencache/              # Token 缓存
+├── notify/                  # 配置传播 (LISTEN/NOTIFY)
+├── byok/                    # BYOK (用户自带 Key)
+├── testhelper/              # 测试工具
+
+scripts/
+├── loadtest/                # HTTP 压测工具
+├── mockupstream/            # Mock 上游服务
+└── learned-router/          # 学习型路由器训练工具 (Python)
 
 config.yml                   # 配置文件
 docs/
@@ -399,34 +431,47 @@ Go html/template + HTMX（无 npm / 前端构建）
 
 ### 8.3 组件树
 
+前端使用 Go `html/template` + HTMX + Tailwind CDN（无 JavaScript 构建步骤）。
+
 ```
-src/
-├── App.tsx
-├── layouts/
-│   └── AdminLayout.tsx
-├── pages/
-│   ├── Dashboard.tsx
-│   ├── Channels/ChannelList.tsx
-│   ├── Channels/ChannelDetail.tsx
-│   ├── Tokens/TokenList.tsx
-│   ├── Tokens/TokenCreate.tsx
-│   ├── Users/UserList.tsx
-│   ├── Users/UserDetail.tsx
-│   ├── Routing/IntentConfig.tsx
-│   ├── Analytics/Overview.tsx
-│   ├── Logs/RequestLogs.tsx
-│   └── Settings.tsx
-├── components/ui/
-│   ├── StatCard.tsx
-│   ├── StatusBadge.tsx
-│   ├── DataTable.tsx
-│   ├── Modal.tsx
-│   └── Toast.tsx
-├── hooks/
-│   ├── useSSE.ts
-│   └── useAPI.ts
-├── api/client.ts
-└── types/index.ts
+internal/webui/
+├── handler.go              # HTTP handlers (dashboard, settings, etc.)
+├── render.go               # Template rendering helpers
+├── billing.go              # Billing UI handlers
+├── combos.go               # Combo model UI
+├── model_costs.go          # Model cost UI
+├── usage.go                # Usage tracking UI
+├── store.go                # Store interface for UI
+├── templates/
+│   ├── layout.html         # Base layout (head, nav, sidebar)
+│   ├── login.html          # Admin login page
+│   ├── dashboard.html      # Main dashboard with stats
+│   ├── me.html             # User self-service page
+│   ├── register.html       # Public registration page
+│   ├── model_costs.html    # Model cost rate card
+│   ├── user_usage.html     # Per-user usage stats
+│   ├── users_usage.html    # All users usage overview
+│   ├── redeem_codes.html   # Invite/topup code management
+│   ├── partials/
+│   │   ├── sidebar.html    # Navigation sidebar
+│   │   └── ...
+│   ├── tokens/
+│   │   ├── list.html       # Token list
+│   │   ├── create.html     # Token creation
+│   │   ├── combo_form.html # Combo model form
+│   │   └── ...
+│   ├── channels/
+│   │   ├── list.html
+│   │   ├── detail.html
+│   │   └── ...
+│   └── settings/
+│       ├── routing.html
+│       ├── security.html
+│       ├── alerts.html
+│       ├── maintenance.html
+│       ├── plans.html
+│       ├── mcp.html        # MCP servers
+│       └── guardrails.html # Safety rules
 ```
 
 ---

@@ -83,6 +83,9 @@ type TokenInfo struct {
 // whitelist — the combo definition itself constrains which real
 // models can be reached.
 func (t TokenInfo) HasModelAccess(model string) bool {
+	// "auto" is a special routing trigger, not a real model name.
+	// It passes the middleware gate; findDefaultCombo resolves it
+	// to an actual combo and enforces per-model access control.
 	if model == "auto" {
 		return true
 	}
@@ -229,7 +232,10 @@ func WithLimitsAndOptions(lookup TokenLookup, enforcer LimitEnforcer, onUnknown 
 		return base(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			info, _ := lookup(extractBearer(r))
 			if info.ID == 0 {
-				next.ServeHTTP(w, r)
+				// Defense-in-depth: base middleware should have
+				// rejected this, but if we somehow got here,
+				// reject rather than bypass rate limiting.
+				writeAuthError(w, http.StatusUnauthorized, "missing or invalid token", "invalid_token")
 				return
 			}
 			if !info.ExpiresAt.IsZero() && time.Now().After(info.ExpiresAt) {

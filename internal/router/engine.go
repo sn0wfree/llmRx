@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"sync/atomic"
 
 	"github.com/sn0wfree/llmRx/internal/intent"
 	"github.com/sn0wfree/llmRx/internal/model"
@@ -26,8 +27,8 @@ type RouterEngine struct {
 	pool          *pool.ChannelPool
 	store         store.Store
 	extraChannels []func() []*model.Channel // BYOK hook (Phase 1.5 reserved)
-	trafficObs    []TrafficObserver         // optional real-traffic observers (prober etc.)
-	latency       *latency.Tracker          // per-channel EWMA latency tracker
+	trafficObs    atomic.Value               // holds []TrafficObserver; immutable once stored
+	latency       *latency.Tracker           // per-channel EWMA latency tracker
 }
 
 // TrafficObserver is the pluggable hook RouterEngine invokes on
@@ -42,9 +43,9 @@ type TrafficObserver interface {
 // one. Pass nil to clear all observers.
 func (e *RouterEngine) SetTrafficObserver(o TrafficObserver) {
 	if o == nil {
-		e.trafficObs = nil
+		e.trafficObs.Store([]TrafficObserver(nil))
 	} else {
-		e.trafficObs = []TrafficObserver{o}
+		e.trafficObs.Store([]TrafficObserver{o})
 	}
 }
 
@@ -54,7 +55,28 @@ func (e *RouterEngine) RegisterTrafficObserver(o TrafficObserver) {
 	if o == nil {
 		return
 	}
-	e.trafficObs = append(e.trafficObs, o)
+	for {
+		old := e.getTrafficObs()
+		var updated []TrafficObserver
+		if old != nil {
+			updated = make([]TrafficObserver, len(old)+1)
+			copy(updated, old)
+		} else {
+			updated = make([]TrafficObserver, 1)
+		}
+		updated[len(updated)-1] = o
+		if e.trafficObs.CompareAndSwap(old, updated) {
+			return
+		}
+	}
+}
+
+func (e *RouterEngine) getTrafficObs() []TrafficObserver {
+	v := e.trafficObs.Load()
+	if v == nil {
+		return nil
+	}
+	return v.([]TrafficObserver)
 }
 
 type RouteResult struct {
@@ -209,7 +231,7 @@ func (e *RouterEngine) RouteWith(ctx context.Context, modelName string, opts Rou
 func (e *RouterEngine) RecordSuccess(channelID int64) {
 	e.breaker.RecordSuccess(channelID)
 	e.thompson.RecordSuccess(channelID)
-	for _, obs := range e.trafficObs {
+	for _, obs := range e.getTrafficObs() {
 		obs.OnRealSuccess(channelID)
 	}
 }
@@ -230,7 +252,7 @@ func (e *RouterEngine) RecordSuccessLatency(channelID int64, durationMs int64) {
 func (e *RouterEngine) RecordFailure(channelID int64, status int) {
 	e.breaker.RecordFailure(channelID, status)
 	e.thompson.RecordFailure(channelID)
-	for _, obs := range e.trafficObs {
+	for _, obs := range e.getTrafficObs() {
 		obs.OnRealFailure(channelID)
 	}
 }
