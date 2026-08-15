@@ -112,6 +112,41 @@ auto_router:
 	}
 }
 
+func TestLoad_AutoRouterTaskConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yml")
+	yaml := `
+server:
+  port: 9000
+
+auto_router:
+  task_source: auto
+  task_model_bias:
+    math:    [MiniMax-M3, mimo-v2.5-pro]
+    general: [mimo-v2.5, MiniMax-M3]
+    code:    [MiniMax-M3, mimo-v2.5]
+  session_continuation: true
+  continuation_threshold: 50000
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	ar := cfg.AutoRouter
+	if ar.TaskSource != "auto" {
+		t.Errorf("task_source: %q", ar.TaskSource)
+	}
+	if len(ar.TaskModelBias["math"]) != 2 || ar.TaskModelBias["math"][0] != "MiniMax-M3" {
+		t.Errorf("task_model_bias.math: %v", ar.TaskModelBias["math"])
+	}
+	if !ar.SessionContinuation || ar.ContinuationThreshold != 50000 {
+		t.Errorf("continuation: on=%v threshold=%d", ar.SessionContinuation, ar.ContinuationThreshold)
+	}
+}
+
 func TestLoad_AutoRouterDefaults(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yml")

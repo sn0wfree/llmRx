@@ -317,3 +317,69 @@ func normalizeCosts(candidates []string) map[string]float64 {
 
 	return out
 }
+
+// ReorderByTask applies the task-model preference to the candidate
+// list. Models listed in bias[task] move to the front (in bias
+// order, keeping only those present in candidates); the rest keep
+// their relative cost order. Returns the reordered list and whether
+// any bias applied.
+func ReorderByTask(candidates []string, task string, bias map[string][]string) ([]string, bool) {
+	if len(candidates) <= 1 || task == "" || task == string(TaskGeneral) {
+		return candidates, false
+	}
+	prefs, ok := bias[task]
+	if !ok || len(prefs) == 0 {
+		return candidates, false
+	}
+	preferred := make([]string, 0, len(prefs))
+	seen := make(map[string]bool, len(candidates))
+	for _, m := range prefs {
+		if containsStr(candidates, m) && !seen[m] {
+			preferred = append(preferred, m)
+			seen[m] = true
+		}
+	}
+	if len(preferred) == 0 {
+		return candidates, false
+	}
+	rest := make([]string, 0, len(candidates)-len(preferred))
+	for _, m := range candidates {
+		if !seen[m] {
+			rest = append(rest, m)
+		}
+	}
+	return append(preferred, rest...), true
+}
+
+// MoveToFront moves model to the front of candidates (session
+// continuation preference) when present. Returns the new list and
+// whether a move happened.
+func MoveToFront(candidates []string, model string) ([]string, bool) {
+	if model == "" || len(candidates) <= 1 {
+		return candidates, false
+	}
+	idx := -1
+	for i, m := range candidates {
+		if m == model {
+			idx = i
+			break
+		}
+	}
+	if idx <= 0 {
+		return candidates, false
+	}
+	out := make([]string, 0, len(candidates))
+	out = append(out, model)
+	out = append(out, candidates[:idx]...)
+	out = append(out, candidates[idx+1:]...)
+	return out, true
+}
+
+func containsStr(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}

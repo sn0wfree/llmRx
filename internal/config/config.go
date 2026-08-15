@@ -192,6 +192,24 @@ type AutoRouterConfig struct {
 	// file is loaded, the learned prior is blended with TS bandit
 	// and cost weights in SelectWithLearned.
 	LearnedRouter LearnedRouterConfig `yaml:"learned_router"`
+
+	// TaskSource selects how the task type is obtained for
+	// task_model_bias routing: "auto" (built-in keyword
+	// classifier), "header" (client X-Task-Type), or "" (disabled,
+	// pure v1 behavior).
+	TaskSource string `yaml:"task_source"`
+	// TaskModelBias maps a task type to preferred model names (in
+	// preference order). Candidates listed here move to the front
+	// of the tier's model list for that task. Any task not listed
+	// keeps the original cost order.
+	TaskModelBias map[string][]string `yaml:"task_model_bias"`
+	// SessionContinuation enables long-context sessions to prefer
+	// the model the session already used (tool-chain continuity
+	// beats a per-turn optimal pick on long agentic runs).
+	SessionContinuation bool `yaml:"session_continuation"`
+	// ContinuationThreshold is the estimated-context-token size at
+	// which session continuation kicks in. Default 100000.
+	ContinuationThreshold int `yaml:"continuation_threshold"`
 }
 
 // LearnedRouterConfig configures the learned router (trained ML model).

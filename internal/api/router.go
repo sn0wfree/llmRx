@@ -169,6 +169,19 @@ type Handler struct {
 	// sessions pins multi-turn conversations to one model/channel
 	// when session affinity is enabled. nil disables affinity.
 	sessions *session.Store
+
+	// Task-aware routing (auto upgrade): taskClassifier identifies
+	// the request task (task_source=auto); taskModelBias reorders
+	// tier candidates per task; contModel remembers the model each
+	// session last used so long-context sessions can continue with
+	// it (tool-chain continuity).
+	taskClassifier    auto.TaskClassifier
+	taskSource        string
+	taskModelBias     map[string][]string
+	continuationOn    bool
+	contThreshold     int
+	contMu            sync.Mutex
+	contModel         map[string]string
 }
 
 func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, ls *logstore.Manager, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Handler {
@@ -195,6 +208,17 @@ func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st 
 		autoPool:   auto.NewPool(eng.Thompson()),
 		autoScorer: buildAutoScorer(cfg),
 		autoStats:  auto.NewStats(),
+		taskClassifier: auto.NewTaskClassifier(),
+		taskSource:     cfg.AutoRouter.TaskSource,
+		taskModelBias:  cfg.AutoRouter.TaskModelBias,
+		contModel:      make(map[string]string),
+	}
+	if cfg.AutoRouter.SessionContinuation {
+		h.continuationOn = true
+		h.contThreshold = cfg.AutoRouter.ContinuationThreshold
+		if h.contThreshold <= 0 {
+			h.contThreshold = 100000
+		}
 	}
 	return h
 }
@@ -1003,8 +1027,21 @@ func (h *Handler) handleAutoCombo(w http.ResponseWriter, r *http.Request, req *p
 	sc := h.autoScorer.Classify(text)
 	tier := string(sc.Tier)
 
-	decision := &auto.Decision{Tier: tier, Score: sc.Score, Cause: sc.Cause}
-	order, escalated := h.autoAttemptOrder(combo, tier, text, &decision.Picked)
+	// Task-aware routing: resolve the task type and the session's
+	// continuation model before building the attempt order.
+	task, taskSource := h.resolveTask(r, req, text)
+	est := auto.TokenEstimate(lastUserText(req.Messages))
+	for _, m := range req.Messages {
+		est += auto.TokenEstimate(m.ContentString())
+	}
+	contModel := h.continuationModel(sessionID, est)
+
+	decision := &auto.Decision{
+		Tier: tier, Score: sc.Score, Cause: sc.Cause,
+		Task: task, TaskSource: taskSource, EstTokens: est,
+		Continuation: contModel != "",
+	}
+	order, escalated := h.autoAttemptOrder(combo, tier, text, &decision.Picked, task, contModel)
 	decision.ContextEscalation = escalated
 	if escalated {
 		decision.Candidates = combo.ContextFallback
@@ -1057,6 +1094,7 @@ func (h *Handler) handleAutoCombo(w http.ResponseWriter, r *http.Request, req *p
 		if h.sessions != nil {
 			h.sessions.Set(sessionID, m, tier, route.Channel.ID)
 		}
+		h.rememberContinuation(sessionID, m)
 		h.emitAutoDecision(r, decision)
 		h.setAutoHeaders(w, decision)
 		logging.Debug("auto.success",
@@ -1162,8 +1200,19 @@ func (h *Handler) handleStreamAutoCombo(w http.ResponseWriter, r *http.Request, 
 	sc := h.autoScorer.Classify(text)
 	tier := string(sc.Tier)
 
-	decision := &auto.Decision{Tier: tier, Score: sc.Score, Cause: sc.Cause}
-	order, escalated := h.autoAttemptOrder(combo, tier, text, &decision.Picked)
+	task, taskSource := h.resolveTask(r, req, text)
+	est := auto.TokenEstimate(text)
+	for _, m := range req.Messages {
+		est += auto.TokenEstimate(m.ContentString())
+	}
+	contModel := h.continuationModel(sessionID, est)
+
+	decision := &auto.Decision{
+		Tier: tier, Score: sc.Score, Cause: sc.Cause,
+		Task: task, TaskSource: taskSource, EstTokens: est,
+		Continuation: contModel != "",
+	}
+	order, escalated := h.autoAttemptOrder(combo, tier, text, &decision.Picked, task, contModel)
 	decision.ContextEscalation = escalated
 	if escalated {
 		decision.Candidates = combo.ContextFallback
@@ -1191,6 +1240,7 @@ func (h *Handler) handleStreamAutoCombo(w http.ResponseWriter, r *http.Request, 
 		if h.sessions != nil {
 			h.sessions.Set(sessionID, m, tier, route.Channel.ID)
 		}
+		h.rememberContinuation(sessionID, m)
 		h.emitAutoDecision(r, decision)
 		h.setAutoHeaders(w, decision)
 		logging.Debug("combo.stream_auto.success",
@@ -1252,6 +1302,14 @@ func (h *Handler) streamAttemptPinned(w http.ResponseWriter, r *http.Request, re
 // retried a second time. Tier candidates whose context window
 // cannot fit the prompt are filtered out before sampling.
 //
+// Task-aware upgrades:
+//   - task ("" disables): tier candidates are reordered so the
+//     task_model_bias preference for this task comes first (affects
+//     the cold-start gate and the non-sampled attempt order).
+//   - contModel ("" disables): session continuation moves the model
+//     this long-context session already used to the front of the
+//     attempt order — tool-chain continuity beats a per-turn pick.
+//
 // When every tier candidate has a context window too small for the
 // prompt and the combo declares a ContextFallback list, the order
 // escalates: models are drawn from ContextFallback sorted by
@@ -1259,7 +1317,7 @@ func (h *Handler) streamAttemptPinned(w http.ResponseWriter, r *http.Request, re
 // returned escalated flag tells the caller to log the decision as
 // context_escalation. Escalation skips arm sampling — the
 // context_fallback models are a safety net, not quality arms.
-func (h *Handler) autoAttemptOrder(combo model.TokenComboModel, tier, text string, picked *auto.ArmSample) ([]string, bool) {
+func (h *Handler) autoAttemptOrder(combo model.TokenComboModel, tier, text string, picked *auto.ArmSample, task, contModel string) ([]string, bool) {
 	est := auto.TokenEstimate(text)
 	raw := tierCandidates(combo, tier)
 	escalated := auto.AllContextFiltered(raw, est) && len(combo.ContextFallback) > 0
@@ -1268,6 +1326,11 @@ func (h *Handler) autoAttemptOrder(combo model.TokenComboModel, tier, text strin
 		candidates = auto.SelectContextFallback(combo.ContextFallback, est)
 	} else {
 		candidates = auto.FilterContextCandidates(raw, est)
+		// Task preference reorders candidates before sampling
+		// (affects the cold-start gate and fallback order).
+		if task != "" {
+			candidates, _ = auto.ReorderByTask(candidates, task, h.taskModelBias)
+		}
 	}
 	*picked = h.autoPool.Select(tier, candidates)
 	order := make([]string, 0, len(candidates)+len(combo.Fallback))
@@ -1278,6 +1341,12 @@ func (h *Handler) autoAttemptOrder(combo model.TokenComboModel, tier, text strin
 		if m != picked.Model {
 			order = append(order, m)
 		}
+	}
+	// Session continuation: prefer the model the session already
+	// uses (long-context agentic sessions). Move it to the front of
+	// the attempt order; if it fails, the rest still apply.
+	if contModel != "" {
+		order, _ = auto.MoveToFront(order, contModel)
 	}
 	for _, m := range combo.Fallback {
 		if !containsString(order, m) {
@@ -1294,6 +1363,58 @@ func containsString(xs []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// resolveTask determines the task type for task-aware routing.
+// task_source=header reads X-Task-Type from the request; task_source
+// =auto runs the built-in keyword classifier over the prompt plus
+// recent context; anything else returns "" (feature off).
+func (h *Handler) resolveTask(r *http.Request, req *provider.ChatRequest, text string) (string, string) {
+	switch h.taskSource {
+	case "header":
+		if t := r.Header.Get("X-Task-Type"); t != "" && auto.ValidTask(t) {
+			return t, "header"
+		}
+		return "", ""
+	case "auto":
+		ctx := auto.TaskContextText(text, messageTexts(req.Messages), 3)
+		return string(h.taskClassifier.Classify(ctx)), "auto"
+	default:
+		return "", ""
+	}
+}
+
+// messageTexts flattens request messages into plain text tails for
+// task classification context.
+func messageTexts(msgs []provider.Message) []string {
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, m.ContentString())
+	}
+	return out
+}
+
+// continuationModel returns the model this session last used when
+// long-context continuation is enabled and the estimated context is
+// large enough. Empty string disables continuation for this request.
+func (h *Handler) continuationModel(sessionID string, estTokens int) string {
+	if !h.continuationOn || sessionID == "" || estTokens < h.contThreshold {
+		return ""
+	}
+	h.contMu.Lock()
+	defer h.contMu.Unlock()
+	return h.contModel[sessionID]
+}
+
+// rememberContinuation records the model that served a session turn
+// (only when continuation is enabled, to bound memory).
+func (h *Handler) rememberContinuation(sessionID, model string) {
+	if !h.continuationOn || sessionID == "" || model == "" {
+		return
+	}
+	h.contMu.Lock()
+	h.contModel[sessionID] = model
+	h.contMu.Unlock()
 }
 
 // sessionIDFor derives the session key for one request, in
