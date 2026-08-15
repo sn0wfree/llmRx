@@ -850,3 +850,86 @@ SSE 流式 ~30 处 `Flush()`。迁移成本极高，且 Round-5b 证明 mock 上
 - **存储层**：logstore PG + COPY（当 batch worker 撑不住时）
 - **intent.Classify**：goccy 迁移（+0.5–1%）
 - **P2 内存**：`readErrorSnippet` 栈上 buffer、`RecordRequest` Prometheus label currying
+
+---
+
+## Round-8 log_dir 路径修复 + archive 保留模式（2026-08-15）
+
+### 背景
+
+部署发现 WORKDIR=/data + 默认 `log_dir="data/logs"`（相对路径）→ 实际落到
+`/data/data/logs`（双层嵌套）。同时上线了 archive 保留模式（gzip 旧日志而非删除）。
+
+### 修复
+
+1. **log_dir 默认值改为从 SQLite DSN 目录派生**：`/data/llmrx.db` → `/data/logs`，
+   dev `data/llmrx.db` → `data/logs`（历史行为不变）。彻底消除对 WORKDIR 的依赖。
+2. **docker-compose.yml**：移除空 `environment:` mapping（新版 compose 拒绝空映射）。
+
+### Archive 保留模式
+
+`log_retention_mode: archive`（admin API + config.yml）：过期日志 gzip 压缩为
+`<日期>.db.gz`，保留磁盘而非删除。Postgres 后端为 no-op（共享表无文件可压缩）。
+运行时可通过 `PUT /api/v1/config` 实时切换 delete/archive。
+
+### Benchmark 结果（2026-08-15，20 核）
+
+#### 进程内 E2E（mock provider）
+
+| Benchmark | ns/op | B/op | allocs/op | vs Round-7b |
+|-----------|------:|-----:|----------:|------------:|
+| E2E_NonStreaming | **7,526** | 11,250 | 95 | **−13%** |
+| E2E_Streaming | **18,263** | 25,086 | 124 | **−2%** |
+| E2E_Parallel | **2,118** | 9,904 | 67 | **−15%** |
+| E2E_AutoCombo_NonStreaming | **14,855** | 13,544 | 128 | **+6%** |
+| E2E_AutoCombo_Streaming | **22,658** | 27,336 | 167 | **+4%** |
+| E2E_AutoCombo_Parallel | **3,135** | 12,335** | 103 | **+0.1%** |
+
+注：AutoCombo 路径微增来自 log_retention_mode 运行时读取（atomic.Value），
+在 mock 基准下可见；真实 LLM 延迟下不可见。
+
+#### 组件微基准
+
+| Component | ns/op | allocs | 说明 |
+|-----------|------:|-------:|------|
+| Rate Limiter Allow | 105 | 0 | |
+| Circuit Breaker GetEntry | 13 | 0 | Round-4 优化后稳定 |
+| SSE Frame (pooled) | 290 | 1 | goccy 加速后稳定 |
+| Heuristic Scorer (short) | 278 | 1 | |
+| Heuristic Scorer (CJK 32K) | 32,316 | 4 | |
+| Heuristic Scorer (EnCode 80K) | 36,003 | 7 | |
+| Pool Select (warm) | 536 | 9 | |
+| **Decision Core** | **41,422** | **14** | 完整路由管线 |
+
+#### 负载报告（20 并发 × 500 请求，mock upstream）
+
+| 路径 | Throughput | Avg Latency | 失败 |
+|------|-----------|-------------|------|
+| Non-streaming (plain) | **112K req/s** | 144 µs | 0 |
+| AutoCombo Non-streaming | **103K req/s** | 143 µs | 0 |
+
+#### 累计 8 轮
+
+| 阶段 | HTTP rps | p50 | 备注 |
+|------|----------|-----|------|
+| 起步 | 42.7K | 3.20ms | |
+| Round-3 | 52.7K | 2.91ms | pipeline cache + sampling |
+| Round-4 | 59.8K | 2.56ms | intent mutex + breaker + L4 |
+| Round-5 | 62.2K | 2.36ms | goccy internal/api |
+| Round-5b | 58.7K | 2.54ms | goccy + provider |
+| Round-6 | — | — | 路由层内联（−3 allocs） |
+| Round-7/7b | — | — | 内存池化 + KeyMasked 缓存 |
+| **Round-8** | — | — | **log_dir 修复 + archive 保留** |
+
+### 复现
+
+```bash
+# 进程内 E2E
+go test -bench='BenchmarkE2E_' -benchmem -count=3 ./internal/api/...
+
+# 负载报告
+go test -run='TestE2E_LoadReport' -v ./internal/api/...
+
+# 微基准
+go test -bench='BenchmarkLimiter|BenchmarkBreaker|BenchmarkDecisionCore' -benchmem ./internal/ratelimit/... ./internal/router/...
+```

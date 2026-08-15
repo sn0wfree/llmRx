@@ -28,6 +28,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+#### Logstore archive-mode retention
+- **`log_retention_mode`** config option (`delete` | `archive`).
+  Default `delete` removes expired log files; `archive` gzip-compresses
+  each day file to `<day>.db.gz` and keeps it on disk. The retention
+  sweep reads the mode live each tick, so admin flips between
+  delete/archive via `PUT /api/v1/config` apply without restart.
+  Postgres backend is a no-op (shared table; keep rows forever).
+  `Driver.ArchiveFiles` interface method added to logstore; SQLite
+  driver implements it with temp-file+rename gzip for atomicity.
+
+#### Learned router training helper
+- **`scripts/learned-router/classify_samples.py`** — offline tool
+  for labeling and classifying routing samples. Supports batch
+  processing of JSONL sample files with configurable classifiers.
+
+### Fixed
+- **log_dir path nesting** (`cmd/gateway/main.go`): Default `log_dir`
+  now derives from the SQLite DSN directory instead of a hardcoded
+  relative `data/logs`. Under `WORKDIR=/data` this resolves to
+  `/data/logs` (not `/data/data/logs`). Dev deployments with
+  `data/llmrx.db` keep the historical `data/logs` path.
+- **docker-compose.yml**: Removed invalid empty `environment:` mapping
+  (newer Docker Compose rejects it).
+
+### Added
+
 #### Streaming + cap hardening
 - **SSE streaming** for `/v1/chat/completions` with `stream=true`.
   OpenAI + Anthropic providers implement a new `StreamingProvider`
