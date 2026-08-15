@@ -66,6 +66,15 @@ func (h *Handler) Routes() http.Handler {
 	// Public
 	r.Get("/login", h.LoginPage)
 	r.Post("/login", h.LoginSubmit)
+	r.Get("/register", h.RegisterPage)
+
+	// Any authenticated user (RoleUser +) — the self-service account
+	// page (API key, budget, redemption).
+	r.Group(func(r chi.Router) {
+		r.Use(SessionMiddleware(h.store))
+		r.Use(RequireRole(model.RoleUser))
+		r.Get("/me", h.MePage)
+	})
 
 	// Authenticated — every route below manages gateway resources
 	// (channels, upstream keys, tokens, MCP servers, alerts). A
@@ -134,6 +143,7 @@ func (h *Handler) Routes() http.Handler {
 
 		// Plans
 		r.Get("/plans", h.PlansPage)
+		r.Get("/redeem-codes", h.RedeemCodesPage)
 		r.Get("/plans/new", h.PlanNewForm)
 		r.Get("/plans/{id}/edit", h.PlanEditForm)
 		r.Post("/plans", h.PlanCreate)

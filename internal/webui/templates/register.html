@@ -1,0 +1,65 @@
+{{define "register_body"}}<div class="w-full max-w-md">
+  <div class="bg-white shadow-lg rounded-lg p-8">
+    <div class="text-center mb-6">
+      <h1 class="text-2xl font-bold text-gray-900">llmRx</h1>
+      <p class="text-sm text-gray-500 mt-1">邀请码注册</p>
+    </div>
+    <form id="register-form" class="space-y-4">
+      <div>
+        <label for="username" class="block text-sm font-medium text-gray-700">用户名</label>
+        <input type="text" name="username" id="username" required autocomplete="username"
+               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+      </div>
+      <div>
+        <label for="password" class="block text-sm font-medium text-gray-700">密码（至少 8 位）</label>
+        <input type="password" name="password" id="password" required autocomplete="new-password" minlength="8"
+               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+      </div>
+      <div>
+        <label for="invite_code" class="block text-sm font-medium text-gray-700">邀请码</label>
+        <input type="text" name="invite_code" id="invite_code" required placeholder="RXM-XXXXXXXX"
+               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+      </div>
+      <div id="register-error"></div>
+      <button type="submit" id="register-btn"
+              class="w-full flex justify-center items-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+        注册并登录
+      </button>
+    </form>
+    <p class="mt-4 text-center text-sm text-gray-500">
+      已有账号？<a href="/admin/login" class="text-blue-600 hover:underline">去登录</a>
+    </p>
+  </div>
+</div>
+<script>
+document.getElementById('register-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errBox = document.getElementById('register-error');
+  const btn = document.getElementById('register-btn');
+  btn.disabled = true;
+  errBox.innerHTML = '';
+  try {
+    const resp = await fetch('/api/v1/register', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        username: document.getElementById('username').value,
+        password: document.getElementById('password').value,
+        invite_code: document.getElementById('invite_code').value,
+      }),
+    });
+    const data = await resp.json();
+    if (resp.ok) {
+      window.location.href = '/admin/me';
+      return;
+    }
+    errBox.innerHTML = '<div class="p-3 rounded bg-red-100 text-red-800 border border-red-200 text-sm">' +
+      (data.error?.message || '注册失败') + '</div>';
+  } catch (err) {
+    errBox.innerHTML = '<div class="p-3 rounded bg-red-100 text-red-800 border border-red-200 text-sm">网络错误</div>';
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+{{end}}

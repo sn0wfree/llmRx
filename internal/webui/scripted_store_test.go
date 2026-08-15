@@ -268,6 +268,21 @@ func (s *ScriptedStore) DeletePlan(id int64) error {
 	}
 	return s.underlying.DeletePlan(id)
 }
+func (s *ScriptedStore) CreateRedeemCode(c *model.RedeemCode) error {
+	return s.underlying.CreateRedeemCode(c)
+}
+func (s *ScriptedStore) GetRedeemCodeByCode(code string) (*model.RedeemCode, error) {
+	return s.underlying.GetRedeemCodeByCode(code)
+}
+func (s *ScriptedStore) ListRedeemCodes() ([]model.RedeemCode, error) {
+	return s.underlying.ListRedeemCodes()
+}
+func (s *ScriptedStore) UseInviteCode(ctx context.Context, code, username, passwordHash string) (*store.RegistrationResult, error) {
+	return s.underlying.UseInviteCode(ctx, code, username, passwordHash)
+}
+func (s *ScriptedStore) RedeemTopup(ctx context.Context, code string, planID int64) (*model.Plan, error) {
+	return s.underlying.RedeemTopup(ctx, code, planID)
+}
 func (s *ScriptedStore) GetUsers() ([]model.User, error) {
 	if s.GetUsersFunc != nil {
 		return s.GetUsersFunc()

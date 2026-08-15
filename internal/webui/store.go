@@ -54,6 +54,10 @@ type WebuiStore interface {
 	CreateUser(u *model.User) error
 	UpdateUser(u *model.User) error
 
+	// Redeem codes
+	CreateRedeemCode(c *model.RedeemCode) error
+	ListRedeemCodes() ([]model.RedeemCode, error)
+
 	// Alerts
 	GetAlerts() ([]model.Alert, error)
 	GetAlert(id int64) (*model.Alert, error)

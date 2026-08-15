@@ -544,7 +544,12 @@ func toUnix(t time.Time) int64 {
 	return t.Unix()
 }
 
-func fromUnix(s int64) time.Time { return time.Unix(s, 0).UTC() }
+func fromUnix(s int64) time.Time {
+	if s == 0 {
+		return time.Time{}
+	}
+	return time.Unix(s, 0).UTC()
+}
 
 func encodeStrings(xs []string) string {
 	if xs == nil {
