@@ -158,3 +158,39 @@ func TestRedeemCodeExpired(t *testing.T) {
 		t.Errorf("expected expired, got %v", err)
 	}
 }
+
+func TestRedeemTopupExpired(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	// Register alice for a plan.
+	if err := s.CreateRedeemCode(&model.RedeemCode{
+		Code: "RXM-INVITE1", Kind: model.RedeemKindInvite,
+		InitialQuota: 5, Role: model.RoleUser, CreatedBy: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.UseInviteCode(context.Background(), "RXM-INVITE1", "alice", "hash1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Expired top-up code must be rejected and leave budget intact.
+	if err := s.CreateRedeemCode(&model.RedeemCode{
+		Code: "RXM-TOPEXP1", Kind: model.RedeemKindTopup,
+		AmountUSD: 20, CreatedBy: 1,
+		ExpiresAt: time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RedeemTopup(context.Background(), "RXM-TOPEXP1", res.Plan.ID); !errors.Is(err, ErrRedeemCodeExpired) {
+		t.Errorf("expected expired topup, got %v", err)
+	}
+	plan, err := s.GetPlan(res.Plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.BudgetUSD != 5 {
+		t.Errorf("budget must stay 5 after expired topup, got %f", plan.BudgetUSD)
+	}
+}

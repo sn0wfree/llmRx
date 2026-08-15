@@ -229,10 +229,10 @@ func (s *dbStore) RedeemTopup(ctx context.Context, code string, planID int64) (*
 	}
 	defer tx.Rollback()
 
-	var id, usedAt int64
+	var id, usedAt, expAt int64
 	var kind string
 	if err := tx.QueryRow(s.d.RewriteQuery(
-		`SELECT id, kind, used_at FROM redeem_codes WHERE code = ?`), code).Scan(&id, &kind, &usedAt); err != nil {
+		`SELECT id, kind, used_at, expires_at FROM redeem_codes WHERE code = ?`), code).Scan(&id, &kind, &usedAt, &expAt); err != nil {
 		if errors.Is(err, errNoRows) {
 			return nil, ErrRedeemCodeNotFound
 		}
@@ -243,6 +243,9 @@ func (s *dbStore) RedeemTopup(ctx context.Context, code string, planID int64) (*
 	}
 	if usedAt != 0 {
 		return nil, ErrRedeemCodeUsed
+	}
+	if expAt != 0 && time.Now().After(fromUnix(expAt)) {
+		return nil, ErrRedeemCodeExpired
 	}
 	var amount float64
 	if err := tx.QueryRow(s.d.RewriteQuery(

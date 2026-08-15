@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -317,10 +318,12 @@ func (h *Handler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 	})
 
-	// HTMX expects 200 + OOB swap to redirect (we use JS in template)
+	// HTMX expects 200 + OOB swap to redirect (we use JS in template).
+	// data-role lets the client send RoleUser to /admin/me and
+	// admins to /admin/dashboard.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`<div id="login-error"></div>`))
+	_, _ = fmt.Fprintf(w, `<div id="login-error" data-role="%d"></div>`, u.Role)
 }
 
 // LogoutSubmit clears the session and redirects to login.

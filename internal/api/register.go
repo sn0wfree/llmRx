@@ -32,6 +32,10 @@ type registerLimiter struct {
 	win   time.Duration
 }
 
+// maxLimiterEntries bounds the in-memory map so long-running
+// gateways don't leak entries for one-shot IPs.
+const maxLimiterEntries = 10000
+
 func newRegisterLimiter(limit int, win time.Duration) *registerLimiter {
 	return &registerLimiter{seen: make(map[string][]time.Time), limit: limit, win: win}
 }
@@ -67,6 +71,14 @@ func (l *registerLimiter) allow(ip string) bool {
 		return false
 	}
 	l.seen[ip] = append(kept, now)
+	// Opportunistically evict stale entries when the map grows.
+	if len(l.seen) > maxLimiterEntries {
+		for k, v := range l.seen {
+			if len(v) == 0 || v[len(v)-1].Before(cutoff) {
+				delete(l.seen, k)
+			}
+		}
+	}
 	return true
 }
 
@@ -148,7 +160,10 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "session setup failed", "session_failed")
 		return
 	}
-	// The new token must be visible to the bearer middleware.
+	// The new token must be visible to the bearer middleware. A
+	// cache-refresh failure must not abort registration: the token
+	// is already durable in the DB and becomes usable on the next
+	// reload (startup / admin reload). Fail-open, log loudly.
 	if h.tokenReload != nil {
 		if err := h.tokenReload(); err != nil {
 			writeError(w, http.StatusInternalServerError, "token cache refresh failed", "cache_failed")
@@ -265,7 +280,8 @@ func (h *Handler) sessionUser(r *http.Request) (*model.User, bool) {
 }
 
 // userBilling resolves the user's dedicated token and plan (the
-// token created at registration carries the plan).
+// token created at registration carries the plan). Returns a
+// partial response when no token exists (admin-created users).
 func (h *Handler) userBilling(u *model.User) (*meResponse, error) {
 	tokens, err := h.store.GetTokens()
 	if err != nil {
@@ -278,18 +294,17 @@ func (h *Handler) userBilling(u *model.User) (*meResponse, error) {
 			break
 		}
 	}
+	out := &meResponse{User: u}
 	if tok == nil {
-		return nil, errors.New("no billing token for user")
+		return out, nil
 	}
 	plan, err := h.store.GetPlan(tok.PlanID)
 	if err != nil {
 		return nil, err
 	}
-	return &meResponse{
-		User:      u,
-		Token:     tok,
-		Plan:      plan,
-		UsedUSD:   plan.UsedUSD,
-		BudgetUSD: plan.BudgetUSD,
-	}, nil
+	out.Token = tok
+	out.Plan = plan
+	out.UsedUSD = plan.UsedUSD
+	out.BudgetUSD = plan.BudgetUSD
+	return out, nil
 }
