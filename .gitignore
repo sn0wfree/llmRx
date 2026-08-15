@@ -5,6 +5,7 @@
 *.so
 *.dylib
 /llmRx
+/llmrx
 /gateway
 
 # Go
@@ -54,6 +55,10 @@ data.bak*/
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
+
+# Python
+__pycache__/
+*.pyc
 
 # build artifacts
 build/
