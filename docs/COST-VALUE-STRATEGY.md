@@ -37,24 +37,25 @@
 
 ## 2. 我们的分析结果（2026-08-15 实测）
 
-### 2.1 价格（OpenRouter 实时）
+### 2.1 价格 + 测评指数（OpenRouter 实时 API + Artificial Analysis 指数）
 
-| 模型 | in/1M | out/1M | 相对 M3 |
-|---|---|---|---|
-| deepseek-v4-flash | $0.07 | **$0.14** | 1/9 |
-| mimo-v2.5 | $0.14 | $0.28 | 1/4 |
-| mimo-v2.5-pro | $0.44 | $0.87 | 1/1.4 |
-| MiniMax-M3 | $0.30 | $1.20 | 1 |
-| deepseek-v4-pro | $1.17 | $2.34 | 2x |
+| 模型 | in/1M | out/1M | intel | coding | agentic |
+|---|---|---|---|---|---|
+| deepseek-v4-flash | $0.07 | **$0.14** | **51.8** | **69.1** | **48.4** |
+| mimo-v2.5 | $0.14 | $0.28 | 38.0 | 56.8 | 24.4 |
+| mimo-v2.5-pro | $0.44 | $0.87 | 42.9 | 60.2 | 29.5 |
+| MiniMax-M3 | $0.30 | $1.20 | 45.4 | 58.6 | 36.1 |
+| glm-5.2 | $0.49 | $1.54 | 52.6 | 68.8 | 45.7 |
+| deepseek-v4-pro | $1.17 | $2.34 | 53.2 | 68.8 | 49.6 |
 
 ### 2.2 性价比指数（质量/输出价格，1M tokens）
 
 ```
-14.1  deepseek-v4-flash   ← 碾压级性价比
+14.1  deepseek-v4-flash   ← 碾压级性价比（intel 51.8 ≈ pro 的 53.2，价格 1/17）
  7.4  mimo-v2.5
- 4.8  mimo-v2.5-pro
- 3.8  MiniMax-M3
- 1.9  deepseek-v4-pro
+ 2.5  mimo-v2.5-pro
+ 1.9  MiniMax-M3
+ 1.1  deepseek-v4-pro
 ```
 
 ### 2.3 本地 judge 实测（41 样本候选模型平均分）
@@ -65,27 +66,35 @@ deepseek-v4-flash 1.93
 MiniMax-M3        1.70
 ```
 
-结合任务偏好（41 样本校准）：math/deploy→MiniMax-M3、visual/writing→mimo-v2.5——**任务最优 ≠ 全局最优**。
+**关键洞察**：
+- **deepseek-v4-flash 是性价比之王**：intel/coding/agentic 全部接近旗舰（51.8/69.1/48.4），价格只有 M3 的 1/9、pro 的 1/17
+- **glm-5.2 被低估**：intel 52.6 第三高（手动录入时只给了 4.0）——真实指数高于 M3
+- **MiniMax-M3 实际指数低于手动估值**：intel 45.4（手动填 4.5 偏高），但 agentic 36.1 中等偏上
+- **mimo-v2.5 的 judge 实测 > benchmark 指数**：agentic 短指令+长上下文场景（我们的流量）mimo 表现优于其通用指数——**本地实测与公开 benchmark 存在场景差异，两者互补**
+
+结合任务偏好（41 样本校准）：math/deploy→MiniMax-M3、visual/writing→mimo-v2.5——**任务最优 ≠ 全局最优 ≠ 性价比最优**，三层叠加使用。
 
 ## 3. 策略建议
 
-### 3.1 分层路由（性价比驱动）
+### 3.1 分层路由（性价比驱动，2026-08-15 数据）
 
 ```
 日常/简单（workhorse）:
-  simple/standard tier → mimo-v2.5 / deepseek-v4-flash
-  （mimo 实测质量略高、flash 绝对便宜——按任务再分）
+  simple/standard tier → deepseek-v4-flash（性价比 14.1，intel 51.8）
+  / mimo-v2.5（judge 实测最佳 2.07，按任务再分）
 
 高难度（premium）:
-  complex/agentic tier → MiniMax-M3（math/deploy 偏好、公开分高）
-  或 mimo-v2.5-pro（1T 参数，agent 场景强）
+  complex/agentic tier → glm-5.2（intel 52.6 / coding 68.8 / agentic 45.7）
+  或 deepseek-v4-pro（intel 53.2 最高）
+  或 MiniMax-M3（math/deploy 任务偏好）
 ```
 
-### 3.2 Orchestrator-Worker 建议
+### 3.2 Orchestrator-Worker 建议（2026-08-15 数据更新）
 
 ```
-Planner（规划/拆解）: MiniMax-M3 或 mimo-v2.5-pro（强推理、公开分 4.5/4.2）
-Worker（执行）:       mimo-v2.5 / deepseek-v4-flash（性价比前二）
+Planner（规划/拆解）: deepseek-v4-pro 或 glm-5.2
+  （intel 53.2/52.6、coding 68.8、agentic 49.6/45.7 全面领先）
+Worker（执行）:       deepseek-v4-flash / mimo-v2.5（性价比前二）
 
 流程:
   高复杂度请求 → planner 出方案 + 任务拆解
