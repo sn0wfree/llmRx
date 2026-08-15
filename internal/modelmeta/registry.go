@@ -267,6 +267,31 @@ func loadFromRaw(data []byte) error {
 			},
 			Modalities: modalities,
 		}
+		// Optional per-token prices (LiteLLM catalog keys), converted
+		// from per-token to per-1M-tokens. Best-effort: absent keys
+		// stay zero and the rate card falls back to operator defaults.
+		if v, ok := getFloat(entry, "cache_read_input_token_cost"); ok {
+			result[id].CacheReadPrice = v * 1e6
+		}
+		if v, ok := getFloat(entry, "cache_creation_input_token_cost"); ok {
+			result[id].CacheWritePrice = v * 1e6
+		}
+		if v, ok := getFloat(entry, "output_cost_per_reasoning_token"); ok {
+			result[id].ReasoningPrice = v * 1e6
+		}
+		if v, ok := getFloat(entry, "input_cost_per_token_above_128k_tokens"); ok {
+			result[id].InputPriceAbove128K = v * 1e6
+		}
+		if v, ok := getFloat(entry, "output_cost_per_token_above_128k_tokens"); ok {
+			result[id].OutputPriceAbove128K = v * 1e6
+		}
+		if v, ok := getFloat(entry, "input_cost_per_token_above_200k_tokens"); ok {
+			result[id].InputPriceAbove200K = v * 1e6
+		}
+		if v, ok := getFloat(entry, "output_cost_per_token_above_200k_tokens"); ok {
+			result[id].OutputPriceAbove200K = v * 1e6
+		}
+		result[id].CacheReadDiscount = 0.1 // legacy default
 	}
 
 	if sampleSkipped > 0 && sampleCount > 0 {

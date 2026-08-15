@@ -16,11 +16,11 @@ import (
 
 // Redeem-related errors, exported so API layers can map to HTTP.
 var (
-	ErrRedeemCodeNotFound   = errors.New("redeem code not found")
-	ErrRedeemCodeUsed       = errors.New("redeem code already used")
-	ErrRedeemCodeExpired    = errors.New("redeem code expired")
-	ErrRedeemWrongKind      = errors.New("redeem code kind mismatch")
-	ErrUsernameTaken        = errors.New("username already taken")
+	ErrRedeemCodeNotFound = errors.New("redeem code not found")
+	ErrRedeemCodeUsed     = errors.New("redeem code already used")
+	ErrRedeemCodeExpired  = errors.New("redeem code expired")
+	ErrRedeemWrongKind    = errors.New("redeem code kind mismatch")
+	ErrUsernameTaken      = errors.New("username already taken")
 )
 
 // scanRedeemCode maps one row to a RedeemCode.
@@ -179,9 +179,9 @@ func (s *dbStore) UseInviteCode(ctx context.Context, code, username, passwordHas
 		cipher = ct
 		storedPlain = "__enc_pending__"
 	}
-	res, err = tx.Exec(s.d.RewriteQuery(`INSERT INTO tokens(plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, 0, 0, 0, '[]', '[]', 0, 0, ?)`),
-		planID, storedPlain, cipher, username, 0, toUnix(now))
+	res, err = tx.Exec(s.d.RewriteQuery(`INSERT INTO tokens(plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at, user_id)
+		 VALUES (?, ?, ?, ?, ?, 0, 0, 0, '[]', '[]', 0, 0, ?, ?)`),
+		planID, storedPlain, cipher, username, 0, toUnix(now), userID)
 	if err != nil {
 		return nil, fmt.Errorf("insert token: %w", err)
 	}

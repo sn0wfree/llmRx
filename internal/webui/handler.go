@@ -75,6 +75,7 @@ func (h *Handler) Routes() http.Handler {
 		r.Use(SessionMiddleware(h.store))
 		r.Use(RequireRole(model.RoleUser))
 		r.Get("/me", h.MePage)
+		r.Get("/me/export.csv", h.MeUsageExportCSV)
 	})
 
 	// Authenticated — every route below manages gateway resources
@@ -149,6 +150,18 @@ func (h *Handler) Routes() http.Handler {
 		r.Get("/plans/{id}/edit", h.PlanEditForm)
 		r.Post("/plans", h.PlanCreate)
 		r.Post("/plans/{id}", h.PlanAction)
+
+		// Model costs (rate card)
+		r.Get("/model-costs", h.ModelCostsPage)
+		r.Post("/model-costs", h.ModelCostCreate)
+		r.Post("/model-costs/{model}", h.ModelCostUpdate)
+		r.Post("/model-costs/{model}/delete", h.ModelCostDelete)
+		r.Post("/model-costs/import", h.ModelCostImport)
+
+		// Per-user usage (admin)
+		r.Get("/usage", h.UsersUsagePage)
+		r.Get("/usage/{id}", h.UserUsagePage)
+		r.Get("/usage/{id}/export.csv", h.UserUsageExportCSV)
 
 		r.Get("/mcp-servers", h.MCPServersPage)
 		r.Post("/mcp-servers", h.MCPServerCreate)

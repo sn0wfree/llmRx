@@ -203,13 +203,27 @@ type Usage struct {
 	CompletionTokens        int                  `json:"completion_tokens"`
 	TotalTokens             int                  `json:"total_tokens"`
 	PromptTokensDetails     *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
-	CompletionTokensDetails any                  `json:"completion_tokens_details,omitempty"`
+	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+	// ReasoningTokens is the chain-of-thought portion of
+	// CompletionTokens, extracted from CompletionTokensDetails when
+	// the upstream reports it (DeepSeek, GLM thinking, etc.). 0 when
+	// unknown — such tokens are then billed at the plain output rate.
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	// Images is the number of input images charged at the model's
+	// image_price. Parsed from the request's message parts when the
+	// model supports vision (0 for text-only requests).
+	Images int `json:"images,omitempty"`
 }
 
 // PromptTokensDetails reports cached-input breakdown.
 type PromptTokensDetails struct {
 	CachedTokens int `json:"cached_tokens,omitempty"`
 	AudioTokens  int `json:"audio_tokens,omitempty"`
+}
+
+// CompletionTokensDetails reports reasoning-token breakdown.
+type CompletionTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
 // ---------- helpers ----------
@@ -266,6 +280,30 @@ func (m *Message) ContentString() string {
 func FloatPtr(f float64) *float64 { return &f }
 func IntPtr(i int) *int           { return &i }
 func BoolPtr(b bool) *bool        { return &b }
+
+// CountImages returns the number of image content parts across all
+// messages. Used by the cost calculator to charge the model's
+// image_price for vision requests.
+func (m *ChatRequest) CountImages() int {
+	n := 0
+	for _, msg := range m.Messages {
+		switch parts := msg.Content.(type) {
+		case []ContentPart:
+			for _, p := range parts {
+				if p.Type == "image_url" {
+					n++
+				}
+			}
+		case []any:
+			for _, p := range parts {
+				if cp, ok := p.(ContentPart); ok && cp.Type == "image_url" {
+					n++
+				}
+			}
+		}
+	}
+	return n
+}
 
 // FloatOr returns *p or &def.
 func FloatOr(p *float64, def float64) float64 {

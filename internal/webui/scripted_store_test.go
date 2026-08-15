@@ -198,6 +198,9 @@ func (s *ScriptedStore) GetTokenByName(name string) (*model.Token, error) {
 	}
 	return s.underlying.GetTokenByName(name)
 }
+func (s *ScriptedStore) GetTokensByUserID(userID int64) ([]model.Token, error) {
+	return s.underlying.GetTokensByUserID(userID)
+}
 func (s *ScriptedStore) GetTokens() ([]model.Token, error) {
 	if s.GetTokensFunc != nil {
 		return s.GetTokensFunc()
@@ -290,6 +293,27 @@ func (s *ScriptedStore) UseInviteCode(ctx context.Context, code, username, passw
 }
 func (s *ScriptedStore) RedeemTopup(ctx context.Context, code string, planID int64) (*model.Plan, error) {
 	return s.underlying.RedeemTopup(ctx, code, planID)
+}
+func (s *ScriptedStore) GetModelCost(model string) (*model.ModelCost, error) {
+	return s.underlying.GetModelCost(model)
+}
+func (s *ScriptedStore) ListModelCosts() ([]model.ModelCost, error) {
+	return s.underlying.ListModelCosts()
+}
+func (s *ScriptedStore) UpsertModelCost(c *model.ModelCost) error {
+	return s.underlying.UpsertModelCost(c)
+}
+func (s *ScriptedStore) DeleteModelCost(model string) error {
+	return s.underlying.DeleteModelCost(model)
+}
+func (s *ScriptedStore) BatchUpsertModelCosts(costs []model.ModelCost) error {
+	return s.underlying.BatchUpsertModelCosts(costs)
+}
+func (s *ScriptedStore) CountModelCosts() (int, error) {
+	return s.underlying.CountModelCosts()
+}
+func (s *ScriptedStore) BackfillTokenUserIDs(ctx context.Context) (int64, error) {
+	return s.underlying.BackfillTokenUserIDs(ctx)
 }
 func (s *ScriptedStore) GetUsers() ([]model.User, error) {
 	if s.GetUsersFunc != nil {

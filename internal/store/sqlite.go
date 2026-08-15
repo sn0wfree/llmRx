@@ -365,6 +365,24 @@ func (s *dbStore) migrate() error {
 			price_per_call_usd REAL NOT NULL DEFAULT 0,
 			FOREIGN KEY (mcp_tool_id) REFERENCES mcp_tools(id) ON DELETE CASCADE
 		)`,
+		`CREATE TABLE IF NOT EXISTS model_costs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			model TEXT UNIQUE NOT NULL,
+			provider TEXT NOT NULL DEFAULT '',
+			input_price_per_1m REAL NOT NULL DEFAULT 0,
+			output_price_per_1m REAL NOT NULL DEFAULT 0,
+			cache_read_price_per_1m REAL NOT NULL DEFAULT 0,
+			cache_write_price_per_1m REAL NOT NULL DEFAULT 0,
+			reasoning_price_per_1m REAL NOT NULL DEFAULT 0,
+			image_price REAL NOT NULL DEFAULT 0,
+			input_price_per_1m_above_128k REAL NOT NULL DEFAULT 0,
+			output_price_per_1m_above_128k REAL NOT NULL DEFAULT 0,
+			input_price_per_1m_above_200k REAL NOT NULL DEFAULT 0,
+			output_price_per_1m_above_200k REAL NOT NULL DEFAULT 0,
+			context_window INTEGER NOT NULL DEFAULT 0,
+			max_output INTEGER NOT NULL DEFAULT 0,
+			updated_at INTEGER NOT NULL
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.exec(s.d.RewriteDDL(q)); err != nil {
@@ -393,6 +411,9 @@ func (s *dbStore) migrate() error {
 		return err
 	}
 	if err := s.addColumn("tokens", "key_ciphertext", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumn("tokens", "user_id", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	if err := s.addColumn("alerts", "disabled_reason", "TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -963,7 +984,7 @@ func (s *dbStore) GetToken(key string) (*model.Token, error) {
 	// all rows and comparing in plaintext — production callers
 	// go through tokencache (in-memory), so this path is for
 	// tests / recovery tools only.
-	rows, err := s.query(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens`)
+	rows, err := s.query(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at, user_id FROM tokens`)
 	if err != nil {
 		return nil, err
 	}
@@ -981,7 +1002,7 @@ func (s *dbStore) GetToken(key string) (*model.Token, error) {
 }
 
 func (s *dbStore) GetTokenByID(id int64) (*model.Token, error) {
-	row := s.queryRow(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens WHERE id = ?`, id)
+	row := s.queryRow(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at, user_id FROM tokens WHERE id = ?`, id)
 	return scanTokenRow(s, row)
 }
 
@@ -990,12 +1011,32 @@ func (s *dbStore) GetTokenByID(id int64) (*model.Token, error) {
 // (name == username). Name is not unique at the schema level, so
 // prefer the registration-flow contract (one token per user name).
 func (s *dbStore) GetTokenByName(name string) (*model.Token, error) {
-	row := s.queryRow(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens WHERE name = ? ORDER BY id LIMIT 1`, name)
+	row := s.queryRow(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at, user_id FROM tokens WHERE name = ? ORDER BY id LIMIT 1`, name)
 	return scanTokenRow(s, row)
 }
 
+// GetTokensByUserID returns all tokens owned by a user (user_id
+// linkage, backfilled at startup). Empty result when the user has no
+// tokens (admin-created users).
+func (s *dbStore) GetTokensByUserID(userID int64) ([]model.Token, error) {
+	rows, err := s.query(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at, user_id FROM tokens WHERE user_id = ? ORDER BY id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.Token
+	for rows.Next() {
+		t, err := scanTokenRow(s, rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *t)
+	}
+	return out, rows.Err()
+}
+
 func (s *dbStore) GetTokens() ([]model.Token, error) {
-	rows, err := s.query(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at FROM tokens ORDER BY id`)
+	rows, err := s.query(`SELECT id, plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at, user_id FROM tokens ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1037,11 +1078,11 @@ func (s *dbStore) CreateToken(t *model.Token) error {
 		storedPlain = "__enc_pending__"
 	}
 	id, err := dialect.InsertOne(s.d, s.db,
-		`INSERT INTO tokens(plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO tokens(plan_id, key, key_ciphertext, name, status, rpm, tpm, used_usd, models_whitelist, ip_whitelist, expires_at, last_used_at, created_at, user_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.PlanID, storedPlain, cipher, t.Name, int(t.Status), t.RPM, t.TPM, t.UsedUSD,
 		encodeStrings(t.ModelsWhitelist), encodeStrings(t.IPWhitelist),
-		toUnix(t.ExpiresAt), toUnix(t.LastUsedAt), toUnix(t.CreatedAt),
+		toUnix(t.ExpiresAt), toUnix(t.LastUsedAt), toUnix(t.CreatedAt), t.UserID,
 	)
 	if err != nil {
 		return err
@@ -1238,7 +1279,7 @@ func scanTokenRow(s *dbStore, r interface {
 	var expires, lastUsed, created int64
 	var plain, cipher string
 	if err := r.Scan(&t.ID, &t.PlanID, &plain, &cipher, &t.Name, &status, &t.RPM, &t.TPM,
-		&t.UsedUSD, &mwJSON, &ipwJSON, &expires, &lastUsed, &created); err != nil {
+		&t.UsedUSD, &mwJSON, &ipwJSON, &expires, &lastUsed, &created, &t.UserID); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
 		}

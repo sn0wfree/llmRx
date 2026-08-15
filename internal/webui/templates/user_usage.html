@@ -1,0 +1,170 @@
+{{define "user_usage_body"}}<div>
+  <div class="mb-6 flex justify-between items-end">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">用量 · {{.TargetUser.Username}}</h1>
+      <p class="mt-1 text-sm text-gray-500">按日趋势、模型分布与请求明细</p>
+    </div>
+    <div class="flex gap-2 items-center">
+      <a href="/admin/usage/{{.TargetUser.ID}}/export.csv?range={{.Range}}" class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-sm font-medium">导出 CSV</a>
+      <div class="flex gap-1 text-sm">
+        {{$r := or .Range ""}}
+        <a href="/admin/usage/{{.TargetUser.ID}}?range=24h" class="px-3 py-1.5 rounded-md {{if eq $r "24h"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">24h</a>
+        <a href="/admin/usage/{{.TargetUser.ID}}?range=7d" class="px-3 py-1.5 rounded-md {{if eq $r "7d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">7d</a>
+        <a href="/admin/usage/{{.TargetUser.ID}}?range=30d" class="px-3 py-1.5 rounded-md {{if eq $r "30d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">30d</a>
+        <a href="/admin/usage/{{.TargetUser.ID}}" class="px-3 py-1.5 rounded-md {{if eq $r ""}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">全部</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+    <div class="bg-white rounded-lg shadow p-5">
+      <div class="text-sm font-medium text-gray-500">请求</div>
+      <div class="mt-2 text-3xl font-bold text-gray-900">{{.Summary.Requests}}</div>
+      <div class="text-xs text-gray-400">{{.Summary.Errors}} 错误</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-5">
+      <div class="text-sm font-medium text-gray-500">Tokens（入/出）</div>
+      <div class="mt-2 text-3xl font-bold text-gray-900">{{.Summary.PromptTokens}}</div>
+      <div class="text-xs text-gray-400">输出: {{.Summary.CompletionTokens}}</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-5">
+      <div class="text-sm font-medium text-gray-500">缓存命中</div>
+      <div class="mt-2 text-3xl font-bold text-gray-900">{{.Summary.CacheHits}}</div>
+      <div class="text-xs text-gray-400">响应缓存请求数</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-5">
+      <div class="text-sm font-medium text-gray-500">成本（结算）</div>
+      <div class="mt-2 text-3xl font-bold text-gray-900">${{printf "%.4f" .Summary.BilledCostUSD}}</div>
+      <div class="text-xs text-gray-400">实付: ${{printf "%.4f" .Summary.RealCostUSD}}</div>
+    </div>
+  </div>
+
+  <div class="bg-white rounded-lg shadow p-5 mb-6">
+    <h2 class="text-lg font-medium text-gray-900 mb-3">每日成本趋势</h2>
+    {{if gt (len .SeriesJSON) 4}}
+    <canvas id="usageChart" data-series="{{.SeriesJSON}}" class="w-full" height="200"></canvas>
+    {{else}}
+    <p class="text-sm text-gray-400 py-6 text-center">该时间范围暂无数据</p>
+    {{end}}
+  </div>
+
+  <div class="bg-white rounded-lg shadow overflow-hidden mb-6">
+    <div class="px-5 py-4 border-b border-gray-200 flex justify-between items-center">
+      <h2 class="text-lg font-medium text-gray-900">按模型分布</h2>
+    </div>
+    <table class="min-w-full divide-y divide-gray-200">
+      <thead class="bg-gray-50">
+        <tr>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">模型</th>
+          <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">请求</th>
+          <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Tokens</th>
+          <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">成本 $</th>
+        </tr>
+      </thead>
+      <tbody class="bg-white divide-y divide-gray-200">
+        {{range .ByModel}}
+        <tr>
+          <td class="px-6 py-3 whitespace-nowrap text-sm font-mono text-gray-900">{{.Label}}</td>
+          <td class="px-6 py-3 text-sm text-right text-gray-700">{{.Count}}</td>
+          <td class="px-6 py-3 text-sm text-right text-gray-700">{{.Tokens}}</td>
+          <td class="px-6 py-3 text-sm text-right text-gray-700">${{printf "%.4f" .Cost}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="4" class="px-6 py-6 text-center text-sm text-gray-400">暂无数据</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="bg-white rounded-lg shadow overflow-hidden">
+    <div class="px-5 py-4 border-b border-gray-200 flex items-center gap-3">
+      <h2 class="text-lg font-medium text-gray-900">请求明细</h2>
+      <form method="GET" class="flex gap-2 ml-auto">
+        <input type="hidden" name="range" value="{{.Range}}">
+        <input type="text" name="model" value="{{.Model}}" placeholder="按模型过滤"
+               class="px-3 py-1.5 border border-gray-300 rounded-md text-sm">
+        <button class="px-3 py-1.5 bg-gray-100 rounded-md text-sm hover:bg-gray-200">筛选</button>
+      </form>
+    </div>
+    <table class="min-w-full divide-y divide-gray-200">
+      <thead class="bg-gray-50">
+        <tr>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">时间</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">模型</th>
+          <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">入/出/缓存</th>
+          <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">成本 $</th>
+          <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">状态</th>
+        </tr>
+      </thead>
+      <tbody class="bg-white divide-y divide-gray-200">
+        {{range .Logs}}
+        <tr>
+          <td class="px-6 py-3 whitespace-nowrap text-sm text-gray-500">{{formatTime .CreatedAt}}</td>
+          <td class="px-6 py-3 whitespace-nowrap text-sm font-mono text-gray-900">
+            {{.Model}}
+            {{if .CacheHit}}<span class="ml-1 px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded text-xs">缓存</span>{{end}}
+            {{if eq .Endpoint "mcp"}}<span class="ml-1 px-1.5 py-0.5 bg-yellow-100 text-yellow-700 rounded text-xs">MCP</span>{{end}}
+          </td>
+          <td class="px-6 py-3 whitespace-nowrap text-sm text-right text-gray-600">{{.PromptTokens}}/{{.CompletionTokens}}/{{.CachedTokens}}</td>
+          <td class="px-6 py-3 whitespace-nowrap text-sm text-right text-gray-700">${{printf "%.4f" .BilledCostUSD}}</td>
+          <td class="px-6 py-3 whitespace-nowrap text-sm text-right {{if eq .StatusCode 200}}text-green-600{{else}}text-red-600{{end}}">{{.StatusCode}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="5" class="px-6 py-6 text-center text-sm text-gray-400">暂无请求</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{if gt .Page 0}}
+    <div class="px-6 py-3 border-t border-gray-200">
+      <a href="/admin/usage/{{.TargetUser.ID}}?page={{sub .Page 1}}&range={{.Range}}&model={{.Model}}" class="text-sm text-blue-600">上一页</a>
+    </div>
+    {{end}}
+  </div>
+</div>
+<script>
+(function(){
+  const el = document.getElementById('usageChart');
+  if (!el) return;
+  let series;
+  try { series = JSON.parse(el.dataset.series); } catch(e) { return; }
+  const labels = series.map(b => { const d = new Date(b.bucket * 1000); return d.getMonth()+1 + '/' + d.getDate(); });
+  const cost = series.map(b => Number(b.billed_cost_usd.toFixed(4)));
+  const req = series.map(b => b.requests);
+  const canvas = el.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.width = (el.clientWidth||800) * dpr;
+  const H = canvas.height = 200 * dpr;
+  canvas.style.width = (el.clientWidth||800) + 'px';
+  const pad = {l:50, r:10, t:10, b:24};
+  const maxCost = Math.max(...cost, 0.0001);
+  const maxReq = Math.max(...req, 1);
+  const plotW = W - pad.l - pad.r, plotH = H - pad.t - pad.b;
+  canvas.strokeStyle = '#e5e7eb'; canvas.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.t + plotH * i / 4;
+    canvas.beginPath(); canvas.moveTo(pad.l, y); canvas.lineTo(W - pad.r, y); canvas.stroke();
+  }
+  canvas.fillStyle = '#6b7280'; canvas.font = '10px sans-serif'; canvas.textAlign = 'right';
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.t + plotH * i / 4;
+    canvas.fillText('$' + (maxCost * (1 - i / 4)).toFixed(2), pad.l - 6, y + 3);
+  }
+  function line(vals, toMax, color){
+    canvas.strokeStyle = color; canvas.lineWidth = 2; canvas.beginPath();
+    vals.forEach((v, i) => {
+      const x = pad.l + plotW * (i / Math.max(vals.length - 1, 1));
+      const y = pad.t + plotH * (1 - v / toMax);
+      if (i === 0) canvas.moveTo(x, y); else canvas.lineTo(x, y);
+    });
+    canvas.stroke();
+  }
+  line(cost, maxCost, '#2563eb');
+  line(req, maxReq, '#059669');
+  canvas.fillStyle = '#6b7280'; canvas.font = '10px sans-serif'; canvas.textAlign = 'center';
+  labels.forEach((lb, i) => {
+    const x = pad.l + plotW * (i / Math.max(labels.length - 1, 1));
+    canvas.fillText(lb, x, H - 6);
+  });
+})();
+</script>
+{{end}}

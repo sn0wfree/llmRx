@@ -72,6 +72,7 @@ type Store interface {
 	RuntimeRepository
 	SecurityRepository
 	MCPRepository
+	ModelCostRepository
 
 	Ping(ctx context.Context) error
 	Close() error

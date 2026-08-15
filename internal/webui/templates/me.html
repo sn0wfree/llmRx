@@ -1,7 +1,16 @@
-{{define "me_body"}}<div class="max-w-2xl">
-  <div class="mb-6">
-    <h1 class="text-2xl font-bold text-gray-900">我的账户</h1>
-    <p class="mt-1 text-sm text-gray-500">API Key 与用量余额</p>
+{{define "me_body"}}<div class="max-w-4xl">
+  <div class="mb-6 flex justify-between items-end">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">我的账户</h1>
+      <p class="mt-1 text-sm text-gray-500">API Key 与用量余额</p>
+    </div>
+    <div class="flex gap-1 text-sm">
+      {{$r := or .Range ""}}
+      <a href="/admin/me?range=24h" class="px-3 py-1.5 rounded-md {{if eq $r "24h"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">24h</a>
+      <a href="/admin/me?range=7d" class="px-3 py-1.5 rounded-md {{if eq $r "7d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">7d</a>
+      <a href="/admin/me?range=30d" class="px-3 py-1.5 rounded-md {{if eq $r "30d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">30d</a>
+      <a href="/admin/me" class="px-3 py-1.5 rounded-md {{if eq $r ""}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">全部</a>
+    </div>
   </div>
 
   {{if .Me.APIKey}}
@@ -45,6 +54,62 @@
     </div>
   </div>
 
+  <div class="bg-white shadow rounded-lg p-6 mb-6">
+    <div class="flex justify-between items-center mb-4">
+      <h2 class="text-lg font-semibold text-gray-900">用量统计</h2>
+      <a href="/admin/me/export.csv?range={{.Range}}" class="px-3 py-1.5 bg-green-600 text-white rounded-md hover:bg-green-700 text-xs font-medium">导出 CSV</a>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="p-4 bg-gray-50 rounded-lg">
+        <div class="text-xs text-gray-500 uppercase">请求</div>
+        <div class="text-2xl font-bold text-gray-900 mt-1">{{.Summary.Requests}}</div>
+      </div>
+      <div class="p-4 bg-gray-50 rounded-lg">
+        <div class="text-xs text-gray-500 uppercase">Tokens（入/出）</div>
+        <div class="text-2xl font-bold text-gray-900 mt-1">{{.Summary.PromptTokens}}</div>
+        <div class="text-xs text-gray-400">输出: {{.Summary.CompletionTokens}}</div>
+      </div>
+      <div class="p-4 bg-gray-50 rounded-lg">
+        <div class="text-xs text-gray-500 uppercase">缓存命中</div>
+        <div class="text-2xl font-bold text-gray-900 mt-1">{{.Summary.CacheHits}}</div>
+      </div>
+      <div class="p-4 bg-gray-50 rounded-lg">
+        <div class="text-xs text-gray-500 uppercase">花费 ($)</div>
+        <div class="text-2xl font-bold text-gray-900 mt-1">{{printf "%.4f" .Summary.BilledCostUSD}}</div>
+        <div class="text-xs text-gray-400">实付: ${{printf "%.4f" .Summary.RealCostUSD}}</div>
+      </div>
+    </div>
+
+    {{if gt (len .SeriesJSON) 4}}
+    <div class="mt-5">
+      <canvas id="me-usage-chart" data-series="{{.SeriesJSON}}" class="w-full" height="180"></canvas>
+    </div>
+    {{end}}
+
+    {{if .ByModel}}
+    <table class="min-w-full mt-5 divide-y divide-gray-200">
+      <thead class="bg-gray-50">
+        <tr>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">模型</th>
+          <th class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">请求</th>
+          <th class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Tokens</th>
+          <th class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">成本 $</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-200">
+        {{range .ByModel}}
+        <tr>
+          <td class="px-4 py-2 whitespace-nowrap text-sm font-mono text-gray-900">{{.Label}}</td>
+          <td class="px-4 py-2 text-sm text-right text-gray-700">{{.Count}}</td>
+          <td class="px-4 py-2 text-sm text-right text-gray-700">{{.Tokens}}</td>
+          <td class="px-4 py-2 text-sm text-right text-gray-700">${{printf "%.4f" .Cost}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{end}}
+  </div>
+
   <div class="bg-white shadow rounded-lg p-6">
     <h2 class="text-lg font-semibold text-gray-900 mb-2">充值</h2>
     <p class="text-sm text-gray-500 mb-4">输入充值码增加预算（码请线下向管理员购买）。</p>
@@ -85,5 +150,43 @@ document.getElementById('redeem-form')?.addEventListener('submit', async (e) => 
     box.innerHTML = '<div class="p-3 rounded bg-red-100 text-red-800 border border-red-200 text-sm">网络错误</div>';
   }
 });
+(function(){
+  const el = document.getElementById('me-usage-chart');
+  if (!el) return;
+  let series;
+  try { series = JSON.parse(el.dataset.series); } catch(e) { return; }
+  const labels = series.map(b => { const d = new Date(b.bucket * 1000); return d.getMonth()+1 + '/' + d.getDate(); });
+  const cost = series.map(b => Number(b.billed_cost_usd.toFixed(4)));
+  const canvas = el.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.width = (el.clientWidth||600) * dpr;
+  const H = canvas.height = 180 * dpr;
+  canvas.style.width = (el.clientWidth||600) + 'px';
+  const pad = {l:50, r:10, t:10, b:24};
+  const maxCost = Math.max(...cost, 0.0001);
+  const plotW = W - pad.l - pad.r, plotH = H - pad.t - pad.b;
+  canvas.strokeStyle = '#e5e7eb'; canvas.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.t + plotH * i / 4;
+    canvas.beginPath(); canvas.moveTo(pad.l, y); canvas.lineTo(W - pad.r, y); canvas.stroke();
+  }
+  canvas.fillStyle = '#6b7280'; canvas.font = '10px sans-serif'; canvas.textAlign = 'right';
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.t + plotH * i / 4;
+    canvas.fillText('$' + (maxCost * (1 - i / 4)).toFixed(3), pad.l - 6, y + 3);
+  }
+  canvas.strokeStyle = '#2563eb'; canvas.lineWidth = 2; canvas.beginPath();
+  cost.forEach((v, i) => {
+    const x = pad.l + plotW * (i / Math.max(cost.length - 1, 1));
+    const y = pad.t + plotH * (1 - v / maxCost);
+    if (i === 0) canvas.moveTo(x, y); else canvas.lineTo(x, y);
+  });
+  canvas.stroke();
+  canvas.fillStyle = '#6b7280'; canvas.font = '10px sans-serif'; canvas.textAlign = 'center';
+  labels.forEach((lb, i) => {
+    const x = pad.l + plotW * (i / Math.max(labels.length - 1, 1));
+    canvas.fillText(lb, x, H - 6);
+  });
+})();
 </script>
 {{end}}

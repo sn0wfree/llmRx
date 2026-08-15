@@ -283,6 +283,7 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	adminHandler.SetGuardrailEngine(handler.GuardrailEngine())
 	adminHandler.SetAutoStats(handler.AutoStats())
 	adminHandler.SetSessions(handler.Sessions())
+	adminHandler.SetModelCosts(handler.ModelCosts())
 	s.guardrailEngine = handler.GuardrailEngine()
 	adminHandler.SetReloadNotifier(s.fireNotify)
 

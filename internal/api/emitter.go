@@ -11,6 +11,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/mcp"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/modelcost"
 	"github.com/sn0wfree/llmRx/internal/observability"
 	"github.com/sn0wfree/llmRx/internal/provider"
 	"github.com/sn0wfree/llmRx/internal/ratelimit"
@@ -24,6 +25,7 @@ type LogEmitter struct {
 	store     store.Store
 	limits    *ratelimit.Limiter
 	costCalc  *CostCalculator
+	costs     *modelcost.Cache
 
 	// chatLogCount is a monotonic counter used by the chat.completed
 	// sampling hook. Accessed via sync/atomic.AddUint64; padded to
@@ -33,7 +35,7 @@ type LogEmitter struct {
 	chatLogSampleRate uint64 // 1 = every; 0 = disabled; N = 1-in-N
 }
 
-func NewLogEmitter(ls *logstore.Manager, lb *broker.Broker[*model.Log], st store.Store, lim *ratelimit.Limiter, cc *CostCalculator, sampleRate int) *LogEmitter {
+func NewLogEmitter(ls *logstore.Manager, lb *broker.Broker[*model.Log], st store.Store, lim *ratelimit.Limiter, cc *CostCalculator, costs *modelcost.Cache, sampleRate int) *LogEmitter {
 	rate := uint64(sampleRate)
 	if rate > 1 {
 		// Valid N>1: keep as-is.
@@ -49,6 +51,7 @@ func NewLogEmitter(ls *logstore.Manager, lb *broker.Broker[*model.Log], st store
 		store:             st,
 		limits:            lim,
 		costCalc:          cc,
+		costs:             costs,
 		chatLogSampleRate: rate,
 	}
 }
@@ -93,7 +96,16 @@ func (e *LogEmitter) Emit(ctx context.Context, tokenID int64, modelName string, 
 	real := 0.0
 	cached := 0
 	if usage != nil {
-		real = e.costCalc.RealCost(route.Channel, *usage)
+		if images := imagesFromContext(ctx); images > 0 {
+			usage.Images = images
+		}
+		// Resolve the model's rate card. The request is fail-closed
+		// against unpriced models before reaching upstream, so a
+		// missing card here is anomalous — bill nothing rather than
+		// fabricate a price.
+		if mc, ok := e.costFor(modelName); ok {
+			real = e.costCalc.RealCost(mc, *usage)
+		}
 		if usage.PromptTokensDetails != nil {
 			cached = usage.PromptTokensDetails.CachedTokens
 		}
@@ -128,6 +140,7 @@ func (e *LogEmitter) Emit(ctx context.Context, tokenID int64, modelName string, 
 		PromptTokens:     promptTokens(usage),
 		CompletionTokens: completionTokens(usage),
 		CachedTokens:     cached,
+		ReasoningTokens:  reasoningTokens(usage),
 		RealCostUSD:      real,
 		BilledCostUSD:    billed,
 		DurationMs:       durationMs,
@@ -236,6 +249,83 @@ func completionTokens(u *provider.Usage) int {
 		return 0
 	}
 	return u.CompletionTokens
+}
+func reasoningTokens(u *provider.Usage) int {
+	if u == nil || u.CompletionTokensDetails == nil {
+		return 0
+	}
+	return u.CompletionTokensDetails.ReasoningTokens
+}
+
+// costFor resolves a model's rate card. Returns ok=false when the
+// model is unpriced.
+func (e *LogEmitter) costFor(modelName string) (*model.ModelCost, bool) {
+	if e.costs == nil {
+		return nil, false
+	}
+	mc, ok := e.costs.Lookup(modelName)
+	if !ok {
+		return nil, false
+	}
+	return &mc, true
+}
+
+// EmitCacheHit records a response-cache hit: no upstream call, so
+// the stored request usage is reused with all prompt tokens treated
+// as cached (billed at the model's cache_read rate) plus completion
+// at the output rate. Cache hits count toward usage statistics and
+// spend exactly like normal requests.
+func (e *LogEmitter) EmitCacheHit(ctx context.Context, tokenID int64, modelName string, usage *provider.Usage, ip string) {
+	if usage == nil {
+		return
+	}
+	real := 0.0
+	if mc, ok := e.costFor(modelName); ok {
+		// Treat the whole prompt as cache-served.
+		u := *usage
+		u.PromptTokensDetails = &provider.PromptTokensDetails{CachedTokens: u.PromptTokens}
+		real = e.costCalc.RealCost(mc, u)
+	}
+	billed := e.costCalc.BilledCost(ctx, real, func(_ context.Context) float64 { return 1.0 })
+	entry := &model.Log{
+		TokenID:          tokenID,
+		Model:            modelName,
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+		CachedTokens:     usage.PromptTokens,
+		ReasoningTokens:  reasoningTokens(usage),
+		RealCostUSD:      real,
+		BilledCostUSD:    billed,
+		StatusCode:       200,
+		RouterPath:       "cache",
+		RequestIP:        ip,
+		CacheHit:         true,
+	}
+	if e.logStore != nil {
+		if err := e.logStore.Insert(entry); err != nil {
+			logging.Warn("persist cache-hit log failed", logging.F("error", err.Error()))
+		}
+	}
+	if e.logBroker != nil {
+		e.logBroker.Publish(entry)
+	}
+	observability.RecordRequest(modelName, 0, false, billed, usage.PromptTokens, usage.CompletionTokens, false)
+	planID := planIDFromContext(ctx)
+	if tokenID > 0 && billed > 0 && e.store != nil {
+		if err := e.store.RecordRequestSpend(tokenID, planID, billed); err != nil {
+			if errors.Is(err, store.ErrBudgetExceeded) {
+				logging.Warn("plan budget exceeded for cache hit, token ledger untouched",
+					logging.F("plan_id", planID),
+					logging.F("billed_usd", billed),
+				)
+			} else {
+				logging.Warn("record cache-hit spend failed", logging.F("error", err.Error()))
+			}
+		}
+	}
+	if tokenID > 0 && e.limits != nil {
+		e.limits.Account(tokenID, usage.PromptTokens+usage.CompletionTokens)
+	}
 }
 
 func planIDFromContext(ctx context.Context) int64 {

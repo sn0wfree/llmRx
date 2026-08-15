@@ -37,6 +37,7 @@ type WebuiStore interface {
 	GetTokens() ([]model.Token, error)
 	GetTokenByID(id int64) (*model.Token, error)
 	GetTokenByName(name string) (*model.Token, error)
+	GetTokensByUserID(userID int64) ([]model.Token, error)
 	CreateToken(t *model.Token) error
 	UpdateToken(t *model.Token) error
 	DeleteToken(id int64) error
@@ -58,6 +59,14 @@ type WebuiStore interface {
 	// Redeem codes
 	CreateRedeemCode(c *model.RedeemCode) error
 	ListRedeemCodes() ([]model.RedeemCode, error)
+
+	// Model costs
+	GetModelCost(model string) (*model.ModelCost, error)
+	ListModelCosts() ([]model.ModelCost, error)
+	UpsertModelCost(c *model.ModelCost) error
+	DeleteModelCost(model string) error
+	BatchUpsertModelCosts(costs []model.ModelCost) error
+	CountModelCosts() (int, error)
 
 	// Alerts
 	GetAlerts() ([]model.Alert, error)

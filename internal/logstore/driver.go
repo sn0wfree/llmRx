@@ -77,11 +77,13 @@ type Driver interface {
 // the Manager fills this from a store.LogFilter at the boundary.
 type QueryFilter struct {
 	TokenID     int64
+	TokenIDs    []int64 // matches ANY of the token ids (IN clause); overrides TokenID when set
 	ChannelID   int64
 	KeyID       int64
 	Model       string
 	Endpoint    string // "" = no filter; "mcp" = MCP tool-call rows only
 	StatusCode  int    // 0 = no filter
+	CacheHit    bool   // true = only response-cache-hit rows (1); false = no filter
 	CreatedFrom int64  // unix seconds, 0 = no lower bound
 	CreatedTo   int64  // unix seconds, 0 = no upper bound
 	Limit       int    // 0 = driver default (50)
@@ -127,3 +129,11 @@ const MaxAttachFiles = 8
 
 // Now is overridable in tests for deterministic day routing.
 var Now = func() time.Time { return time.Now().UTC() }
+
+// boolToInt encodes a boolean as 1/0 for integer-backed storage.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}

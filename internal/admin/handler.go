@@ -22,6 +22,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/mcp"
 	"github.com/sn0wfree/llmRx/internal/middleware"
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/modelcost"
 	"github.com/sn0wfree/llmRx/internal/pool"
 	"github.com/sn0wfree/llmRx/internal/provider"
 	"github.com/sn0wfree/llmRx/internal/router"
@@ -58,6 +59,10 @@ type Handler struct {
 	// reloadNotifier broadcasts local config writes to other
 	// replicas (P12 M2 PG NOTIFY). nil = no-op.
 	reloadNotifier func()
+	// modelCosts is the in-memory rate card. Wired from the api
+	// handler via SetModelCosts so admin edits reload the live cache.
+	// nil renders the model-costs endpoints read-only.
+	modelCosts *modelcost.Cache
 }
 
 // SessionCounter is the narrow slice of the session store the admin
@@ -87,6 +92,10 @@ func (h *Handler) SetStore(st store.Store) { h.store = st }
 // SetAutoStats wires the auto-router decision counter accumulator
 // (owned by the api handler) into the state endpoint and /reload.
 func (h *Handler) SetAutoStats(s *auto.Stats) { h.autoStats = s }
+
+// SetModelCosts wires the shared rate-card cache (owned by the api
+// handler) so admin edits can reload it.
+func (h *Handler) SetModelCosts(c *modelcost.Cache) { h.modelCosts = c }
 
 // SetSessions wires the session-affinity pin store into the state
 // endpoint (session count). nil hides the block.
@@ -179,6 +188,10 @@ func (h *Handler) Routes() http.Handler {
 		r.Get("/plans/{id}", h.GetPlan)
 		r.Put("/plans/{id}", h.UpdatePlan)
 		r.Delete("/plans/{id}", h.DeletePlan)
+		r.Get("/model-costs", h.ListModelCosts)
+		r.Put("/model-costs", h.UpsertModelCost)
+		r.Delete("/model-costs", h.DeleteModelCost)
+		r.Post("/model-costs/import", h.ImportModelCosts)
 		r.Get("/config", h.GetConfig)
 		r.Get("/effective", h.EffectiveConfig)
 		r.Get("/cache/stats", h.CacheStats)

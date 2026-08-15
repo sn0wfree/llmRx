@@ -254,6 +254,20 @@ func main() {
 	if err := tokCache.Reload(); err != nil {
 		fatalf("token cache reload failed", logging.F("error", err.Error()))
 	}
+
+	// Backfill token→user linkage and seed the model rate card from
+	// modelmeta on first boot. Billing is fail-closed: an unpriced
+	// model is rejected at request time, so an empty rate card would
+	// take the whole gateway down — seeding avoids that.
+	if n, err := st.BackfillTokenUserIDs(context.Background()); err != nil {
+		logging.Warn("token user backfill failed", logging.F("error", err.Error()))
+	} else if n > 0 {
+		logging.Info("token user ids backfilled", logging.F("tokens", n))
+	}
+	if err := seedModelCosts(st); err != nil {
+		fatalf("seed model costs failed", logging.F("error", err.Error()))
+	}
+
 	eng := router.New(st, cp)
 
 	// Hydrate L5 (Thompson sampling) posteriors from the persisted
@@ -487,7 +501,8 @@ func servePprof(addr string) {
 // cleanupLoop periodically clears admin session tokens whose
 // session_exp is in the past. Runs every 5 minutes; exits when ctx
 // is cancelled or the process exits.
-func cleanupLoop(ctx context.Context, st store.Store) {	t := time.NewTicker(5 * time.Minute)
+func cleanupLoop(ctx context.Context, st store.Store) {
+	t := time.NewTicker(5 * time.Minute)
 	defer t.Stop()
 	for {
 		select {
@@ -513,6 +528,49 @@ func seed(st store.Store, cfg *config.Config) error {
 		return err
 	}
 	return seedChannels(st, cfg)
+}
+
+// seedModelCosts fills the model_costs rate card from modelmeta on
+// first boot (empty table). Idempotent: only runs when the table is
+// empty, so admin-edited prices are never clobbered.
+func seedModelCosts(st store.Store) error {
+	n, err := st.CountModelCosts()
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	var costs []model.ModelCost
+	for _, m := range modelmeta.All() {
+		cacheRead := m.CacheReadPrice
+		if cacheRead <= 0 {
+			// Default: 10% of input (legacy CachedInputDiscount default).
+			cacheRead = m.InputPrice * m.CacheReadDiscount
+		}
+		mc := model.ModelCost{
+			Model:                     m.ID,
+			Provider:                  m.Provider,
+			InputPricePer1M:           m.InputPrice,
+			OutputPricePer1M:          m.OutputPrice,
+			CacheReadPricePer1M:       cacheRead,
+			CacheWritePricePer1M:      m.CacheWritePrice,
+			ReasoningPricePer1M:       m.ReasoningPrice,
+			ImagePrice:                m.ImagePrice,
+			InputPricePer1MAbove128K:  m.InputPriceAbove128K,
+			OutputPricePer1MAbove128K: m.OutputPriceAbove128K,
+			InputPricePer1MAbove200K:  m.InputPriceAbove200K,
+			OutputPricePer1MAbove200K: m.OutputPriceAbove200K,
+			ContextWindow:             m.ContextWindow,
+			MaxOutput:                 m.MaxOutput,
+		}
+		costs = append(costs, mc)
+	}
+	if err := st.BatchUpsertModelCosts(costs); err != nil {
+		return err
+	}
+	logging.Info("seeded model costs from modelmeta", logging.F("models", len(costs)))
+	return nil
 }
 
 // seedAdmin bootstraps the root user on a fresh database.

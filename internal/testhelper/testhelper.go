@@ -226,7 +226,9 @@ func (a *App) AddChannel(name, providerName, baseURL string, models []string, ke
 }
 
 // AddChannelWithPrice is AddChannel with explicit per-million input/output
-// pricing so cost logs are non-zero in tests.
+// pricing so cost logs are non-zero in tests. The channel's models are
+// also priced in the model_costs rate card so fail-closed billing
+// accepts them.
 func (a *App) AddChannelWithPrice(name, providerName, baseURL string, models []string, in, out float64, keys ...string) *model.Channel {
 	a.T.Helper()
 	ch := &model.Channel{
@@ -237,6 +239,7 @@ func (a *App) AddChannelWithPrice(name, providerName, baseURL string, models []s
 	if err := a.Store.CreateChannel(ch); err != nil {
 		a.T.Fatalf("AddChannel %s: %v", name, err)
 	}
+	a.PriceModels(models, in, out)
 	for _, k := range keys {
 		if err := a.Store.CreateKey(&model.Key{
 			ChannelID: ch.ID, Key: k, KeyMasked: maskKey(k), Status: model.KeyActive,
@@ -259,6 +262,23 @@ func (a *App) AddChannelWithPrice(name, providerName, baseURL string, models []s
 func (a *App) ReloadRouter() {
 	a.T.Helper()
 	a.Engine.ReloadAllChannels()
+}
+
+// PriceModels upserts the given models in the model_costs rate card
+// and reloads the chat handler's in-memory cache so billing sees the
+// new prices. Used by tests that verify cost/markup computation.
+func (a *App) PriceModels(models []string, in, out float64) {
+	a.T.Helper()
+	for _, m := range models {
+		if err := a.Store.UpsertModelCost(&model.ModelCost{
+			Model: m, InputPricePer1M: in, OutputPricePer1M: out,
+		}); err != nil {
+			a.T.Fatalf("PriceModels %s: %v", m, err)
+		}
+	}
+	if err := a.Chat.ReloadModelCosts(); err != nil {
+		a.T.Fatalf("reload model costs: %v", err)
+	}
 }
 
 // AddToken creates an active API token.

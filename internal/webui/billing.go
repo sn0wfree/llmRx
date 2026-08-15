@@ -1,9 +1,15 @@
 package webui
 
 import (
+	"encoding/csv"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
+	"time"
 
+	"github.com/sn0wfree/llmRx/internal/logstore"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/store"
 )
@@ -28,16 +34,73 @@ func (h *Handler) MePage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Self-service usage summary + daily trend for the signed-in user.
+	rangeVal := r.URL.Query().Get("range")
+	now := time.Now().UTC()
+	from := usageRange(now, rangeVal)
+	ids := h.userTokenIDs(user.ID)
+	summary := h.summarize(ids, from)
+	series, _ := h.logStore.TimeSeries(logstore.QueryFilter{TokenIDs: ids, Limit: 500, CreatedFrom: from}, 86400, nil)
+	byModel, _ := h.logStore.TopByField(logstore.QueryFilter{TokenIDs: ids, Limit: 500, CreatedFrom: from}, "model", 20, nil)
+
+	seriesJSON := "[]"
+	if len(series) > 0 {
+		if b, err := json.Marshal(series); err == nil {
+			seriesJSON = string(b)
+		}
+	}
+
 	data := map[string]any{
-		"Body":  "me_body",
-		"Title": "我的账户 · llmRx",
-		"User":  userToView(user),
-		"Me":    me,
+		"Body":       "me_body",
+		"Title":      "我的账户 · llmRx",
+		"User":       userToView(user),
+		"Me":         me,
+		"Range":      rangeVal,
+		"Summary":    summary,
+		"ByModel":    byModel,
+		"SeriesJSON": seriesJSON,
 		// BaseURL is the gateway's own origin for client config.
 		"BaseURL": "http://" + r.Host,
 	}
 	if err := h.renderer.Render(w, "me_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// MeUsageExportCSV streams the signed-in user's request log as CSV.
+func (h *Handler) MeUsageExportCSV(w http.ResponseWriter, r *http.Request) {
+	user := getUser(r)
+	rangeVal := r.URL.Query().Get("range")
+	from := usageRange(time.Now().UTC(), rangeVal)
+	ids := h.userTokenIDs(user.ID)
+	if len(ids) == 0 {
+		http.Error(w, "no usage", http.StatusBadRequest)
+		return
+	}
+	logs, _, err := h.logStore.Query(logstore.QueryFilter{TokenIDs: ids, CreatedFrom: from, Limit: 5000}, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-usage.csv"`, user.Username))
+	cw := csv.NewWriter(w)
+	defer cw.Flush()
+	_ = cw.Write([]string{"time", "model", "prompt_tokens", "completion_tokens", "cached_tokens", "reasoning_tokens", "real_cost_usd", "billed_cost_usd", "status", "cache_hit"})
+	for _, l := range logs {
+		_ = cw.Write([]string{
+			l.CreatedAt.UTC().Format(time.RFC3339),
+			l.Model,
+			strconv.Itoa(l.PromptTokens),
+			strconv.Itoa(l.CompletionTokens),
+			strconv.Itoa(l.CachedTokens),
+			strconv.Itoa(l.ReasoningTokens),
+			fmt.Sprintf("%.6f", l.RealCostUSD),
+			fmt.Sprintf("%.6f", l.BilledCostUSD),
+			strconv.Itoa(l.StatusCode),
+			fmt.Sprintf("%v", l.CacheHit),
+		})
 	}
 }
 
@@ -62,12 +125,12 @@ func (h *Handler) RedeemCodesPage(w http.ResponseWriter, r *http.Request) {
 
 // meView is the account page data.
 type meView struct {
-	Username  string      `json:"username"`
-	APIKey    string      `json:"api_key"`
-	PlanID    int64       `json:"plan_id"`
-	PlanName  string      `json:"plan_name"`
-	BudgetUSD float64     `json:"budget_usd"`
-	UsedUSD   float64     `json:"used_usd"`
+	Username  string         `json:"username"`
+	APIKey    string         `json:"api_key"`
+	PlanID    int64          `json:"plan_id"`
+	PlanName  string         `json:"plan_name"`
+	BudgetUSD float64        `json:"budget_usd"`
+	UsedUSD   float64        `json:"used_usd"`
 	Role      model.UserRole `json:"role"`
 }
 

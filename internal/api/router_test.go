@@ -83,33 +83,33 @@ func TestHandler_ProviderFor_Default(t *testing.T) {
 }
 
 func TestCalcCost_Basic(t *testing.T) {
-	ch := &model.Channel{
-		InputPrice:  1.0,
-		OutputPrice: 2.0,
+	mc := &model.ModelCost{
+		InputPricePer1M:  1.0,
+		OutputPricePer1M: 2.0,
 	}
 	usage := provider.Usage{
 		PromptTokens:     1000000,
 		CompletionTokens: 500000,
 	}
-	cost := calcCost(ch, usage)
+	cost := (&CostCalculator{}).RealCost(mc, usage)
 	if cost != 1.0+1.0 {
 		t.Fatalf("basic cost: got %f, want 2.0", cost)
 	}
 }
 
 func TestCalcCost_CachedTokens(t *testing.T) {
-	ch := &model.Channel{
-		InputPrice:          1.0,
-		OutputPrice:         0.0,
-		CachedInputDiscount: 0.1,
+	mc := &model.ModelCost{
+		InputPricePer1M:     1.0,
+		OutputPricePer1M:    0.0,
+		CacheReadPricePer1M: 0.1,
 	}
 	usage := provider.Usage{
 		PromptTokens:        1000000,
 		PromptTokensDetails: &provider.PromptTokensDetails{CachedTokens: 500000},
 	}
-	cost := calcCost(ch, usage)
+	cost := (&CostCalculator{}).RealCost(mc, usage)
 	normal := 500000.0 / 1000000.0 * 1.0
-	cached := 500000.0 / 1000000.0 * 1.0 * 0.1
+	cached := 500000.0 / 1000000.0 * 0.1
 	want := normal + cached
 	if cost < want-0.0001 || cost > want+0.0001 {
 		t.Fatalf("cached cost: got %f, want %f", cost, want)
@@ -117,20 +117,20 @@ func TestCalcCost_CachedTokens(t *testing.T) {
 }
 
 func TestCalcCost_ZeroUsage(t *testing.T) {
-	ch := &model.Channel{InputPrice: 1.0, OutputPrice: 1.0}
-	cost := calcCost(ch, provider.Usage{})
+	mc := &model.ModelCost{InputPricePer1M: 1.0, OutputPricePer1M: 1.0}
+	cost := (&CostCalculator{}).RealCost(mc, provider.Usage{})
 	if cost != 0 {
 		t.Fatalf("zero usage: got %f, want 0", cost)
 	}
 }
 
 func TestCalcCost_NilPromptTokensDetails(t *testing.T) {
-	ch := &model.Channel{InputPrice: 1.0, OutputPrice: 1.0}
+	mc := &model.ModelCost{InputPricePer1M: 1.0, OutputPricePer1M: 1.0}
 	usage := provider.Usage{
 		PromptTokens:     100,
 		CompletionTokens: 50,
 	}
-	cost := calcCost(ch, usage)
+	cost := (&CostCalculator{}).RealCost(mc, usage)
 	if cost <= 0 {
 		t.Fatalf("should have positive cost, got %f", cost)
 	}

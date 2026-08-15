@@ -1,0 +1,50 @@
+{{define "users_usage_body"}}<div>
+  <div class="mb-6 flex justify-between items-end">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">用量 · 用户</h1>
+      <p class="mt-1 text-sm text-gray-500">每个用户的请求数、Token、成本（含缓存命中）</p>
+    </div>
+    <div class="flex gap-1 text-sm">
+      {{$r := or .Range ""}}
+      <a href="/admin/usage?range=24h" class="px-3 py-1.5 rounded-md {{if eq $r "24h"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">24h</a>
+      <a href="/admin/usage?range=7d" class="px-3 py-1.5 rounded-md {{if eq $r "7d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">7d</a>
+      <a href="/admin/usage?range=30d" class="px-3 py-1.5 rounded-md {{if eq $r "30d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">30d</a>
+      <a href="/admin/usage?range=90d" class="px-3 py-1.5 rounded-md {{if eq $r "90d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">90d</a>
+      <a href="/admin/usage" class="px-3 py-1.5 rounded-md {{if eq $r ""}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">全部</a>
+    </div>
+  </div>
+
+  <div class="bg-white shadow rounded-lg overflow-hidden">
+    <table class="min-w-full divide-y divide-gray-200">
+      <thead class="bg-gray-50">
+        <tr>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">用户</th>
+          <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">角色</th>
+          <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">请求</th>
+          <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">错误</th>
+          <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">输入 Tokens</th>
+          <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">输出 Tokens</th>
+          <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">缓存命中</th>
+          <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">成本 $</th>
+        </tr>
+      </thead>
+      <tbody class="bg-white divide-y divide-gray-200">
+        {{range .Views}}
+        <tr class="hover:bg-gray-50 cursor-pointer" onclick="location.href='/admin/usage/{{.User.ID}}?range={{$.Range}}'">
+          <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{{.User.Username}}</td>
+          <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{.User.Role}}</td>
+          <td class="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-700">{{.Summary.Requests}}</td>
+          <td class="px-6 py-4 whitespace-nowrap text-sm text-right {{if gt .Summary.Errors 0}}text-red-600{{else}}text-gray-400{{end}}">{{.Summary.Errors}}</td>
+          <td class="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-700">{{.Summary.PromptTokens}}</td>
+          <td class="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-700">{{.Summary.CompletionTokens}}</td>
+          <td class="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-700">{{.Summary.CacheHits}}</td>
+          <td class="px-6 py-4 whitespace-nowrap text-sm text-right font-medium text-gray-900">${{printf "%.4f" .Summary.BilledCostUSD}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="8" class="px-6 py-8 text-center text-sm text-gray-400">暂无用户</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

@@ -37,6 +37,7 @@ func TestCombo_LoadBalance_NoChannel(t *testing.T) {
 	app.AddChannel("c1", "openai", "https://x", []string{"m1"}, "sk-key")
 	app.AddToken("sk-t", "t")
 	app.AddComboModel("sk-t", "combo-lb", []string{"nonexistent"}, model.ComboModeLoadBalance)
+	app.PriceModels([]string{"nonexistent"}, 1.0, 1.0)
 
 	body := `{"model":"combo-lb","messages":[]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
@@ -144,6 +145,7 @@ func TestCombo_Serial_NoChannel(t *testing.T) {
 	app.AddChannel("c1", "openai", "https://x", []string{"m1"}, "sk-key")
 	app.AddToken("sk-t", "t")
 	app.AddComboModel("sk-t", "combo-serial", []string{"nonexistent"}, model.ComboModeSerial)
+	app.PriceModels([]string{"nonexistent"}, 1.0, 1.0)
 
 	body := `{"model":"combo-serial","messages":[]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
