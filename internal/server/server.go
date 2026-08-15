@@ -293,6 +293,13 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	s.engine.With(authmw.WithLimitsAndOptions(s.tokens.Lookup, handler.Limits(), s.byokHook)).
 		Mount("/v1", handler.Routes())
 
+	// Public self-service billing endpoints (no bearer token; the
+	// /me/* routes authenticate via the llmrx_session cookie):
+	// invite-code registration + top-up redemption.
+	s.engine.Post("/api/v1/register", handler.Register)
+	s.engine.Get("/api/v1/me", handler.Me)
+	s.engine.Post("/api/v1/me/redeem", handler.Redeem)
+
 	// MCP server endpoint: expose llmRx's own tools. Same token
 	// chain as /v1 — the endpoint can spend the gateway's upstream
 	// keys via channel_invoke, so it must not be unauthenticated.

@@ -182,6 +182,9 @@ type Handler struct {
 	contThreshold     int
 	contMu            sync.Mutex
 	contModel         map[string]string
+
+	// regLimiter throttles public registration per IP.
+	regLimiter *registerLimiter
 }
 
 func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st store.Store, ls *logstore.Manager, lb *broker.Broker[*model.Log], rt *runtime.Defaults) *Handler {
@@ -212,6 +215,7 @@ func New(cfg *config.Config, eng *router.RouterEngine, cp *pool.ChannelPool, st 
 		taskSource:     cfg.AutoRouter.TaskSource,
 		taskModelBias:  cfg.AutoRouter.TaskModelBias,
 		contModel:      make(map[string]string),
+		regLimiter:     newRegisterLimiter(5, time.Hour),
 	}
 	if cfg.AutoRouter.SessionContinuation {
 		h.continuationOn = true

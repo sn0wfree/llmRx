@@ -209,6 +209,8 @@ func (h *Handler) Routes() http.Handler {
 		r.Put("/config", h.UpdateConfig)
 		r.Post("/reload", h.ReloadAll)
 		r.Post("/secrets/rotate", h.RotateSecrets)
+		r.Post("/redeem-codes", h.CreateRedeemCodes)
+		r.Get("/redeem-codes", h.ListRedeemCodes)
 	})
 	return r
 }
