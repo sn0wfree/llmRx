@@ -45,12 +45,10 @@ services:
       # container's bootstrap chowns to llmrx only when running as
       # root, which is harmless when ownership already matches.
       - ./data:/data
-    environment:
-      # The gateway reads its whole configuration from /data/config.yml
-      # (server port, SQLite DSN, log level, ...). Only secrets are
-      # injected via env:
-      # Uncomment to inject a master key from .env (see .env.example):
-      # LLMRX_KEY_MASTER: ${LLMRX_KEY_MASTER}
+    # The gateway reads its whole configuration from /data/config.yml
+    # (server port, SQLite DSN, log level, ...). Only secrets are
+    # injected via env (see .env.example): uncomment to inject a
+    # master key, e.g. LLMRX_KEY_MASTER: ${LLMRX_KEY_MASTER}.
     # secrets:
     #   - llmrx_key_master
     healthcheck:

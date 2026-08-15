@@ -48,7 +48,7 @@ make docker-build && make docker-run # 升级（代码变了就重新 build）
 ### 1.3 存储与备份空间
 
 - **数据库**：SQLite 单文件 `llmrx.db`，带 WAL（`-shm` + `-wal` 三个一起拷）。
-- **日志**：每条请求一行进 `logs` 表；高频场景一天可涨几百 MB。建议定期 PUT `/api/v1/config` 设 `log_retention_days`。
+- **日志**：每条请求一行进 `logs` 表；高频场景一天可涨几百 MB。建议定期 PUT `/api/v1/config` 设 `log_retention_days`。默认保留策略是删除过期日志；设 `log_retention_mode: "archive"` 可将过期日志 gzip 压缩为 `<日期>.db.gz` 归档保留（不删除），归档文件不参与 admin 查询。
 - **备份预算**：`/data` 整体备份（`llmrx.db` + `llmrx.db-shm` + `llmrx.db-wal` + `llmrx.key` + `config.yml`）。
 
 ---
@@ -457,6 +457,7 @@ curl -X PUT http://localhost:8787/api/v1/config \
     "cost_strategy": "balanced",       # cheapest | fastest | balanced
     "markup_ratio": 1.2,
     "log_retention_days": 30,
+    "log_retention_mode": "archive",   # delete (default) | archive (gzip to .db.gz and keep)
     "stream_timeout_sec": 300,
     "breaker_max_failures": 5,
     "breaker_reset_ms": 30000,
@@ -824,7 +825,7 @@ SQLite 写并发上限。检查：
 
 ```bash
 sqlite3 /data/llmrx.db 'PRAGMA wal_checkpoint(TRUNCATE);'
-# 日志库（data/logs/YYYY-MM-DD*.db）同理，网关每 60s 自动截断，一般无需手动
+# 日志库（/data/logs/YYYY-MM-DD*.db，默认与 SQLite 库同目录）同理，网关每 60s 自动截断，一般无需手动
 ```
 
 长期方案：升 Postgres。
@@ -856,14 +857,14 @@ grep -c "logstore.*dropped\|batch insert failed" data/logs/../llmRx.log 2>/dev/n
 # 或看网关日志里 logstore 相关 warn
 
 # 2. WAL 是否膨胀（正常 <40MB）
-ls -lh data/logs/*.db-wal
+ls -lh /data/logs/*.db-wal
 
 # 3. 进程 fd 数 / 连接数
 ls /proc/$(pgrep llmRx)/fd | wc -l
 ss -s
 
 # 4. 手动截断 WAL（立即回收磁盘 + 恢复读性能）
-sqlite3 data/logs/2026-08-02-1.db 'PRAGMA wal_checkpoint(TRUNCATE);'
+sqlite3 /data/logs/2026-08-02-1.db 'PRAGMA wal_checkpoint(TRUNCATE);'
 
 # 5. 当前并发与负载
 ps -o rss,vsz,pcpu -p $(pgrep llmRx)
@@ -872,7 +873,7 @@ ps -o rss,vsz,pcpu -p $(pgrep llmRx)
 **处置阶梯**（从轻到重）：
 
 1. 手动 checkpoint 截断 WAL（上面的 sqlite3 命令；网关每 60s 也会自动做，等下一轮即可）
-2. 调大/清理日志保留窗口：`PUT /api/v1/config` 设 `log_retention_days`（或删旧日志文件）
+2. 调大/清理日志保留窗口：`PUT /api/v1/config` 设 `log_retention_days`（默认删除过期文件；设 `log_retention_mode: "archive"` 改为 gzip 归档保留，`<日期>.db.gz` 可直接 gunzip 还原查询）
 3. 若为日志写入瓶颈且可接受崩溃丢 <1s 日志：config 设 `logstore.synchronous: off` 后重启（写入吞吐 2-5x）
 4. 仍过载：确认 `server.max_inflight_requests`（默认 10000）生效——超限请求直接 503，保护进程不雪崩
 5. 长期：升 Postgres logstore（`logstore_backend: postgres`），或把 `/metrics` 接入 Prometheus 提前预警

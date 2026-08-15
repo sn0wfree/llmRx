@@ -1,9 +1,10 @@
 // Package logstore provides the storage backend for request logs.
 //
-// Logs are written into per-date SQLite files (data/logs/YYYY-MM-DD.db)
-// so retention is a `rm` instead of a slow DELETE, and so per-day files
-// stay small enough for fast admin queries. Cross-day queries use
-// SQLite ATTACH to union across all retained files transparently.
+// Logs are written into per-date SQLite files (logs/YYYY-MM-DD.db,
+// defaulting to the SQLite DB's directory + /logs) so retention is a
+// `rm` instead of a slow DELETE, and so per-day files stay small
+// enough for fast admin queries. Cross-day queries use SQLite ATTACH
+// to union across all retained files transparently.
 //
 // Only the Driver interface is exported; the SQLiteDriver is the
 // sole implementation today. The interface exists so future

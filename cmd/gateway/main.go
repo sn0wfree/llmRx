@@ -9,6 +9,7 @@ import (
 	_ "net/http/pprof" // registers pprof handlers on the default mux
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -152,7 +153,15 @@ func main() {
 	// set explicitly.
 	logDir := cfg.Server.LogDir
 	if logDir == "" {
-		logDir = "data/logs"
+		// Derive the default from the SQLite DSN's directory so the
+		// logs land next to the database: /data/llmrx.db yields
+		// /data/logs (not /data/data/logs under WORKDIR=/data), and
+		// a dev dsn of data/llmrx.db keeps the historical data/logs.
+		if cfg.Database.Driver == "sqlite" && cfg.Database.DSN != "" {
+			logDir = filepath.Join(filepath.Dir(cfg.Database.DSN), "logs")
+		} else {
+			logDir = "data/logs"
+		}
 	}
 	logBackend := cfg.Server.LogstoreBackend
 	if logBackend == "" {

@@ -27,7 +27,7 @@ type ServerConfig struct {
 	LogLevel         string `yaml:"log_level"`
 	AdminPassword    string `yaml:"admin_password"`
 	LogRetentionDays int    `yaml:"log_retention_days"`
-	LogDir           string `yaml:"log_dir"` // default "data/logs"
+	LogDir           string `yaml:"log_dir"` // default: next to the SQLite DB (<dsn dir>/logs)
 	// LogstoreBackend selects the log storage driver: "sqlite"
 	// (per-date files), "postgres" (shared table, cluster mode) or
 	// "" (default: follow database.driver).

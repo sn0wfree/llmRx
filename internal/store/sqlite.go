@@ -225,9 +225,10 @@ func (s *dbStore) migrate() error {
 			created_at INTEGER NOT NULL
 		)`,
 		// Note: the logs table is intentionally absent. Logs now live
-		// in per-date files under data/logs/YYYY-MM-DD.db via the
-		// logstore package. CreateLog/QueryLogs/etc. on this Store
-		// delegate there (see SetLogStore).
+		// in per-date files under logs/YYYY-MM-DD.db (defaulting to
+		// the SQLite DB's directory) via the logstore package.
+		// CreateLog/QueryLogs/etc. on this Store delegate there (see
+		// SetLogStore).
 		`CREATE INDEX IF NOT EXISTS idx_keys_channel ON keys(channel_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_tokens_plan ON tokens(plan_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_users_session_exp ON users(session_exp) WHERE session_exp > 0`,
