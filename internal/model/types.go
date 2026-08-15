@@ -189,6 +189,42 @@ type User struct {
 	CreatedAt    time.Time  `json:"created_at"`
 }
 
+// RedeemCodeKind distinguishes invite codes (registration gate) from
+// top-up codes (add budget to a plan).
+type RedeemCodeKind string
+
+const (
+	RedeemKindInvite RedeemCodeKind = "invite"
+	RedeemKindTopup  RedeemCodeKind = "topup"
+)
+
+// RedeemCode is a single-use code: kind=invite gates registration
+// (and grants initial_quota), kind=topup adds amount_usd to a
+// plan's budget. Codes are created by an admin and consumed once.
+type RedeemCode struct {
+	ID int64 `json:"id"`
+	// Code is the redeemable string, e.g. "RXM-ABCD1234".
+	Code string `json:"code"`
+	// Kind: "invite" (registration gate) or "topup" (add budget).
+	Kind RedeemCodeKind `json:"kind"`
+	// AmountUSD is the budget added on redemption (topup codes).
+	AmountUSD float64 `json:"amount_usd"`
+	// InitialQuota is the plan budget granted at registration
+	// (invite codes, configurable, default 5).
+	InitialQuota float64 `json:"initial_quota"`
+	// Role granted to the registering user (invite codes).
+	Role UserRole `json:"role"`
+	// CreatedBy is the admin user id that generated the code.
+	CreatedBy int64 `json:"created_by"`
+	// ExpiresAt zero = never expires.
+	ExpiresAt time.Time `json:"expires_at"`
+	// UsedBy / UsedAt zero = unused.
+	UsedBy int64     `json:"used_by"`
+	UsedAt time.Time `json:"used_at"`
+	// CreatedAt records generation time.
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type Log struct {
 	ID               int64  `json:"id"`
 	TokenID          int64  `json:"token_id"`

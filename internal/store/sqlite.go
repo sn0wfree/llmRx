@@ -231,6 +231,20 @@ func (s *dbStore) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_keys_channel ON keys(channel_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_tokens_plan ON tokens(plan_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_users_session_exp ON users(session_exp) WHERE session_exp > 0`,
+		`CREATE TABLE IF NOT EXISTS redeem_codes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			code TEXT UNIQUE NOT NULL,
+			kind TEXT NOT NULL DEFAULT 'invite',
+			amount_usd REAL NOT NULL DEFAULT 0,
+			initial_quota REAL NOT NULL DEFAULT 5,
+			role INTEGER NOT NULL DEFAULT 0,
+			created_by INTEGER NOT NULL DEFAULT 0,
+			expires_at INTEGER NOT NULL DEFAULT 0,
+			used_by INTEGER NOT NULL DEFAULT 0,
+			used_at INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_redeem_codes_kind ON redeem_codes(kind)`,
 		`CREATE TABLE IF NOT EXISTS alerts (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
@@ -521,7 +535,15 @@ func (s *dbStore) addColumnIfMissing(table, column, decl string) error {
 	return err
 }
 
-func toUnix(t time.Time) int64   { return t.Unix() }
+// toUnix maps a time to epoch seconds; zero values (never set)
+// become 0 so "0 means unset/never" semantics hold in SQL.
+func toUnix(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
+
 func fromUnix(s int64) time.Time { return time.Unix(s, 0).UTC() }
 
 func encodeStrings(xs []string) string {
