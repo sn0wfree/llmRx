@@ -403,6 +403,10 @@ def main():
     parser.add_argument("--samples", default=None, help="Samples JSONL for extra features")
     parser.add_argument("--output-dir", default="data/learned-router/")
     parser.add_argument("--max-features", type=int, default=3000)
+    parser.add_argument("--min-samples", type=int, default=50,
+                        help="Minimum labeled samples (prototype runs can lower this)")
+    parser.add_argument("--loocv", action="store_true",
+                        help="Leave-one-out cross validation (small datasets)")
     args = parser.parse_args()
 
     print("Loading data...")
@@ -413,14 +417,20 @@ def main():
     data = [d for d in data if d.get("best_model")]
     print(f"After filtering: {len(data)} samples")
 
-    if len(data) < 50:
-        print("Error: need at least 50 labeled samples", file=sys.stderr)
+    if len(data) < args.min_samples:
+        print(f"Error: need at least {args.min_samples} labeled samples", file=sys.stderr)
         sys.exit(1)
 
     # Build features
     print("Building features...")
     X, y, tfidf, struct_names, unique_models, model_to_idx = build_features_and_labels(data)
     print(f"Feature matrix: {X.shape} ({len(unique_models)} classes)")
+
+    if args.loocv:
+        print("\nLeave-one-out cross validation...")
+        run_loocv(X, y, unique_models)
+        print("LOOCV done (prototype — no model exported)")
+        return
 
     # Train
     print("\nTraining model...")
@@ -435,6 +445,57 @@ def main():
     )
 
     print("\nDone!")
+
+
+def run_loocv(X, y, unique_models):
+    """Leave-one-out cross validation for small datasets.
+
+    Trains a small LGBM (or RandomForest fallback) on n-1 samples and
+    predicts the held-out one, reporting accuracy + per-class stats.
+    """
+    from sklearn.model_selection import LeaveOneOut
+    from sklearn.metrics import accuracy_score, classification_report
+
+    loo = LeaveOneOut()
+    y_true, y_pred = [], []
+    try:
+        import lightgbm as lgb
+    except ImportError:
+        lgb = None
+
+    for train_idx, test_idx in loo.split(X):
+        X_tr, X_te = X[train_idx], X[test_idx]
+        y_tr, y_te = y[train_idx], y[test_idx]
+        if lgb is not None:
+            dtr = lgb.Dataset(X_tr, label=y_tr)
+            m = lgb.train({
+                "objective": "multiclass",
+                "num_class": len(unique_models),
+                "metric": "multi_logloss",
+                "num_leaves": 15,
+                "learning_rate": 0.1,
+                "min_child_samples": 3,
+                "verbose": -1,
+            }, dtr, num_boost_round=50)
+            p = int(np.argmax(m.predict(X_te)))
+        else:
+            from sklearn.ensemble import RandomForestClassifier
+            m = RandomForestClassifier(
+                n_estimators=100, max_depth=6, random_state=42, n_jobs=-1,
+            )
+            m.fit(X_tr, y_tr)
+            p = int(m.predict(X_te)[0])
+        y_true.append(int(y_te[0]))
+        y_pred.append(p)
+
+    acc = accuracy_score(y_true, y_pred)
+    print(f"LOOCV accuracy: {acc:.3f} ({sum(1 for a,b in zip(y_true,y_pred) if a==b)}/{len(y_true)})")
+    print("Per-class (model -> precision/recall/f1):")
+    print(classification_report(
+        y_true, y_pred,
+        target_names=[unique_models[i] for i in sorted(set(y_true + y_pred))],
+        zero_division=0,
+    ))
 
 
 if __name__ == "__main__":
