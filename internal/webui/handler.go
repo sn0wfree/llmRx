@@ -75,6 +75,8 @@ func (h *Handler) Routes() http.Handler {
 		r.Use(SessionMiddleware(h.store))
 		r.Use(RequireRole(model.RoleUser))
 		r.Get("/me", h.MePage)
+		r.Get("/me/usage", h.MeUsagePage)
+		r.Get("/me/topup", h.MeTopupPage)
 		r.Get("/me/export.csv", h.MeUsageExportCSV)
 	})
 

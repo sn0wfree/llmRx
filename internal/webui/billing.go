@@ -25,8 +25,7 @@ func (h *Handler) RegisterPage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// MePage renders the signed-in user's account page: API key, plan
-// budget and the top-up redemption form.
+// MePage renders the signed-in user's home page: API key and balance.
 func (h *Handler) MePage(w http.ResponseWriter, r *http.Request) {
 	user := getUser(r)
 	me, err := h.userBillingView(user)
@@ -35,7 +34,34 @@ func (h *Handler) MePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Self-service usage summary + daily trend for the signed-in user.
+	// Today's summary for the quick overview card.
+	now := time.Now().UTC()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).Unix()
+	ids := h.userTokenIDs(user.ID)
+	todaySummary := h.summarize(ids, todayStart)
+
+	data := map[string]any{
+		"Body":         "me_body",
+		"Title":        "首页 · llmRx",
+		"User":         userToView(user),
+		"Me":           me,
+		"TodaySummary": todaySummary,
+		"BaseURL":      "http://" + r.Host,
+	}
+	if err := h.renderer.Render(w, "me_body", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// MeUsagePage renders the signed-in user's detailed usage statistics.
+func (h *Handler) MeUsagePage(w http.ResponseWriter, r *http.Request) {
+	user := getUser(r)
+	me, err := h.userBillingView(user)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	rangeVal := r.URL.Query().Get("range")
 	now := time.Now().UTC()
 	from := usageRange(now, rangeVal)
@@ -52,18 +78,36 @@ func (h *Handler) MePage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]any{
-		"Body":       "me_body",
-		"Title":      "我的账户 · llmRx",
+		"Body":       "me_usage_body",
+		"Title":      "用量统计 · llmRx",
 		"User":       userToView(user),
 		"Me":         me,
 		"Range":      rangeVal,
 		"Summary":    summary,
 		"ByModel":    byModel,
 		"SeriesJSON": seriesJSON,
-		// BaseURL is the gateway's own origin for client config.
-		"BaseURL": "http://" + r.Host,
 	}
-	if err := h.renderer.Render(w, "me_body", data); err != nil {
+	if err := h.renderer.Render(w, "me_usage_body", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// MeTopupPage renders the redemption code page.
+func (h *Handler) MeTopupPage(w http.ResponseWriter, r *http.Request) {
+	user := getUser(r)
+	me, err := h.userBillingView(user)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	data := map[string]any{
+		"Body":  "me_topup_body",
+		"Title": "充值 · llmRx",
+		"User":  userToView(user),
+		"Me":    me,
+	}
+	if err := h.renderer.Render(w, "me_topup_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -125,13 +169,14 @@ func (h *Handler) RedeemCodesPage(w http.ResponseWriter, r *http.Request) {
 
 // meView is the account page data.
 type meView struct {
-	Username  string         `json:"username"`
-	APIKey    string         `json:"api_key"`
-	PlanID    int64          `json:"plan_id"`
-	PlanName  string         `json:"plan_name"`
-	BudgetUSD float64        `json:"budget_usd"`
-	UsedUSD   float64        `json:"used_usd"`
-	Role      model.UserRole `json:"role"`
+	Username    string         `json:"username"`
+	APIKey      string         `json:"api_key"`
+	PlanID      int64          `json:"plan_id"`
+	PlanName    string         `json:"plan_name"`
+	BudgetUSD   float64        `json:"budget_usd"`
+	UsedUSD     float64        `json:"used_usd"`
+	RemainingUSD float64       `json:"remaining_usd"`
+	Role        model.UserRole `json:"role"`
 }
 
 // userBillingView resolves the user's dedicated token + plan (the
@@ -157,5 +202,6 @@ func (h *Handler) userBillingView(u *model.User) (*meView, error) {
 	view.PlanName = plan.Name
 	view.BudgetUSD = plan.BudgetUSD
 	view.UsedUSD = plan.UsedUSD
+	view.RemainingUSD = plan.BudgetUSD - plan.UsedUSD
 	return view, nil
 }
