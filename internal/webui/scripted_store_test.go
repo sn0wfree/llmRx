@@ -155,6 +155,9 @@ func (s *ScriptedStore) GetDrainedChannels() ([]store.DrainedChannel, error) {
 	}
 	return s.underlying.GetDrainedChannels()
 }
+func (s *ScriptedStore) RecordChannelSpend(channelID int64, cost float64) error {
+	return s.underlying.RecordChannelSpend(channelID, cost)
+}
 func (s *ScriptedStore) GetKeys(channelID int64) ([]model.Key, error) {
 	if s.GetKeysFunc != nil {
 		return s.GetKeysFunc(channelID)

@@ -66,6 +66,37 @@
 </div>
 {{end}}
 
+{{if .ChannelSpend}}
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+  <h2 class="text-base font-medium text-gray-900 mb-3">通道花费 Top 10</h2>
+  <div class="overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead>
+        <tr class="border-b border-gray-200 text-left text-gray-500">
+          <th class="pb-2 font-medium">通道</th>
+          <th class="pb-2 font-medium text-right">请求数</th>
+          <th class="pb-2 font-medium text-right">Token</th>
+          <th class="pb-2 font-medium text-right">实际成本</th>
+          <th class="pb-2 font-medium text-right">计费成本</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .ChannelSpend}}
+        <tr class="border-b border-gray-100">
+          <td class="py-2 font-medium text-gray-900">{{.Name}}</td>
+          <td class="py-2 text-right text-gray-600">{{.Requests}}</td>
+          <td class="py-2 text-right text-gray-600">{{.Tokens}}</td>
+          <td class="py-2 text-right text-gray-600">${{printf "%.6f" .RealCost}}</td>
+          <td class="py-2 text-right text-gray-600">${{printf "%.6f" .BilledCost}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  <a href="/admin/analytics" class="mt-3 inline-block text-xs text-blue-600 hover:underline">查看全部分析 →</a>
+</div>
+{{end}}
+
 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
   <div class="bg-white rounded-lg shadow p-6">
     <h2 class="text-base font-medium text-gray-900 mb-3">常用入口</h2>

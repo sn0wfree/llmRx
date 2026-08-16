@@ -153,6 +153,12 @@ func (e *LogEmitter) Emit(ctx context.Context, tokenID int64, modelName string, 
 			logging.Warn("persist log failed", logging.F("error", err.Error()))
 		}
 	}
+	// Track per-channel cumulative spend for fast dashboard queries.
+	if e.store != nil && route.Channel.ID > 0 && real > 0 {
+		if err := e.store.RecordChannelSpend(route.Channel.ID, real); err != nil {
+			logging.Warn("record channel spend failed", logging.F("error", err.Error()))
+		}
+	}
 	if e.logBroker != nil {
 		e.logBroker.Publish(entry)
 	}

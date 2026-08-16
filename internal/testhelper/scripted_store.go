@@ -31,6 +31,7 @@ type ScriptedStore struct {
 	UpdateChannelFunc      func(ch *model.Channel) error
 	DeleteChannelFunc      func(id int64) error
 	GetDrainedChannelsFunc func() ([]store.DrainedChannel, error)
+	RecordChannelSpendFunc func(channelID int64, cost float64) error
 
 	// Keys
 	GetKeysFunc   func(channelID int64) ([]model.Key, error)
@@ -188,6 +189,10 @@ func (s *ScriptedStore) GetDrainedChannels() ([]store.DrainedChannel, error) {
 		return s.GetDrainedChannelsFunc()
 	}
 	return s.underlying.GetDrainedChannels()
+}
+
+func (s *ScriptedStore) RecordChannelSpend(channelID int64, cost float64) error {
+	return s.underlying.RecordChannelSpend(channelID, cost)
 }
 
 // --- Keys ---

@@ -441,6 +441,7 @@ func ensureLogSchema(db *sql.DB) error {
 			created_at INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_logs_created ON logs(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_logs_channel ON logs(channel_id)`,
 	}
 	for _, q := range stmts {
 		if _, err := db.Exec(q); err != nil {
@@ -877,7 +878,7 @@ func (d *SQLiteDriver) TopByField(filter QueryFilter, field string, limit int, d
 	var sb strings.Builder
 	sb.WriteString("SELECT ")
 	sb.WriteString(field)
-	sb.WriteString(", COUNT(*), COALESCE(SUM(prompt_tokens+completion_tokens),0), COALESCE(SUM(billed_cost_usd),0) FROM (")
+	sb.WriteString(", COUNT(*), COALESCE(SUM(prompt_tokens+completion_tokens),0), COALESCE(SUM(billed_cost_usd),0), COALESCE(SUM(real_cost_usd),0) FROM (")
 	for i := range days {
 		if i > 0 {
 			sb.WriteString(" UNION ALL ")
@@ -888,7 +889,7 @@ func (d *SQLiteDriver) TopByField(filter QueryFilter, field string, limit int, d
 		}
 		sb.WriteString("SELECT ")
 		sb.WriteString(field)
-		sb.WriteString(", prompt_tokens, completion_tokens, billed_cost_usd FROM ")
+		sb.WriteString(", prompt_tokens, completion_tokens, billed_cost_usd, real_cost_usd FROM ")
 		sb.WriteString(source)
 	}
 	sb.WriteString(")")
@@ -916,9 +917,9 @@ func (d *SQLiteDriver) TopByField(filter QueryFilter, field string, limit int, d
 		var scanErr error
 		switch field {
 		case "model":
-			scanErr = rows.Scan(&label, &m.Count, &m.Tokens, &m.Cost)
+			scanErr = rows.Scan(&label, &m.Count, &m.Tokens, &m.Cost, &m.RealCost)
 		default:
-			scanErr = rows.Scan(&labelI, &m.Count, &m.Tokens, &m.Cost)
+			scanErr = rows.Scan(&labelI, &m.Count, &m.Tokens, &m.Cost, &m.RealCost)
 		}
 		if scanErr != nil {
 			return nil, scanErr

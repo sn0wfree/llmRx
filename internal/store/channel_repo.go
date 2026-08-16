@@ -9,4 +9,5 @@ type ChannelRepository interface {
 	UpdateChannel(ch *model.Channel) error
 	DeleteChannel(id int64) error
 	GetDrainedChannels() ([]DrainedChannel, error)
+	RecordChannelSpend(channelID int64, cost float64) error
 }

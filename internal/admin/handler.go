@@ -158,6 +158,7 @@ func (h *Handler) Routes() http.Handler {
 		r.Post("/channels/{id}/keys", h.CreateKey)
 		r.Delete("/channels/{id}/keys/{keyId}", h.DeleteKey)
 		r.Post("/channels/{id}/fetch-models", h.FetchModels)
+		r.Get("/channels/{id}/spend", h.ChannelSpend)
 		r.Get("/providers", h.ListProviders)
 		r.Post("/providers", h.CreateProvider)
 		r.Delete("/providers/{id}", h.DeleteProvider)
@@ -650,6 +651,46 @@ func (h *Handler) FetchModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+}
+
+func (h *Handler) ChannelSpend(w http.ResponseWriter, r *http.Request) {
+	id, err := pathInt(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	ch, err := h.store.GetChannel(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	// Aggregate from logs for the requested time range.
+	filter := logFilterFromQuery(r)
+	filter.ChannelID = id
+	data, err := h.logStore.TopByField(filter, "channel_id", 1, nil)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	realCost := 0.0
+	billedCost := 0.0
+	requests := int64(0)
+	tokens := int64(0)
+	if len(data) > 0 {
+		realCost = data[0].RealCost
+		billedCost = data[0].Cost
+		requests = data[0].Count
+		tokens = data[0].Tokens
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"channel_id":    id,
+		"channel_name":  ch.Name,
+		"total_cost_usd": ch.TotalCostUSD,
+		"log_real_cost":  realCost,
+		"log_billed_cost": billedCost,
+		"requests":       requests,
+		"tokens":         tokens,
+	})
 }
 
 // ---------- providers ----------
@@ -1332,7 +1373,24 @@ func (h *Handler) AnalyticsByModel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) AnalyticsByChannel(w http.ResponseWriter, r *http.Request) {
-	h.writeNamed(w, r, "channel_id")
+	limit := atoiOr(r.URL.Query().Get("limit"), 10)
+	data, err := h.logStore.TopByField(logFilterFromQuery(r), "channel_id", limit, nil)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// Resolve channel IDs to names for readability.
+	channels, _ := h.store.GetChannels()
+	nameMap := make(map[int64]string, len(channels))
+	for _, ch := range channels {
+		nameMap[ch.ID] = ch.Name
+	}
+	for i := range data {
+		if id, err := strconv.ParseInt(data[i].Label, 10, 64); err == nil {
+			data[i].ChannelName = nameMap[id]
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": data})
 }
 
 func (h *Handler) AnalyticsByToken(w http.ResponseWriter, r *http.Request) {

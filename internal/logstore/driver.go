@@ -125,10 +125,12 @@ type SeriesBucket struct {
 
 // NamedMetric is a (label, value) pair used by TopByField.
 type NamedMetric struct {
-	Label  string  `json:"label"`
-	Count  int64   `json:"count"`
-	Tokens int64   `json:"tokens"`
-	Cost   float64 `json:"cost"`
+	Label       string  `json:"label"`
+	Count       int64   `json:"count"`
+	Tokens      int64   `json:"tokens"`
+	Cost        float64 `json:"cost"`
+	RealCost    float64 `json:"real_cost_usd,omitempty"`
+	ChannelName string  `json:"channel_name,omitempty"`
 }
 
 // MaxAttachFiles caps how many files a single QueryAcross may

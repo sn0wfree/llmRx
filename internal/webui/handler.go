@@ -429,6 +429,45 @@ func (h *Handler) DashboardPage(w http.ResponseWriter, r *http.Request) {
 		"MCPCalls24h":    mcpCalls24h,
 		"MCPSpend24h":    mcpSpend24h,
 	}
+
+	// Per-channel spend for the dashboard card.
+	if len(channels) > 0 {
+		channelSpend, err := h.logStore.TopByField(logstore.QueryFilter{}, "channel_id", 10, nil)
+		if err == nil && len(channelSpend) > 0 {
+			// Resolve channel IDs to names.
+			nameMap := make(map[int64]string, len(channels))
+			for _, ch := range channels {
+				nameMap[ch.ID] = ch.Name
+			}
+			type channelSpendRow struct {
+				Name      string  `json:"name"`
+				Requests  int64   `json:"requests"`
+				Tokens    int64   `json:"tokens"`
+				RealCost  float64 `json:"real_cost"`
+				BilledCost float64 `json:"billed_cost"`
+			}
+			var spendRows []channelSpendRow
+			for _, m := range channelSpend {
+				name := m.ChannelName
+				if name == "" {
+					if id, err := strconv.ParseInt(m.Label, 10, 64); err == nil {
+						name = nameMap[id]
+					}
+				}
+				if name == "" {
+					name = "#" + m.Label
+				}
+				spendRows = append(spendRows, channelSpendRow{
+					Name:       name,
+					Requests:   m.Count,
+					Tokens:     m.Tokens,
+					RealCost:   m.RealCost,
+					BilledCost: m.Cost,
+				})
+			}
+			data["ChannelSpend"] = spendRows
+		}
+	}
 	if err := h.renderer.Render(w, "dashboard_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}

@@ -126,6 +126,7 @@ type Channel struct {
 	CachedInputDiscount float64              `json:"cached_input_discount"`
 	CircuitBreaker      CircuitBreakerConfig `json:"circuit_breaker"`
 	Status              ChannelStatus        `json:"status"`
+	TotalCostUSD        float64              `json:"total_cost_usd"`
 	CreatedAt           time.Time            `json:"created_at"`
 	UpdatedAt           time.Time            `json:"updated_at"`
 }

@@ -95,8 +95,10 @@ type anthropicContent struct {
 }
 
 type anthropicUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 }
 
 func (p *AnthropicProvider) Chat(ctx context.Context, req *ChatRequest, apiKey, baseURL string) (*ChatResponse, int, error) {
@@ -146,6 +148,9 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req *ChatRequest, apiKey, 
 			PromptTokens:     ar.Usage.InputTokens,
 			CompletionTokens: ar.Usage.OutputTokens,
 			TotalTokens:      ar.Usage.InputTokens + ar.Usage.OutputTokens,
+			PromptTokensDetails: &PromptTokensDetails{
+				CachedTokens: ar.Usage.CacheReadInputTokens,
+			},
 		},
 	}, resp.StatusCode, nil
 }
@@ -318,6 +323,9 @@ func (p *AnthropicProvider) StreamChat(ctx context.Context, req *ChatRequest, ap
 									Usage: &Usage{
 										PromptTokens:     d.Usage.InputTokens,
 										CompletionTokens: d.Usage.OutputTokens,
+										PromptTokensDetails: &PromptTokensDetails{
+											CachedTokens: d.Usage.CacheReadInputTokens,
+										},
 									},
 								}
 								select {

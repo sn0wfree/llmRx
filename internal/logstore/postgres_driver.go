@@ -285,7 +285,7 @@ func (p *PostgresDriver) TopByField(filter QueryFilter, field string, limit int,
 		args = append(args, dayArgs...)
 	}
 
-	q := "SELECT " + field + ", COUNT(*), COALESCE(SUM(prompt_tokens+completion_tokens),0), COALESCE(SUM(billed_cost_usd),0) FROM logs"
+	q := "SELECT " + field + ", COUNT(*), COALESCE(SUM(prompt_tokens+completion_tokens),0), COALESCE(SUM(billed_cost_usd),0), COALESCE(SUM(real_cost_usd),0) FROM logs"
 	if where != "" {
 		q += " WHERE " + where
 	}
@@ -305,9 +305,9 @@ func (p *PostgresDriver) TopByField(filter QueryFilter, field string, limit int,
 		var scanErr error
 		switch field {
 		case "model":
-			scanErr = rows.Scan(&label, &m.Count, &m.Tokens, &m.Cost)
+			scanErr = rows.Scan(&label, &m.Count, &m.Tokens, &m.Cost, &m.RealCost)
 		default:
-			scanErr = rows.Scan(&labelI, &m.Count, &m.Tokens, &m.Cost)
+			scanErr = rows.Scan(&labelI, &m.Count, &m.Tokens, &m.Cost, &m.RealCost)
 		}
 		if scanErr != nil {
 			return nil, scanErr

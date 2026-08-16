@@ -405,6 +405,9 @@ func (s *dbStore) migrate() error {
 	if err := s.addColumn("channels", "cached_input_discount", "REAL NOT NULL DEFAULT 0.1"); err != nil {
 		return err
 	}
+	if err := s.addColumn("channels", "total_cost_usd", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	if err := s.addColumn("tokens", "used_usd", "REAL NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
@@ -624,7 +627,7 @@ func decodeTiers(s string) map[string]model.TierConfig {
 // ---------------- Channels ----------------
 
 func (s *dbStore) GetChannels() ([]model.Channel, error) {
-	rows, err := s.query(`SELECT id, name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, created_at, updated_at FROM channels ORDER BY id`)
+	rows, err := s.query(`SELECT id, name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, total_cost_usd, created_at, updated_at FROM channels ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -641,7 +644,7 @@ func (s *dbStore) GetChannels() ([]model.Channel, error) {
 }
 
 func (s *dbStore) GetChannel(id int64) (*model.Channel, error) {
-	row := s.queryRow(`SELECT id, name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, created_at, updated_at FROM channels WHERE id = ?`, id)
+	row := s.queryRow(`SELECT id, name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, total_cost_usd, created_at, updated_at FROM channels WHERE id = ?`, id)
 	return scanChannel(row)
 }
 
@@ -690,6 +693,11 @@ func (s *dbStore) DeleteChannel(id int64) error {
 	return err
 }
 
+func (s *dbStore) RecordChannelSpend(channelID int64, cost float64) error {
+	_, err := s.exec(`UPDATE channels SET total_cost_usd = total_cost_usd + ? WHERE id = ?`, cost, channelID)
+	return err
+}
+
 func (s *dbStore) GetDrainedChannels() ([]DrainedChannel, error) {
 	rows, err := s.query(`SELECT c.id, c.name FROM channels c WHERE c.status = 1 AND NOT EXISTS (SELECT 1 FROM keys k WHERE k.channel_id = c.id AND k.status = 0)`)
 	if err != nil {
@@ -716,7 +724,8 @@ func scanChannel(r interface {
 	var created, updated int64
 	if err := r.Scan(&ch.ID, &ch.Name, &ch.Provider, &ch.Protocol, &ch.BaseURL,
 		&modelsJSON, &intentsJSON, &ch.Priority,
-		&ch.InputPrice, &ch.OutputPrice, &ch.CachedInputDiscount, &cbJSON, &status, &created, &updated); err != nil {
+		&ch.InputPrice, &ch.OutputPrice, &ch.CachedInputDiscount, &cbJSON, &status,
+		&ch.TotalCostUSD, &created, &updated); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
 		}
