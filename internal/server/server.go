@@ -19,6 +19,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/api"
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/cache"
+	"github.com/sn0wfree/llmRx/internal/cluster"
 	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/dialect"
 	"github.com/sn0wfree/llmRx/internal/guardrail"
@@ -80,6 +81,8 @@ type Server struct {
 	// so the BYOK manager can probe+register them. nil means
 	// strict 403 (legacy behaviour).
 	byokHook authmw.UnknownTokenHook
+	// clusterManager manages cluster nodes in multi-node mode.
+	clusterManager *cluster.Manager
 }
 
 // New wires the HTTP router. byokHook (optional) is invoked
@@ -526,6 +529,20 @@ func (s *Server) SetAlertManager(m *alert.Manager) {
 // (PG NOTIFY llmrx_reload). Called on local admin writes so other
 // replicas reload promptly; nil (default) is a no-op.
 func (s *Server) SetReloadNotifier(fn func()) { s.notifyFn = fn }
+
+// SetClusterManager sets the cluster manager for multi-node mode.
+// Must be called before Start() to register node API routes.
+func (s *Server) SetClusterManager(mgr *cluster.Manager) {
+	s.clusterManager = mgr
+	// 重新注册节点路由
+	if s.clusterManager != nil {
+		nodeAPI := cluster.NewAPIHandler(s.clusterManager)
+		s.engine.Group(func(r chi.Router) {
+			r.Use(cluster.InternalOnlyMiddleware)
+			r.Mount("/nodes", nodeAPI.Routes())
+		})
+	}
+}
 
 // fireNotify broadcasts a reload message to other replicas. Safe
 // to call on every admin write path.

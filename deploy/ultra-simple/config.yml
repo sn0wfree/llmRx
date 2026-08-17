@@ -1,0 +1,56 @@
+# llmRx 配置文件
+
+server:
+  port: 8787
+  log_level: info
+  request_timeout_sec: 300
+  allow_default_admin_password: true
+
+# 数据库配置
+database:
+  driver: postgres
+  dsn: postgres://llmrx:9d72f669258e970cfaf1d34eced94640@postgres:5432/llmrx?sslmode=disable
+
+# 存储模式: single (SQLite) | cluster (PostgreSQL + 自动注册)
+storage:
+  mode: cluster
+
+# 单例模式配置
+# sqlite:
+#   dsn: /data/llmrx.db
+
+# 多例模式配置
+cluster:
+  # 当前节点配置
+  node:
+    id: "llmrx-1"
+    address: "llmrx-1"
+    port: 8787
+    role: "primary"
+    node_type: "all"
+  
+  # 种子节点 (用于初始发现)
+  seed_nodes:
+    - "llmrx-1:8787"
+  
+  # 自动注册配置
+  auto_register:
+    enabled: true
+    heartbeat_interval: 10s
+    heartbeat_timeout: 5s
+    node_timeout: 30s
+
+# 密钥配置
+secrets:
+  key_master_env: LLMRX_KEY_MASTER
+  dev_allow_plaintext_keys: true
+
+# BYOK 配置
+byok:
+  enabled: false
+
+# 自动路由配置
+auto_router:
+  task_source: auto
+  session_continuation: true
+  continuation_threshold: 100000

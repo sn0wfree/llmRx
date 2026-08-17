@@ -17,6 +17,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/alert/channels"
 	"github.com/sn0wfree/llmRx/internal/auth"
 	"github.com/sn0wfree/llmRx/internal/broker"
+	"github.com/sn0wfree/llmRx/internal/cluster"
 	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/dialect"
 	"github.com/sn0wfree/llmRx/internal/logging"
@@ -426,6 +427,49 @@ func main() {
 
 	srv := server.New(cfg, *cfgPath, eng, cp, st, logStore, tokCache, logBroker, rt, "/data/llmrx.key", byokHook, lim)
 	srv.SetAlertManager(alertMgr)
+	
+	// 多例模式: 初始化 cluster 包
+	if cfg.Database.Driver == "postgres" {
+		clusterCfg := &cluster.ClusterConfig{
+			Database: cluster.DatabaseConfig{
+				URL: cfg.Database.DSN,
+			},
+			Node: cluster.NodeConfig{
+				ID:       getEnvOrDefault("NODE_ID", "llmrx-1"),
+				Address:  getEnvOrDefault("NODE_ADDRESS", "localhost"),
+				Port:     cfg.Server.Port,
+				Role:     getEnvOrDefault("NODE_ROLE", "replica"),
+				NodeType: getEnvOrDefault("NODE_TYPE", "api"),
+			},
+			SeedNodes: parseSeedNodes(os.Getenv("SEED_NODES")),
+			AutoRegister: cluster.AutoRegisterConfig{
+				Enabled:           true,
+				HeartbeatInterval: 10 * time.Second,
+				HeartbeatTimeout:  5 * time.Second,
+				NodeTimeout:       30 * time.Second,
+			},
+		}
+		
+		clusterMgr := cluster.NewManager(clusterCfg)
+		srv.SetClusterManager(clusterMgr)
+		
+		// 启动心跳客户端
+		heartbeatClient := cluster.NewHeartbeatClient(
+			clusterCfg.Node.ID,
+			clusterCfg.Node.Address,
+			clusterCfg.Node.Port,
+			clusterCfg.SeedNodes,
+		)
+		go heartbeatClient.Start()
+		
+		// 启动健康检查器
+		go clusterMgr.StartHealthChecker(30 * time.Second)
+		
+		logging.Info("cluster mode: initialized",
+			logging.F("node_id", clusterCfg.Node.ID),
+			logging.F("role", clusterCfg.Node.Role),
+		)
+	}
 
 	// Cross-replica config propagation (P12 M2): NOTIFY listener +
 	// 30s polling fallback. Only in cluster mode.
@@ -719,4 +763,29 @@ func seedChannels(st store.Store, cfg *config.Config) error {
 		logging.Info("seed imported channel", logging.F("channel", cc.Name), logging.F("keys", len(cc.Keys)))
 	}
 	return nil
+}
+
+// getEnvOrDefault 从环境变量获取值，如果为空则返回默认值
+func getEnvOrDefault(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+// parseSeedNodes 解析种子节点列表
+func parseSeedNodes(nodesStr string) []string {
+	if nodesStr == "" {
+		return nil
+	}
+	var nodes []string
+	start := 0
+	for i := 0; i < len(nodesStr); i++ {
+		if nodesStr[i] == ',' {
+			nodes = append(nodes, nodesStr[start:i])
+			start = i + 1
+		}
+	}
+	nodes = append(nodes, nodesStr[start:])
+	return nodes
 }

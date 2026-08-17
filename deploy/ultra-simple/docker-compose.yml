@@ -1,0 +1,157 @@
+# 多例模式部署: 1 Nginx + 2 llmRx + 1 PostgreSQL
+# 支持自动注册和动态扩缩容
+# 硬件需求: 2核 2GB 内存
+
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:15-alpine
+    container_name: llmrx-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: llmrx
+      POSTGRES_USER: llmrx
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    command: >
+      postgres
+      -c shared_buffers=128MB
+      -c effective_cache_size=256MB
+      -c work_mem=8MB
+      -c maintenance_work_mem=64MB
+      -c max_connections=100
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c max_worker_processes=4
+      -c max_parallel_workers_per_gather=2
+      -c max_parallel_workers=4
+      -c max_parallel_maintenance_workers=2
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U llmrx"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - llmrx-net
+
+  # llmRx 节点1 (主节点)
+  llmrx-1:
+    image: llmrx:cluster
+    container_name: llmrx-1
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./data/llmrx-1:/data
+      - ./config.yml:/data/config.yml:ro
+    environment:
+      - STORAGE_MODE=cluster
+      - DATABASE_DRIVER=postgres
+      - DATABASE_URL=postgres://llmrx:${DB_PASSWORD}@postgres:5432/llmrx?sslmode=disable
+      - SESSION_SECRET=${SESSION_SECRET}
+      - NODE_ID=llmrx-1
+      - NODE_ADDRESS=llmrx-1
+      - NODE_PORT=8787
+      - NODE_ROLE=primary
+      - NODE_TYPE=all
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.2'
+          memory: 128M
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "llmRx", "-healthcheck", "127.0.0.1:8787"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - llmrx-net
+
+  # llmRx 节点2 (从节点)
+  llmrx-2:
+    image: llmrx:cluster
+    container_name: llmrx-2
+    restart: unless-stopped
+    ports:
+      - "8788:8787"
+    volumes:
+      - ./data/llmrx-2:/data
+      - ./config.yml:/data/config.yml:ro
+    environment:
+      - STORAGE_MODE=cluster
+      - DATABASE_DRIVER=postgres
+      - DATABASE_URL=postgres://llmrx:${DB_PASSWORD}@postgres:5432/llmrx?sslmode=disable
+      - SESSION_SECRET=${SESSION_SECRET}
+      - NODE_ID=llmrx-2
+      - NODE_ADDRESS=llmrx-2
+      - NODE_PORT=8787
+      - NODE_ROLE=replica
+      - NODE_TYPE=api
+      - SEED_NODES=llmrx-1:8787
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.2'
+          memory: 128M
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "llmRx", "-healthcheck", "127.0.0.1:8787"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - llmrx-net
+
+  # Nginx 负载均衡
+  nginx:
+    image: nginx:alpine
+    container_name: llmrx-nginx
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./upstream.conf:/etc/nginx/conf.d/upstream.conf:rw
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    depends_on:
+      - llmrx-1
+      - llmrx-2
+    networks:
+      - llmrx-net
+
+networks:
+  llmrx-net:
+    driver: bridge
