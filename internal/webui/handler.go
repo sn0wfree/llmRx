@@ -60,6 +60,20 @@ func (h *Handler) SetMCPClientManager(m *mcp.ClientManager) { h.mcpClientMgr = m
 
 func (h *Handler) SetOAuthManager(o *mcp.OAuthManager) { h.oauth = o }
 
+// UserRoutes returns the http handler that serves /account/* for regular users.
+func (h *Handler) UserRoutes() http.Handler {
+	r := chi.NewRouter()
+	r.Use(SessionMiddleware(h.store))
+	r.Use(RequireRole(model.RoleUser))
+
+	r.Get("/", h.MePage)
+	r.Get("/usage", h.MeUsagePage)
+	r.Get("/topup", h.MeTopupPage)
+	r.Get("/export.csv", h.MeUsageExportCSV)
+
+	return r
+}
+
 // Routes returns the http handler that serves /admin/*.
 func (h *Handler) Routes() http.Handler {
 	r := chi.NewRouter()
@@ -68,17 +82,6 @@ func (h *Handler) Routes() http.Handler {
 	r.Get("/login", h.LoginPage)
 	r.Post("/login", h.LoginSubmit)
 	r.Get("/register", h.RegisterPage)
-
-	// Any authenticated user (RoleUser +) — the self-service account
-	// page (API key, budget, redemption).
-	r.Group(func(r chi.Router) {
-		r.Use(SessionMiddleware(h.store))
-		r.Use(RequireRole(model.RoleUser))
-		r.Get("/me", h.MePage)
-		r.Get("/me/usage", h.MeUsagePage)
-		r.Get("/me/topup", h.MeTopupPage)
-		r.Get("/me/export.csv", h.MeUsageExportCSV)
-	})
 
 	// Authenticated — every route below manages gateway resources
 	// (channels, upstream keys, tokens, MCP servers, alerts). A
@@ -335,7 +338,7 @@ func (h *Handler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// HTMX expects 200 + OOB swap to redirect (we use JS in template).
-	// data-role lets the client send RoleUser to /admin/me and
+	// data-role lets the client send RoleUser to /account and
 	// admins to /admin/dashboard.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)

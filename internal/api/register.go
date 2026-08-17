@@ -185,7 +185,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Auto-login: issue a session cookie so the user lands on
-	// /admin/me already authenticated.
+	// /account already authenticated.
 	tok := newSessionToken()
 	exp := time.Now().Add(sessionTTL).UTC()
 	res.User.SessionToken = tok

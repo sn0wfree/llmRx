@@ -6,10 +6,10 @@
     </div>
     <div class="flex gap-1 text-sm">
       {{$r := or .Range ""}}
-      <a href="/admin/me/usage?range=24h" class="px-3 py-1.5 rounded-md {{if eq $r "24h"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">24h</a>
-      <a href="/admin/me/usage?range=7d" class="px-3 py-1.5 rounded-md {{if eq $r "7d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">7d</a>
-      <a href="/admin/me/usage?range=30d" class="px-3 py-1.5 rounded-md {{if eq $r "30d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">30d</a>
-      <a href="/admin/me/usage" class="px-3 py-1.5 rounded-md {{if eq $r ""}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">全部</a>
+      <a href="/account/usage?range=24h" class="px-3 py-1.5 rounded-md {{if eq $r "24h"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">24h</a>
+      <a href="/account/usage?range=7d" class="px-3 py-1.5 rounded-md {{if eq $r "7d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">7d</a>
+      <a href="/account/usage?range=30d" class="px-3 py-1.5 rounded-md {{if eq $r "30d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">30d</a>
+      <a href="/account/usage" class="px-3 py-1.5 rounded-md {{if eq $r ""}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">全部</a>
     </div>
   </div>
 
@@ -70,8 +70,8 @@
   {{end}}
 
   <div class="flex gap-3">
-    <a href="/admin/me/export.csv?range={{.Range}}" class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-sm font-medium">导出 CSV</a>
-    <a href="/admin/me" class="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 text-sm font-medium">← 返回首页</a>
+    <a href="/account/export.csv?range={{.Range}}" class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-sm font-medium">导出 CSV</a>
+    <a href="/account" class="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 text-sm font-medium">← 返回首页</a>
   </div>
 </div>
 <script>

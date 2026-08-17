@@ -50,7 +50,7 @@ document.getElementById('register-form').addEventListener('submit', async (e) =>
     });
     const data = await resp.json();
     if (resp.ok) {
-      window.location.href = '/admin/me';
+      window.location.href = '/account';
       return;
     }
     errBox.innerHTML = '<div class="p-3 rounded bg-red-100 text-red-800 border border-red-200 text-sm">' +

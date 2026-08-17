@@ -40,11 +40,24 @@ func (h *Handler) MePage(w http.ResponseWriter, r *http.Request) {
 	ids := h.userTokenIDs(user.ID)
 	todaySummary := h.summarize(ids, todayStart)
 
+	// Recent activity: last 5 requests for the dashboard table.
+	var recentLogs []model.Log
+	if len(ids) > 0 {
+		logs, _, qerr := h.logStore.Query(logstore.QueryFilter{
+			TokenIDs: ids,
+			Limit:    5,
+		}, nil)
+		if qerr == nil {
+			recentLogs = logs
+		}
+	}
+
 	data := map[string]any{
 		"Body":         "me_body",
 		"Title":        "首页 · llmRx",
 		"User":         userToView(user),
 		"Me":           me,
+		"RecentLogs":   recentLogs,
 		"TodaySummary": todaySummary,
 		"BaseURL":      "http://" + r.Host,
 	}

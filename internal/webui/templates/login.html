@@ -44,7 +44,7 @@ document.body.addEventListener('htmx:afterRequest', function(evt) {
     var el = document.getElementById('login-error');
     var role = parseInt(el && el.dataset.role ? el.dataset.role : 0);
     // RoleUser (0) goes to their account page; admins to the dashboard.
-    window.location.href = role >= 10 ? '/admin/dashboard' : '/admin/me';
+    window.location.href = role >= 10 ? '/admin/dashboard' : '/account';
   }
 });
 </script>{{end}}

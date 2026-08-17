@@ -343,6 +343,7 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	}
 	webUI.SetMCPClientManager(s.mcpClientMgr)
 	webUI.SetOAuthManager(oauthMgr)
+	s.engine.Mount("/account", webUI.UserRoutes())
 	s.engine.Mount("/admin", webUI.Routes())
 	s.engine.Mount("/admin/api/v1", adminHandler.Routes())
 }

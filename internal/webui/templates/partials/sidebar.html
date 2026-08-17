@@ -6,15 +6,15 @@
   </div>
   <nav class="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
     {{if lt .User.Role 10}}
-    <a href="/admin/me" class="flex items-center px-3 py-2 text-sm font-medium rounded-md {{if eq .Active "me"}}bg-blue-50 text-blue-700{{else}}text-gray-700 hover:bg-gray-50{{end}}">
+    <a href="/account" class="flex items-center px-3 py-2 text-sm font-medium rounded-md {{if eq .Active "me"}}bg-blue-50 text-blue-700{{else}}text-gray-700 hover:bg-gray-50{{end}}">
       <svg class="w-4 h-4 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
       首页
     </a>
-    <a href="/admin/me/usage" class="flex items-center px-3 py-2 text-sm font-medium rounded-md {{if eq .Active "me-usage"}}bg-blue-50 text-blue-700{{else}}text-gray-700 hover:bg-gray-50{{end}}">
+    <a href="/account/usage" class="flex items-center px-3 py-2 text-sm font-medium rounded-md {{if eq .Active "me-usage"}}bg-blue-50 text-blue-700{{else}}text-gray-700 hover:bg-gray-50{{end}}">
       <svg class="w-4 h-4 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
       用量
     </a>
-    <a href="/admin/me/topup" class="flex items-center px-3 py-2 text-sm font-medium rounded-md {{if eq .Active "me-topup"}}bg-blue-50 text-blue-700{{else}}text-gray-700 hover:bg-gray-50{{end}}">
+    <a href="/account/topup" class="flex items-center px-3 py-2 text-sm font-medium rounded-md {{if eq .Active "me-topup"}}bg-blue-50 text-blue-700{{else}}text-gray-700 hover:bg-gray-50{{end}}">
       <svg class="w-4 h-4 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
       充值
     </a>
