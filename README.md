@@ -355,6 +355,10 @@ go test -v ./internal/admin ./internal/api
 | [docs/P11-MCP.md](docs/P11-MCP.md) | P11 MCP gateway 设计 |
 | [docs/RESEARCH-ROUTING.md](docs/RESEARCH-ROUTING.md) | 自动模型路由调研（现状盘点 + 业界方案） |
 | [docs/AUTO-ROUTING.md](docs/AUTO-ROUTING.md) | 智能路由 + 自我进化学习三阶段规划（v1 已实施） |
+| [docs/api-reference.md](docs/api-reference.md) | API 参考文档 |
+| [docs/operations-guide.md](docs/operations-guide.md) | 运维手册 |
+| [docs/developer-guide.md](docs/developer-guide.md) | 开发者指南 |
+| [docs/cluster-design/](docs/cluster-design/) | 集群设计文档 |
 | [CHANGELOG.md](CHANGELOG.md) | 各 Phase 变更记录 |
 
 ## 路线图
