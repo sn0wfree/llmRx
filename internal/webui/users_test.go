@@ -17,50 +17,50 @@ import (
 
 // newTestWebUI builds a webui.Handler backed by a real in-process
 // store. Used by the auth-gate tests below.
-func newTestWebUI(t *testing.T) (*Handler, store.Store) {
-	t.Helper()
-	dir := t.TempDir()
+func newTestWebUI(tb testing.TB) (*Handler, store.Store) {
+	tb.Helper()
+	dir := tb.TempDir()
 	st, err := store.OpenSQLite(filepath.Join(dir, "test.db"))
 	if err != nil {
-		t.Fatalf("OpenSQLite: %v", err)
+		tb.Fatalf("OpenSQLite: %v", err)
 	}
-	t.Cleanup(func() { _ = st.Close() })
+	tb.Cleanup(func() { _ = st.Close() })
 
 	logDir := filepath.Join(dir, "logs")
 	if err := logstore.EnsureDir(logDir); err != nil {
-		t.Fatalf("logstore.EnsureDir: %v", err)
+		tb.Fatalf("logstore.EnsureDir: %v", err)
 	}
 	logStore, err := logstore.New(logDir, nil)
 	if err != nil {
-		t.Fatalf("logstore.New: %v", err)
+		tb.Fatalf("logstore.New: %v", err)
 	}
-	t.Cleanup(func() { _ = logStore.Close() })
+	tb.Cleanup(func() { _ = logStore.Close() })
 
 	// Seed default admin (RoleRoot).
 	hash, _ := auth.Hash("admin")
 	if err := st.CreateUser(&model.User{
 		Username: "admin", PasswordHash: hash, Role: model.RoleRoot, Status: 1,
 	}); err != nil {
-		t.Fatalf("seed admin: %v", err)
+		tb.Fatalf("seed admin: %v", err)
 	}
 
 	h, err := New(st, logStore, nil, "")
 	if err != nil {
-		t.Fatalf("webui.New: %v", err)
+		tb.Fatalf("webui.New: %v", err)
 	}
 	return h, st
 }
 
 // sessionCookieFor mints a fresh session token for the given user
 // and writes it through the store so SessionMiddleware accepts it.
-func sessionCookieFor(t *testing.T, st store.Store, u *model.User) string {
-	t.Helper()
+func sessionCookieFor(tb testing.TB, st store.Store, u *model.User) string {
+	tb.Helper()
 	tok := newSessionToken()
 	u.SessionToken = tok
 	exp := nowAdd(DefaultSessionTTL)
 	u.SessionExp = &exp
 	if err := st.UpdateUser(u); err != nil {
-		t.Fatalf("update user session: %v", err)
+		tb.Fatalf("update user session: %v", err)
 	}
 	return tok
 }

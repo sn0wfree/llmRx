@@ -263,6 +263,24 @@ func (m *mockProvider) StreamChat(ctx context.Context, req *provider.ChatRequest
 	return ch, nil
 }
 
+// Embeddings satisfies provider.EmbeddingsProvider so the /v1/embeddings
+// load tests can route through the mock instead of falling through to
+// "upstream provider does not support embeddings" (400).
+func (m *mockProvider) Embeddings(ctx context.Context, req *provider.EmbeddingsRequest, apiKey, baseURL string) (*provider.EmbeddingsResponse, int, error) {
+	// Echo a 4-element fake vector regardless of input length so the
+	// response body has realistic size.
+	return &provider.EmbeddingsResponse{
+		Object: "list",
+		Data: []provider.Embedding{{
+			Object:    "embedding",
+			Index:     0,
+			Embedding: []float64{0.1, 0.2, 0.3, 0.4},
+		}},
+		Model: req.Model,
+		Usage: provider.Usage{PromptTokens: 5, TotalTokens: 5},
+	}, http.StatusOK, nil
+}
+
 // ---------- result printer ----------
 
 // TestE2E_LoadReport runs a quick load and prints a report. Uses

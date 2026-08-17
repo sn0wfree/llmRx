@@ -80,7 +80,7 @@ func OpenSQLite(dsn string) (*SQLite, error) {
 	}
 	fullDSN := dsn + sep +
 		"_journal=WAL" +
-		"&_busy_timeout=5000" +
+		"&_busy_timeout=10000" +
 		"&_foreign_keys=on" +
 		"&_synchronous=NORMAL"
 	db, err := sql.Open("sqlite3", fullDSN)
@@ -88,11 +88,11 @@ func OpenSQLite(dsn string) (*SQLite, error) {
 		return nil, fmt.Errorf("open: %w", err)
 	}
 	// Allow concurrent reads + 1 writer. SQLite serialises writers
-	// internally; 8 connections is enough headroom for admin reads
-	// while the LLM hot path is a single goroutine.
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(4)
-	db.SetConnMaxLifetime(0)
+	// internally; 16 connections gives headroom for admin reads,
+	// concurrent API requests, and the LLM hot path.
+	db.SetMaxOpenConns(16)
+	db.SetMaxIdleConns(8)
+	db.SetConnMaxLifetime(time.Hour) // Reuse connections for 1 hour
 	s := &SQLite{dbStore: dbStore{db: db, d: dialect.SQLite{}}}
 	if err := s.applyPragmas(); err != nil {
 		_ = db.Close()
@@ -110,10 +110,12 @@ func OpenSQLite(dsn string) (*SQLite, error) {
 // connections so subsequent queries inherit these settings.
 func (s *dbStore) applyPragmas() error {
 	pragmas := []string{
-		"PRAGMA cache_size=-20000",       // 20MB page cache
+		"PRAGMA cache_size=-40000",       // 40MB page cache (increased from 20MB)
 		"PRAGMA temp_store=MEMORY",       // temp tables in RAM
-		"PRAGMA mmap_size=268435456",     // 256MB mmap for large reads
-		"PRAGMA wal_autocheckpoint=2000", // 2000-page WAL threshold
+		"PRAGMA mmap_size=536870912",     // 512MB mmap for large reads (increased from 256MB)
+		"PRAGMA wal_autocheckpoint=4000", // 4000-page WAL threshold (increased from 2000)
+		"PRAGMA journal_size_limit=134217728", // 128MB WAL size limit
+		"PRAGMA busy_timeout=10000",      // 10 second busy timeout (increased from 5s via DSN)
 	}
 	for _, p := range pragmas {
 		if _, err := s.exec(p); err != nil {

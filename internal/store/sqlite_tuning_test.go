@@ -32,20 +32,20 @@ func TestSQLite_PragmasApplied(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Check that the pragmas were applied. cache_size=-20000 reads
-	// back as -20000; mmap_size=268435456 reads as 268435456.
+	// Check that the pragmas were applied. cache_size=-40000 reads
+	// back as -40000; mmap_size=536870912 reads as 536870912.
 	var cacheSize, mmapSize int64
 	if err := s.db.QueryRow("PRAGMA cache_size").Scan(&cacheSize); err != nil {
 		t.Fatal(err)
 	}
-	if cacheSize != -20000 {
-		t.Errorf("cache_size = %d, want -20000", cacheSize)
+	if cacheSize != -40000 {
+		t.Errorf("cache_size = %d, want -40000", cacheSize)
 	}
 	if err := s.db.QueryRow("PRAGMA mmap_size").Scan(&mmapSize); err != nil {
 		t.Fatal(err)
 	}
-	if mmapSize != 268435456 {
-		t.Errorf("mmap_size = %d, want 268435456", mmapSize)
+	if mmapSize != 536870912 {
+		t.Errorf("mmap_size = %d, want 536870912", mmapSize)
 	}
 }
 
@@ -59,7 +59,7 @@ func TestSQLite_ConnectionPool(t *testing.T) {
 	defer s.Close()
 
 	stats := s.db.Stats()
-	if stats.MaxOpenConnections != 8 {
-		t.Errorf("MaxOpenConnections = %d, want 8", stats.MaxOpenConnections)
+	if stats.MaxOpenConnections != 16 {
+		t.Errorf("MaxOpenConnections = %d, want 16", stats.MaxOpenConnections)
 	}
 }
