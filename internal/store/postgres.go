@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
@@ -37,10 +38,11 @@ func OpenPostgres(dsn string) (*Postgres, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open: %w", err)
 	}
-	// Multi-writer: N gateway replicas share one pool. 25 open
+	// Multi-writer: N gateway replicas share one pool. 50 open
 	// connections gives headroom for hot-path reads + ledger writes.
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(10)
+	db.SetMaxOpenConns(50)
+	db.SetMaxIdleConns(20)
+	db.SetConnMaxLifetime(5 * time.Minute) // Reuse connections for 5 minutes
 	p := &Postgres{dbStore: dbStore{db: db, d: dialect.Postgres{}}}
 	if err := p.Ping(context.Background()); err != nil {
 		_ = db.Close()

@@ -5,6 +5,10 @@ server:
   log_level: info
   request_timeout_sec: 300
   allow_default_admin_password: true
+  # 响应缓存配置
+  cache_backend: memory
+  cache_max_items: 10000
+  cache_ttl_seconds: 300
 
 # 数据库配置
 database:
