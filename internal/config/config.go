@@ -33,10 +33,16 @@ type ServerConfig struct {
 	// it on disk. "" = delete.
 	LogRetentionMode string `yaml:"log_retention_mode"`
 	LogDir           string `yaml:"log_dir"` // default: next to the SQLite DB (<dsn dir>/logs)
-	// LogstoreBackend selects the log storage driver: "sqlite"
-	// (per-date files), "postgres" (shared table, cluster mode) or
-	// "" (default: follow database.driver).
-	LogstoreBackend    string  `yaml:"logstore_backend"`
+	// LogstoreBackend selects the log storage driver: "jsonl"
+	// (append-only files with rotation — recommended for single
+	// node), "sqlite" (legacy per-date DB files), "postgres" (shared
+	// table, cluster mode) or "" (default: "jsonl" for sqlite
+	// deployments, "postgres" when database.driver=postgres).
+	LogstoreBackend string `yaml:"logstore_backend"`
+	// LogstoreFsync forces an fsync after each flushed JSONL batch.
+	// Default false matches the SQLite driver's synchronous=NORMAL
+	// semantics (a crash may lose the most recent batch).
+	LogstoreFsync bool `yaml:"logstore_fsync"`
 	// LogstoreSynchronous is the SQLite synchronous level for log
 	// files: "normal" (default) or "off". Off trades crash-durability
 	// of the last ~1s of logs for ~2-5x write throughput (Redis AOF

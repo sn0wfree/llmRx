@@ -1,6 +1,6 @@
 # P17 — 日志存储改为 JSONL + Rotate / Append-Only Log Store
 
-> Date: 2026-11-01 · Owner: llmRx maintainers · Status: **设计稿(未实施)**
+> Date: 2026-11-01 · Owner: llmRx maintainers · Status: **已实施**
 > 前置:P8 缓存、P12 日志保留;关联 [P16-DISTRIBUTION.md](P16-DISTRIBUTION.md)(解耦 CGO)。
 > 目标:去掉请求日志路径上的 SQLite 依赖,消除 CGO 包袱,同时**不牺牲性能**。
 
@@ -324,3 +324,73 @@ L1-L3 完成即功能完整;L4 是升级平滑性;L6 可选。
 - **归档压缩效果更好**:gzip 对文本压缩率(约 5-10x)远高于对 SQLite 页面;
 - **减少一个 CGO 引用点**,为将来纯 Go 构建铺路;
 - **写入字节数精确**(`len(line)`),rotate 判断从估算变精确。
+
+---
+
+## 13. 实施记录(2026-11-01)
+
+### 13.1 落地内容
+
+| 项 | 状态 |
+|---|---|
+| `JSONLDriver`(写入 + rotate + 查询 + 文件管理) | ✅ `jsonl_driver.go` |
+| `.meta.json` 增量预聚合 | ✅ `jsonl_meta.go` |
+| 旧 `.db` 自动迁移 | ✅ `jsonl_migrate.go`(Open 时执行,可重复) |
+| 配置开关 `logstore_backend: jsonl`(新默认) | ✅ `main.go` + `config.go` |
+| `-migrate-logs` CLI | ✅ `cmd/gateway/migratelogs.go` |
+| 等价性测试(16 组 filter × 4 类查询) | ✅ `jsonl_equivalence_test.go` |
+| 性能基准与预算断言 | ✅ `jsonl_bench_test.go` |
+
+### 13.2 实测数据
+
+在 WSL2 / Go 1.22.12 / amd64 上测得:
+
+| 指标 | SQLite | JSONL | 结果 |
+|---|---|---|---|
+| 写入 2 万行(批量) | 70.5 ms | 18.3 ms | **快 3.85×**(设计目标 ≥2×) |
+| `LogStats`(30 文件 / 3 万行) | — | **416 µs** | 远低于 100 ms 预算 |
+| logstore 包覆盖率 | — | **76.5%** | 高于改动前 |
+| `go test -race`(logstore/webui/admin) | — | 全部通过 | — |
+
+### 13.3 实施中发现并修复的既有 bug
+
+等价性测试第一次运行就暴露了一个**与本次改动无关的历史缺陷**:
+
+`SQLiteDriver` 的 `TimeSeries` 和 `TopByField` 在**带过滤条件**时会报
+`no such column: token_id` / `no such column: status_code`。
+
+原因:这两个查询把 `WHERE` 应用在 `UNION ALL` 的子查询外层，但内层
+`SELECT` 只投影了聚合需要的少数几列,被过滤的列(`token_id`、`channel_id`、
+`key_id`、`model`、`endpoint`、`cache_hit`)根本没有出现在子查询结果集里。
+
+**实际影响**:管理台 Analytics / 用量页调用形式是 `series, _ := TimeSeries(filter, ...)`
+——**错误被丢弃**,用户一加筛选条件,图表就静默变成空白。原测试只覆盖了
+无过滤路径,所以一直没暴露。
+
+修复:`internal/logstore/sqlite_driver.go` 新增 `unionProjection()`,
+让内层查询投影 `buildWhere` 可能引用的全部列。
+
+> 这个 bug 是这次改动的意外收获:等价性测试的价值正在于此——它不只保护新
+> 后端,也顺带校验了老后端。
+
+### 13.4 与设计稿的偏差
+
+| 原设计 | 实际实现 | 原因 |
+|---|---|---|
+| D5:新旧文件**双读**共存 | 改为 **Open 时一次性迁移** | 双读要处理跨源合并、排序、分页、去重,复杂且易错;一次性迁移后只有一种格式,代码路径唯一 |
+| D4:透传 meta 的 `by_hour` | 只存 `by_model`/`by_channel`/`by_token`;`TimeSeries` 仍扫描 | 时间序列的 filter 组合太多,预聚合收益不足以抵消复杂度;实测扫描性能已可接受 |
+| 迁移后删除 `.db` | 重命名为 `.db.migrated` 保留 | 给运维留退路,且自动退出 `*.db` glob |
+
+### 13.5 升级影响
+
+- 升级后首次启动会**自动**把 `log_dir` 下的 `*.db` 转成 `*.jsonl`;
+- 原文件保留为 `*.db.migrated`,确认无误后可手动删除;
+- 回退:`logstore_backend: sqlite` 可切回旧后端(但不会自动把 JSONL 转回);
+- 迁移按天进行、单文件原子(写 `.tmp` → rename),中断后重启会继续。
+
+### 13.6 仍未解决的边界
+
+- **`internal/store` 依然依赖 CGO**,服务端整体仍不是 `CGO_ENABLED=0`;
+  本方案只移除了 logstore 这个最大的写入压力源(见 §2.1 第 6 条说明);
+- 带大量过滤条件的 `TimeSeries` 仍是全量扫描,极端数据量下需观察;
+- JSONL 比 SQLite 占用更多磁盘(约 2-3 倍),依赖保留策略与 gzip 归档控制。

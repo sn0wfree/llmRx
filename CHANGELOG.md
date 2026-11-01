@@ -6,6 +6,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — Hardening + P7+ 闭环 + Passthrough + 多租户 + 热重载
 
+### Changed
+- **Log storage now defaults to append-only JSONL** (`logstore_backend:
+  jsonl`). Request logs are written as one JSON object per line into
+  per-day files (`logs/YYYY-MM-DD.jsonl`), rolling over to
+  `-N.jsonl` past `MaxFileBytes`. There is no SQL parsing, no B-tree
+  and no WAL on the write path; a batch is a single buffered write.
+  Measured on WSL2/amd64: **3.85x faster** than the SQLite backend for
+  a 20k-row batch. Aggregates (`Stats`, unfiltered `TopByField`) are
+  served from a per-file `<key>.meta.json` rollup, keeping them
+  O(files): `LogStats` over 30 files / 30k rows takes **~416µs**.
+  Existing `*.db` day files are migrated automatically on first start
+  and kept as `*.db.migrated`; `-migrate-logs` runs the migration
+  explicitly. `logstore_backend: sqlite` still selects the old
+  backend. See `docs/P17-JSONL-LOGS.md`.
+
+### Fixed
+- **`TopByField` and `TimeSeries` failed with "no such column" when a
+  filter was applied** on the SQLite log backend. The WHERE clause was
+  applied to the outer `UNION ALL` subquery, but the inner SELECT
+  projected only the columns the aggregate consumed, so filtering by
+  `token_id`, `channel_id`, `key_id`, `model`, `endpoint` or
+  `cache_hit` errored. Callers (Analytics, usage pages) discard the
+  error, so the symptom was a silently empty chart whenever a user
+  added a filter. New `unionProjection()` projects every column
+  `buildWhere` can reference.
+
 ### Security
 - **Argon2id** password hash replaces P6 bcrypt. New params:
   m=65536 KiB, t=3, p=2, 16-byte salt, 32-byte key. Both bcrypt

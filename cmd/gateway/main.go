@@ -9,7 +9,6 @@ import (
 	_ "net/http/pprof" // registers pprof handlers on the default mux
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -53,6 +52,7 @@ func main() {
 	hcAddr := flag.String("healthcheck", "", "if set (e.g. 127.0.0.1:8787), probe /health and exit; used by docker HEALTHCHECK")
 	wipeKeys := flag.Bool("wipe-keys", false, "clear all encrypted key material in the keys table, then exit. Used to recover from a master-key rotation that left stored ciphertext undecryptable.")
 	pprofAddr := flag.String("pprof-addr", "", "if set (e.g. 127.0.0.1:6060), serve net/http/pprof profiles on a separate listener; intended for on-demand performance debugging, never expose publicly")
+	migrateLogs := flag.Bool("migrate-logs", false, "convert legacy per-day SQLite log files (.db) in log_dir to JSONL, then exit. Normally runs automatically on first start; use this to migrate ahead of time or to report progress.")
 	flag.Parse()
 
 	if *pprofAddr != "" {
@@ -64,6 +64,14 @@ func main() {
 	// dials addr, sends GET /health, and returns 0 on HTTP 200.
 	if *hcAddr != "" {
 		os.Exit(runHealthcheck(*hcAddr, 5*time.Second))
+	}
+
+	// `-migrate-logs` short-circuits before the server starts: it
+	// needs the config (for log_dir / database driver) but no
+	// listener. Opens the JSONL driver, which performs the same
+	// migration the first real start would run, then exits.
+	if *migrateLogs {
+		os.Exit(runMigrateLogs(*cfgPath))
 	}
 
 	// `-wipe-keys` short-circuits BEFORE bootstrapMasterKey and
@@ -152,24 +160,15 @@ func main() {
 	// LogDir. Cluster mode (database.driver=postgres) uses the
 	// shared Postgres logs table unless logstore_backend=sqlite is
 	// set explicitly.
-	logDir := cfg.Server.LogDir
-	if logDir == "" {
-		// Derive the default from the SQLite DSN's directory so the
-		// logs land next to the database: /data/llmrx.db yields
-		// /data/logs (not /data/data/logs under WORKDIR=/data), and
-		// a dev dsn of data/llmrx.db keeps the historical data/logs.
-		if cfg.Database.Driver == "sqlite" && cfg.Database.DSN != "" {
-			logDir = filepath.Join(filepath.Dir(cfg.Database.DSN), "logs")
-		} else {
-			logDir = "data/logs"
-		}
-	}
+	// Derive the default from the SQLite DSN's directory so the logs
+	// land next to the database (see resolveLogDir).
+	logDir := resolveLogDir(cfg)
 	logBackend := cfg.Server.LogstoreBackend
 	if logBackend == "" {
 		if cfg.Database.Driver == "postgres" {
 			logBackend = "postgres"
 		} else {
-			logBackend = "sqlite"
+			logBackend = "jsonl"
 		}
 	}
 	var logDriver logstore.Driver
@@ -181,6 +180,17 @@ func main() {
 		}
 		logDriver = d
 		logging.Info("logstore backend: postgres (shared logs table)")
+	case "jsonl":
+		if err := logstore.EnsureDir(logDir); err != nil {
+			fatalf("logstore failed", logging.F("error", err.Error()))
+		}
+		drv := logstore.NewJSONLDriver()
+		drv.SetFsync(cfg.Server.LogstoreFsync)
+		logDriver = drv
+		logging.Info("logstore backend: jsonl",
+			logging.F("path", logDir),
+			logging.F("fsync", cfg.Server.LogstoreFsync),
+		)
 	case "sqlite":
 		if err := logstore.EnsureDir(logDir); err != nil {
 			fatalf("logstore failed", logging.F("error", err.Error()))

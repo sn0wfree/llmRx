@@ -2,6 +2,13 @@ server:
   # host: 0.0.0.0  # 可选，默认 0.0.0.0（所有接口）
   port: 8787
   log_level: info
+  # 请求日志后端: jsonl(默认，append-only + 按天/按大小 rotate) |
+  # sqlite(旧行为，每天一个 .db) | postgres(集群模式共享表)。
+  # jsonl 写入比 sqlite 快约 3.8x，且日志文件可直接用 jq/grep 消费。
+  # logstore_backend: jsonl
+  # JSONL 模式下每批写完后是否 fsync。false(默认) 与 SQLite 的
+  # synchronous=NORMAL 语义一致：崩溃最多丢最近一批。
+  # logstore_fsync: false
   # Fresh installs seed a default admin/admin account. Change the
   # password immediately via /admin/users or set admin_password to
   # disable the default. Keep this true only in trusted networks.
