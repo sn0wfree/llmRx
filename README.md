@@ -361,6 +361,7 @@ go test -v ./internal/admin ./internal/api
 | [docs/cluster-design/](docs/cluster-design/) | 集群设计文档 |
 | [docs/P14-BALANCE-MONITOR.md](docs/P14-BALANCE-MONITOR.md) | 上游渠道余额监控设计(调研 + 方案,待实施) |
 | [docs/P15-CLIENT.md](docs/P15-CLIENT.md) | 客户端形态(边缘代理 + 桌面 GUI)与服务端连接设计(规划稿) |
+| [docs/P16-DISTRIBUTION.md](docs/P16-DISTRIBUTION.md) | 交付与发布骨架:版本化、多平台产物、Docker/Helm/二进制分发(规划稿) |
 | [CHANGELOG.md](CHANGELOG.md) | 各 Phase 变更记录 |
 
 ## 路线图
