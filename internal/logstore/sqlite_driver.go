@@ -666,6 +666,30 @@ func detachAll(db *sql.DB, aliases []string) {
 	}
 }
 
+// unionProjection renders the inner SELECT list for the aggregate
+// queries. It must include **every** column buildWhere can reference,
+// because the WHERE clause is applied to the UNION subquery — if a
+// filtered column is missing from the projection, SQLite fails with
+// "no such column". extra adds the query's own group key (the
+// TopByField dimension); duplicates are dropped.
+func unionProjection(extra ...string) string {
+	cols := []string{
+		"token_id", "channel_id", "key_id", "model", "endpoint",
+		"status_code", "cache_hit", "created_at", "prompt_tokens",
+		"completion_tokens", "real_cost_usd", "billed_cost_usd",
+	}
+	seen := make(map[string]bool, len(cols)+len(extra))
+	out := make([]string, 0, len(cols)+len(extra))
+	for _, c := range append(cols, extra...) {
+		if seen[c] {
+			continue
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	return strings.Join(out, ", ")
+}
+
 // buildWhere constructs the WHERE clause + args from filter. Empty
 // string means no filter.
 func buildWhere(f QueryFilter) (string, []any) {
@@ -818,7 +842,7 @@ func (d *SQLiteDriver) TimeSeries(filter QueryFilter, bucketSec int64, days []st
 		if i < len(attachAliases) && attachAliases[i] != "" {
 			source = attachAliases[i] + ".logs"
 		}
-		sb.WriteString("SELECT created_at, status_code, prompt_tokens, completion_tokens, real_cost_usd, billed_cost_usd FROM ")
+		sb.WriteString("SELECT created_at, status_code, prompt_tokens, completion_tokens, real_cost_usd, billed_cost_usd, token_id, channel_id, key_id, model, endpoint, cache_hit FROM ")
 		sb.WriteString(source)
 	}
 	sb.WriteString(")")
@@ -888,8 +912,8 @@ func (d *SQLiteDriver) TopByField(filter QueryFilter, field string, limit int, d
 			source = attachAliases[i] + ".logs"
 		}
 		sb.WriteString("SELECT ")
-		sb.WriteString(field)
-		sb.WriteString(", prompt_tokens, completion_tokens, billed_cost_usd, real_cost_usd FROM ")
+		sb.WriteString(unionProjection(field))
+		sb.WriteString(" FROM ")
 		sb.WriteString(source)
 	}
 	sb.WriteString(")")
