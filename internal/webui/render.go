@@ -67,8 +67,42 @@ func NewRenderer() (*Renderer, error) {
 			}
 			return `<span class="px-2 py-0.5 text-xs bg-gray-100 text-gray-800 rounded">禁用</span>`
 		},
-		"truncate": func(s string, n int) string {
-			r := []rune(s)
+		// providerSupportsBalance lets the channels template show "—"
+		// for providers with no balance endpoint (P14).
+		"providerSupportsBalance": providerSupportsBalance,
+		// balanceCell renders the upstream balance column (P14).
+		// Three distinct states matter to an operator: a value, a
+		// value with a stale-warning, and "not supported".
+		"balanceCell": func(ch model.Channel) template.HTML {
+			if !providerSupportsBalance(ch.Provider) {
+				return template.HTML(`<span class="text-xs text-gray-400" title="该 provider 无公开余额接口">—</span>`)
+			}
+			if ch.Balance == "" {
+				if ch.BalanceError != "" {
+					return template.HTML(`<span class="text-xs text-red-600" title="` +
+						template.HTMLEscapeString(ch.BalanceError) + `">查询失败</span>`)
+				}
+				return template.HTML(`<span class="text-xs text-gray-400">未查询</span>`)
+			}
+			cur := template.HTMLEscapeString(ch.BalanceCurrency)
+			label := template.HTMLEscapeString(ch.Balance)
+			if cur != "" {
+				label += " " + cur
+			}
+			// A stored error next to a value means the last refresh
+			// failed but an older number is still known.
+			if ch.BalanceError != "" {
+				return template.HTML(`<span class="text-sm text-gray-700" title="上次刷新失败：` +
+					template.HTMLEscapeString(ch.BalanceError) + `">` + label +
+					` <span class="text-xs text-amber-600">(旧)</span></span>`)
+			}
+			title := ""
+			if ch.BalanceUpdatedAt != nil {
+				title = ` title="更新于 ` + template.HTMLEscapeString(ch.BalanceUpdatedAt.UTC().Format("2006-01-02 15:04")) + `"`
+			}
+			return template.HTML(`<span class="text-sm text-gray-700"` + title + `>` + label + `</span>`)
+		},
+		"truncate": func(s string, n int) string {			r := []rune(s)
 			if len(r) <= n {
 				return s
 			}

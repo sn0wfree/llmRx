@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -19,6 +20,43 @@ type Config struct {
 	AutoRouter   AutoRouterConfig   `yaml:"auto_router"`
 	LatencyRoute LatencyRouteConfig `yaml:"latency_routing"`
 	Session      SessionConfig      `yaml:"session_affinity"`
+	Balance      BalanceConfig      `yaml:"balance_monitor"`
+}
+
+// BalanceConfig controls the upstream balance refresh loop (P14).
+type BalanceConfig struct {
+	// Enabled starts the background sweep. Disabling it leaves the
+	// manual refresh endpoints working.
+	Enabled *bool `yaml:"enabled"`
+	// IntervalSec is the sweep period. 0 disables automatic refresh.
+	IntervalSec int `yaml:"interval_sec"`
+	// TimeoutSec bounds a single upstream query.
+	TimeoutSec int `yaml:"timeout_sec"`
+}
+
+// BalanceEnabled resolves the tri-state Enabled pointer: unset means
+// "on", matching the feature's intent of being useful by default.
+func (b BalanceConfig) BalanceEnabled() bool {
+	if b.Enabled == nil {
+		return true
+	}
+	return *b.Enabled
+}
+
+// BalanceInterval returns the sweep period, defaulting to one hour.
+func (b BalanceConfig) BalanceInterval() time.Duration {
+	if b.IntervalSec <= 0 {
+		return time.Hour
+	}
+	return time.Duration(b.IntervalSec) * time.Second
+}
+
+// BalanceTimeout returns the per-query timeout, defaulting to 10s.
+func (b BalanceConfig) BalanceTimeout() time.Duration {
+	if b.TimeoutSec <= 0 {
+		return 10 * time.Second
+	}
+	return time.Duration(b.TimeoutSec) * time.Second
 }
 
 type ServerConfig struct {

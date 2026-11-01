@@ -3,6 +3,7 @@ package testhelper
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/secrets"
@@ -193,6 +194,10 @@ func (s *ScriptedStore) GetDrainedChannels() ([]store.DrainedChannel, error) {
 
 func (s *ScriptedStore) RecordChannelSpend(channelID int64, cost float64) error {
 	return s.underlying.RecordChannelSpend(channelID, cost)
+}
+
+func (s *ScriptedStore) UpdateChannelBalance(channelID int64, balance, currency string, checkedAt time.Time, balanceErr string) error {
+	return s.underlying.UpdateChannelBalance(channelID, balance, currency, checkedAt, balanceErr)
 }
 
 // --- Keys ---

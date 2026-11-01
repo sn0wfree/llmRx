@@ -44,6 +44,16 @@ latency_routing:
   cost_weight: 0.7
   latency_weight: 0.3
 
+# balance_monitor: 上游账户余额定期查询（P14）。
+# 支持的 provider 见 providers.yaml 里的 balance 段（DeepSeek / Moonshot /
+# 智谱 / SiliconFlow / one-api 系中转）。没有余额接口的 provider 在管理台
+# 显示 “—”，不影响任何请求路径。
+#   关闭后台刷新后，管理台的“刷新”按钮仍然可用。
+balance_monitor:
+  enabled: true
+  interval_sec: 3600   # 刷新周期；0 = 关闭自动刷新
+  timeout_sec: 10      # 单次查询超时
+
 # session_affinity: 可选会话亲和（默认关闭）。开启后 mode:auto 的
 # 多轮对话会钉在同一 model/channel（保上游 prompt cache 与一致性）。
 # session 来源优先级：X-Session-ID 请求头 > body user 字段 > system+首条 user 哈希。

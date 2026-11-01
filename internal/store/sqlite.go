@@ -410,6 +410,23 @@ func (s *dbStore) migrate() error {
 	if err := s.addColumn("channels", "total_cost_usd", "REAL NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	// P14: upstream balance snapshot. Empty strings / NULL mean "never
+	// queried"; balance_updated_at distinguishes that from "unsupported".
+	if err := s.addColumn("channels", "balance", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumn("channels", "balance_currency", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumn("channels", "balance_updated_at", "INTEGER"); err != nil {
+		return err
+	}
+	if err := s.addColumn("channels", "balance_error", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumn("channels", "balance_url", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	if err := s.addColumn("tokens", "used_usd", "REAL NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
@@ -628,8 +645,16 @@ func decodeTiers(s string) map[string]model.TierConfig {
 
 // ---------------- Channels ----------------
 
+// channelColumns is the SELECT list for reading a channel. Kept in one
+// place because scanChannel must stay in lockstep with it — a mismatch
+// between the two is a runtime scan error, not a compile error.
+const channelColumns = `id, name, provider, protocol, base_url, models, intents, priority, ` +
+	`input_price, output_price, cached_input_discount, circuit_breaker, status, total_cost_usd, ` +
+	`balance, balance_currency, balance_updated_at, balance_error, balance_url, ` +
+	`created_at, updated_at`
+
 func (s *dbStore) GetChannels() ([]model.Channel, error) {
-	rows, err := s.query(`SELECT id, name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, total_cost_usd, created_at, updated_at FROM channels ORDER BY id`)
+	rows, err := s.query(`SELECT ` + channelColumns + ` FROM channels ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -646,7 +671,7 @@ func (s *dbStore) GetChannels() ([]model.Channel, error) {
 }
 
 func (s *dbStore) GetChannel(id int64) (*model.Channel, error) {
-	row := s.queryRow(`SELECT id, name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, total_cost_usd, created_at, updated_at FROM channels WHERE id = ?`, id)
+	row := s.queryRow(`SELECT `+channelColumns+` FROM channels WHERE id = ?`, id)
 	return scanChannel(row)
 }
 
@@ -700,6 +725,32 @@ func (s *dbStore) RecordChannelSpend(channelID int64, cost float64) error {
 	return err
 }
 
+// UpdateChannelBalance writes the latest upstream balance snapshot.
+//
+// Two distinct outcomes:
+//   - success (balanceErr == ""): store the value and clear the error;
+//   - failure: record the error and leave the last known balance intact,
+//     so the UI can show "110 CNY (stale, last error: ...)" instead of
+//     losing the only number the operator has.
+//
+// updated_at is intentionally NOT bumped: an hourly refresh would
+// otherwise make every channel look freshly edited.
+func (s *dbStore) UpdateChannelBalance(channelID int64, balance, currency string, checkedAt time.Time, balanceErr string) error {
+	if len(balanceErr) > 512 {
+		balanceErr = balanceErr[:512]
+	}
+	if balanceErr != "" {
+		_, err := s.exec(
+			`UPDATE channels SET balance_error = ?, balance_updated_at = ? WHERE id = ?`,
+			balanceErr, toUnix(checkedAt), channelID)
+		return err
+	}
+	_, err := s.exec(
+		`UPDATE channels SET balance = ?, balance_currency = ?, balance_error = '', balance_updated_at = ? WHERE id = ?`,
+		balance, currency, toUnix(checkedAt), channelID)
+	return err
+}
+
 func (s *dbStore) GetDrainedChannels() ([]DrainedChannel, error) {
 	rows, err := s.query(`SELECT c.id, c.name FROM channels c WHERE c.status = 1 AND NOT EXISTS (SELECT 1 FROM keys k WHERE k.channel_id = c.id AND k.status = 0)`)
 	if err != nil {
@@ -724,14 +775,21 @@ func scanChannel(r interface {
 	var modelsJSON, intentsJSON, cbJSON string
 	var status int
 	var created, updated int64
+	var balanceUpdated sql.NullInt64
 	if err := r.Scan(&ch.ID, &ch.Name, &ch.Provider, &ch.Protocol, &ch.BaseURL,
 		&modelsJSON, &intentsJSON, &ch.Priority,
 		&ch.InputPrice, &ch.OutputPrice, &ch.CachedInputDiscount, &cbJSON, &status,
-		&ch.TotalCostUSD, &created, &updated); err != nil {
+		&ch.TotalCostUSD,
+		&ch.Balance, &ch.BalanceCurrency, &balanceUpdated, &ch.BalanceError, &ch.BalanceURL,
+		&created, &updated); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
 		}
 		return nil, err
+	}
+	if balanceUpdated.Valid {
+		t := fromUnix(balanceUpdated.Int64)
+		ch.BalanceUpdatedAt = &t
 	}
 	ch.Models = decodeStrings(modelsJSON)
 	ch.Intents = decodeStrings(intentsJSON)

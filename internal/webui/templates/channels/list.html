@@ -28,6 +28,7 @@
         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Provider</th>
         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">模型</th>
         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">优先级</th>
+        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">上游余额</th>
         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">状态</th>
         <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">操作</th>
       </tr>
@@ -56,6 +57,17 @@
     </div>
   </td>
   <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{{.Priority}}</td>
+  <td class="px-6 py-4 whitespace-nowrap">
+    {{balanceCell .}}
+    {{if providerSupportsBalance .Provider}}
+    <button hx-post="/admin/channels/{{.ID}}/balance-refresh"
+            hx-target="#channel-row-{{.ID}}"
+            hx-swap="outerHTML"
+            hx-indicator="#bal-{{.ID}}"
+            class="ml-2 text-xs text-blue-600 hover:text-blue-900"
+            title="立即查询上游余额">刷新</button>
+    {{end}}
+  </td>
   <td class="px-6 py-4 whitespace-nowrap">{{statusBadge .Status}}</td>
   <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
     <a href="/admin/channels/{{.ID}}/keys" class="text-indigo-600 hover:text-indigo-900 mr-3">Keys</a>
@@ -69,7 +81,7 @@
 </tr>
 {{else}}
 <tr>
-  <td colspan="6" class="px-6 py-12 text-center text-sm text-gray-500">
+  <td colspan="7" class="px-6 py-12 text-center text-sm text-gray-500">
     还没有通道。<a href="/admin/channels/new" class="text-blue-600 hover:underline">新建第一个通道</a>
   </td>
 </tr>

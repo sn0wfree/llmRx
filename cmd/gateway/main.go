@@ -15,6 +15,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/alert"
 	"github.com/sn0wfree/llmRx/internal/alert/channels"
 	"github.com/sn0wfree/llmRx/internal/auth"
+	"github.com/sn0wfree/llmRx/internal/balance"
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/cluster"
 	"github.com/sn0wfree/llmRx/internal/config"
@@ -448,6 +449,22 @@ func main() {
 	srv := server.New(cfg, *cfgPath, eng, cp, st, logStore, tokCache, logBroker, rt, "/data/llmrx.key", byokHook, lim)
 	srv.SetBuildVersion(buildVersion())
 	srv.SetAlertManager(alertMgr)
+
+	// P14: upstream balance monitor. Shares cp (channels + key pickup)
+	// and st (snapshot persistence) with the rest of the gateway. The
+	// monitor also backs the manual refresh endpoints, so it is built
+	// even when the background sweep is disabled.
+	balanceMon := balance.New(balance.Config{
+		Interval: cfg.Balance.BalanceInterval(),
+		Timeout:  cfg.Balance.BalanceTimeout(),
+	}, cp, cp, st)
+	srv.SetBalanceMonitor(balanceMon)
+	if cfg.Balance.BalanceEnabled() {
+		go balanceMon.Start(ctx)
+		defer balanceMon.Stop()
+	} else {
+		logging.Info("balance monitor: background sweep disabled (manual refresh still available)")
+	}
 	
 	// 多例模式: 初始化 cluster 包
 	if cfg.Database.Driver == "postgres" {

@@ -127,8 +127,27 @@ type Channel struct {
 	CircuitBreaker      CircuitBreakerConfig `json:"circuit_breaker"`
 	Status              ChannelStatus        `json:"status"`
 	TotalCostUSD        float64              `json:"total_cost_usd"`
-	CreatedAt           time.Time            `json:"created_at"`
-	UpdatedAt           time.Time            `json:"updated_at"`
+
+	// Upstream balance snapshot (P14). Written by internal/balance and
+	// never used for routing or billing — it is an operator-facing view
+	// of what the upstream account has left.
+	//
+	// Balance is a string to preserve the upstream's own precision
+	// (some report "110.00", others "12590.0042"). Empty means either
+	// "never queried" or "provider has no balance endpoint"; the two
+	// are distinguished by BalanceUpdatedAt != nil.
+	Balance          string     `json:"balance,omitempty"`
+	BalanceCurrency  string     `json:"balance_currency,omitempty"`
+	BalanceUpdatedAt *time.Time `json:"balance_updated_at,omitempty"`
+	// BalanceError carries the last failure (truncated to 512 chars).
+	// Cleared on the next successful query.
+	BalanceError string `json:"balance_error,omitempty"`
+	// BalanceURL overrides the provider descriptor's balance path for
+	// this channel (relay/proxy deployments that move the endpoint).
+	BalanceURL string `json:"balance_url,omitempty"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type Key struct {

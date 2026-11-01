@@ -49,6 +49,10 @@ type ProviderDesc struct {
 	Protocol       string `yaml:"protocol" json:"protocol"`
 	DefaultBaseURL string `yaml:"base_url" json:"base_url"`
 	Source         string `yaml:"-" json:"source"` // "builtin" | "config" | "db"
+	// Balance declares how to query this provider's account balance
+	// (P14). Empty means "no public balance endpoint", which the monitor
+	// renders as "not supported" rather than as an error.
+	Balance BalanceSpec `yaml:"balance" json:"balance,omitempty"`
 }
 
 var (

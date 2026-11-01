@@ -399,7 +399,7 @@ go test -v ./internal/admin ./internal/api
 | [docs/operations-guide.md](docs/operations-guide.md) | 运维手册 |
 | [docs/developer-guide.md](docs/developer-guide.md) | 开发者指南 |
 | [docs/cluster-design/](docs/cluster-design/) | 集群设计文档 |
-| [docs/P14-BALANCE-MONITOR.md](docs/P14-BALANCE-MONITOR.md) | 上游渠道余额监控设计(调研 + 方案,待实施) |
+| [docs/P14-BALANCE-MONITOR.md](docs/P14-BALANCE-MONITOR.md) | 上游渠道余额监控(DeepSeek/智谱/Moonshot/SiliconFlow/one-api,一期已实施) |
 | [docs/P15-CLIENT.md](docs/P15-CLIENT.md) | 客户端形态(边缘代理 + 桌面 GUI)与服务端连接设计(规划稿) |
 | [docs/P16-DISTRIBUTION.md](docs/P16-DISTRIBUTION.md) | 交付与发布骨架:版本化、多平台产物、Docker/Helm/二进制分发(规划稿) |
 | [docs/P17-JSONL-LOGS.md](docs/P17-JSONL-LOGS.md) | 日志存储改 JSONL + rotate:去掉写入路径的 SQLite/CGO(已实施) |

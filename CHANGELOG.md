@@ -85,6 +85,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+#### Upstream balance monitoring (P14)
+- **Channel balance queries** for providers that expose a public
+  endpoint: DeepSeek, Moonshot (Kimi), Zhipu and SiliconFlow, plus the
+  one-api / new-api billing pair for relay deployments. Dispatch is by
+  provider name via the descriptor registry (`balance:` section in
+  providers.yaml), not by protocol — these upstreams all speak OpenAI
+  on chat but expose unrelated balance paths. A channel-level
+  `balance_url` override moves the endpoint for relays.
+- **`internal/balance` monitor**: hourly sweep (jittered) that queries
+  every enabled channel with a declared format and persists the
+  snapshot on the channel row. Per-channel parser panics are isolated;
+  a failed query records `balance_error` and keeps the previous value,
+  so the operator never loses the only number they had.
+- **Admin surface**: `GET /admin/api/v1/balances` (DB-only snapshot
+  with per-currency totals) and `POST /admin/api/v1/channels/{id}/balance`
+  (synchronous refresh; 503 unwired / 404 / 409 unsupported / 502
+  upstream error). The channels page gains an "上游余额" column with a
+  per-row HTMX refresh button. Providers without a balance endpoint
+  render "—" rather than an empty cell.
+- Money is stored as a string to preserve upstream precision and is
+  never summed across currencies.
+- Config: `balance_monitor: {enabled, interval_sec, timeout_sec}`
+  (default on, hourly, 10s timeout).
+
+#### Build & release (P16)
+- `-version` flag printing version/commit/date/go, short-circuiting
+  before config load. Bare `go build` falls back to the toolchain's VCS
+  stamp. `GET /health` adds a `version` field and every response
+  carries `X-Llmrx-Version`.
+- goreleaser five-platform matrix (linux amd64/arm64, darwin
+  amd64/arm64, windows amd64), multi-arch container images, Helm
+  chart versioned from the git tag, systemd unit, and
+  `scripts/release-check.sh`.
+
 #### Logstore archive-mode retention
 - **`log_retention_mode`** config option (`delete` | `archive`).
   Default `delete` removes expired log files; `archive` gzip-compresses

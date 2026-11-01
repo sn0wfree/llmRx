@@ -29,6 +29,9 @@ type Handler struct {
 	responseCache cache.Cache
 	mcpClientMgr  *mcp.ClientManager
 	oauth         *mcp.OAuthManager
+	// balanceMon refreshes upstream balances (P14). nil makes the
+	// per-row refresh a no-op error rather than a panic.
+	balanceMon BalanceQuerier
 }
 
 // New creates a web UI handler. adminAPI provides the legacy
@@ -114,6 +117,9 @@ func (h *Handler) Routes() http.Handler {
 		r.Post("/channels/{id}/keys", h.ChannelKeyCreate)
 		r.Delete("/channels/{id}/keys/{keyId}", h.ChannelKeyDelete)
 		r.Post("/channels/{id}/fetch-models", h.ChannelFetchModels)
+		// P14: refresh one channel's upstream balance, re-rendering
+		// just that table row.
+		r.Post("/channels/{id}/balance-refresh", h.ChannelBalanceRefresh)
 		r.Get("/api/models-by-provider", h.ModelsByProvider)
 		r.Get("/api/meta-providers", h.MetaProviders)
 		r.Get("/api/available-models", h.AvailableModels)

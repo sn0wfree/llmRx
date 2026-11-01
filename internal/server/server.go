@@ -17,6 +17,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/admin"
 	"github.com/sn0wfree/llmRx/internal/alert"
 	"github.com/sn0wfree/llmRx/internal/api"
+	"github.com/sn0wfree/llmRx/internal/balance"
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/cache"
 	"github.com/sn0wfree/llmRx/internal/cluster"
@@ -86,6 +87,9 @@ type Server struct {
 	// buildVersion is reported by GET /health and the X-Llmrx-Version
 	// response header. Set via SetBuildVersion; empty means "dev".
 	buildVersion string
+	// balanceMon refreshes upstream account balances (P14). nil leaves
+	// the balance endpoints returning 503.
+	balanceMon *balance.Monitor
 }
 
 // SetBuildVersion records the build identity so /health and the
@@ -378,6 +382,12 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	}
 	webUI.SetMCPClientManager(s.mcpClientMgr)
 	webUI.SetOAuthManager(oauthMgr)
+	// P14: the row-level balance refresh button. Set here as well as
+	// in SetBalanceMonitor because webUI is constructed after New
+	// returns, so the setter may have run before this handler existed.
+	if s.balanceMon != nil {
+		webUI.SetBalanceMonitor(s.balanceMon)
+	}
 	s.engine.Mount("/account", webUI.UserRoutes())
 	s.engine.Mount("/admin", webUI.Routes())
 	s.engine.Mount("/admin/api/v1", adminHandler.Routes())
@@ -554,6 +564,16 @@ func (s *Server) SetAlertManager(m *alert.Manager) {
 	s.alertMgr = m
 	if s.admin != nil {
 		s.admin.SetAlertManager(m)
+	}
+}
+
+// SetBalanceMonitor injects the upstream balance monitor (P14). The
+// admin handler serves a read-only snapshot and a synchronous
+// per-channel refresh through it.
+func (s *Server) SetBalanceMonitor(m *balance.Monitor) {
+	s.balanceMon = m
+	if s.admin != nil {
+		s.admin.SetBalanceMonitor(m)
 	}
 }
 

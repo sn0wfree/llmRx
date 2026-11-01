@@ -169,10 +169,13 @@ providers:
     display_name: DeepSeek
     protocol: openai
     base_url: https://api.deepseek.com/v1
+    # Balance lives beside the API root, not under /v1.
+    balance: { path: /user/balance, format: deepseek }
   - name: moonshot
     display_name: Moonshot (Kimi)
     protocol: openai
     base_url: https://api.moonshot.cn/v1
+    balance: { path: /users/me/balance, format: moonshot }
   - name: qwen
     display_name: Qwen (通义千问)
     protocol: openai
@@ -181,6 +184,7 @@ providers:
     display_name: Zhipu (智谱)
     protocol: openai
     base_url: https://open.bigmodel.cn/api/paas/v4
+    balance: { path: /users/me/balance, format: zhipu }
   - name: volcengine
     display_name: 火山引擎 (豆包)
     protocol: openai
@@ -189,6 +193,8 @@ providers:
     display_name: SiliconFlow (硅基流动)
     protocol: openai
     base_url: https://api.siliconflow.cn/v1
+    # Reads "balance" (spendable), never totalBalance.
+    balance: { path: /user/info, format: siliconflow }
   - name: dashscope
     display_name: DashScope (阿里百炼)
     protocol: openai

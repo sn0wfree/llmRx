@@ -1,6 +1,6 @@
 # P14 — 上游渠道余额监控 / Upstream Balance Monitor
 
-> Date: 2026-11-01 · Owner: llmRx maintainers · Status: **设计稿(未实施)**
+> Date: 2026-11-01 · Owner: llmRx maintainers · Status: **一期已实施**
 > 前置:P0-P13 已完成;参照 `internal/prober`(健康探测)骨架。
 > 调研来源:Magpie(usemagpie.ai)功能盘点、one-api/new-api 余额实现、各家 provider 官方文档。
 
@@ -392,3 +392,50 @@ docs/P14-BALANCE-MONITOR.md             本文件
   smart(优先即将重置/续期的渠道)、usage(用量最少优先);
 - **按余额路由**:L3 策略增加"余额加权"信号(余额低降权),与
   Thompson/L5 blend——需先有趋势数据。
+---
+
+## 17. 一期实施记�?2026-11-01)
+
+一期范围已全部落地,与设计稿的对应关系如下�?
+### 17.1 落地清单
+
+| 设计�?| 实际产出 |
+|---|---|
+| §7.1 BalanceParser 接口 | `internal/provider/balance.go`:`Balance` / `RegisterBalanceParser` / `QueryBalance` |
+| §7.2 descriptor 扩展 | `providers.yaml` �?deepseek / moonshot / zhipu / siliconflow �?`balance:` �?`ProviderDesc.Balance BalanceSpec` |
+| §7.3 五种 parser | `deepseek` / `moonshot` / `zhipu` / `siliconflow` / `oneapi`(`QueryOneAPIBalance` 走双 GET) |
+| §6 存储 | `channels` �?5 �?balance / balance_currency / balance_updated_at / balance_error / balance_url),`addColumn` 懒迁�?SQLite+Postgres 双生�?|
+| §8 监控�?| `internal/balance/monitor.go`:ticker + jitter + per-channel panic 隔离;无内存缓�?快照直接落库 |
+| §9.1 Admin API | `GET /admin/api/v1/balances`(�?DB �?+ 按币种合�?、`POST /admin/api/v1/channels/{id}/balance`(同步刷新,503/404/409/502 分档) |
+| §9.2 WebUI | Channels 列表新增"上游余额"�?`balanceCell` 模板函数:数�?失败/未查�?不支持四�?+ 行内"刷新"按钮(HTMX 局部替换该�? |
+| §10 配置 | `balance_monitor: {enabled, interval_sec, timeout_sec}`,默认开、周�?1h、超�?10s |
+
+### 17.2 关键实现决定(与设计稿的偏�?
+
+1. **D5 修正**:`eligible()` 只看 provider 是否声明�?`balance.format`�?   原设计的"channel 配了 balance_url 即可�?不成立——override URL 只改
+   请求去哪�?不改响应怎么解析;provider 没有 format 时依然不支持�?2. **失败保留旧�?*:`UpdateChannelBalance` 在失败时只写 `balance_error`,
+   不清�?`balance`。UI 显示"110 CNY (�?"而不是丢掉唯一的数字�?   错误文本截断 512 字符�?3. **刷新后重�?*:`RefreshChannelBalance` �?webui 的行刷新都从 store
+   重读渠道�?响应/渲染基于持久化的�?不基于内存对象�?4. **金额以字符串存储**:保留上游精度(`12590.0042` 不会�?`12590`),
+   展示时按"最�?4 位小数、去尾零"格式�?`balance.FormatAmount`)�?5. **`channel.balance_url` 的解析格式继�?provider**:override 只覆�?URL�?
+### 17.3 明确不做(�?§4.3 一�?
+
+- 不进请求热路�?路由、限速、计费零改动(余额列不在任何路由决策输入里);
+- 查询不计费、不�?logs �?
+- 无余额接口的 provider(Gemini/MiniMax/OpenAI/Anthropic)返回
+  `ErrBalanceUnsupported`,管理台显�?�?并提示原�?而不是报错�?
+### 17.4 二期待办(�?§16 对应,均未实施)
+
+- `balance_low` 告警类型(4 处小�?阈值需带币�?;
+- 余额历史趋势(`channel_balances` 时序�?;
+- per-key 余额(�?key 渠道�?key 查询);
+- OpenAI / Anthropic Admin Key 用量查询;
+- 配额窗口型渠�?Coding Plan / M Plan �?窗口剩余�?+ 重置时间")�?
+### 17.5 验证
+
+- `go test ./internal/provider/ -run Balance`:parser fixture + 分派 +
+  override 全通过;
+- `go test ./internal/balance/`:eligibility / 成功 / 失败保留旧�?/
+  panic 隔离 / store 错误上抛 / sweep 跳过不可查渠�?/ lifecycle /
+  金额格式�?
+- `go test ./internal/admin/ -run Balance`:8 个端点用�?空列表�?  不支持标记�?03/404/409/502 分档、成功路径持久化、会话守�?;
+- `go test -race` 覆盖 balance/provider/admin/server/webui 全绿�?

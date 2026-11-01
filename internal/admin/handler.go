@@ -46,6 +46,9 @@ type Handler struct {
 	keyFile         string
 	sessionTTL      time.Duration
 	alertMgr        AlertReloader
+	// balanceMon serves the upstream balance endpoints (P14). nil
+	// returns 503 so a partially-wired server never panics.
+	balanceMon      BalanceRefresher
 	responseCache   cache.Cache
 	mcpClientMgr    *mcp.ClientManager
 	guardrailEngine *guardrail.GuardrailEngine
@@ -106,6 +109,11 @@ func (h *Handler) SetSessions(s SessionCounter) { h.sessions = s }
 // acyclic.
 func (h *Handler) SetAlertManager(m AlertReloader) { h.alertMgr = m }
 
+// SetBalanceMonitor injects the upstream balance monitor (P14). Takes
+// the narrow BalanceRefresher interface so this package does not depend
+// on internal/balance.
+func (h *Handler) SetBalanceMonitor(m BalanceRefresher) { h.balanceMon = m }
+
 // SetCache wires the response cache for stats and purge endpoints.
 func (h *Handler) SetCache(c cache.Cache) { h.responseCache = c }
 
@@ -159,6 +167,10 @@ func (h *Handler) Routes() http.Handler {
 		r.Delete("/channels/{id}/keys/{keyId}", h.DeleteKey)
 		r.Post("/channels/{id}/fetch-models", h.FetchModels)
 		r.Get("/channels/{id}/spend", h.ChannelSpend)
+		// P14 upstream balance: a cheap DB-only snapshot, plus a
+		// synchronous refresh that hits the upstream.
+		r.Get("/balances", h.ListBalances)
+		r.Post("/channels/{id}/balance", h.RefreshChannelBalance)
 		r.Get("/providers", h.ListProviders)
 		r.Post("/providers", h.CreateProvider)
 		r.Delete("/providers/{id}", h.DeleteProvider)
