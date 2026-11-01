@@ -390,6 +390,15 @@ func (m *Manager) RunCheckpoints(ctx context.Context) {
 	}
 }
 
+// legacyKeyLister is an optional Driver capability: it reports day
+// keys that exist only as side-car artefacts (not visible to
+// ListFiles) and are older than cutoffDay, so retention can expire
+// them too. The JSONL driver implements it for its .db.migrated
+// backups; backends without side-cars simply don't implement it.
+type legacyKeyLister interface {
+	ExpiredLegacyKeys(cutoffDay string) []string
+}
+
 // RunRetention periodically processes log files older than the
 // number of days reported by retentionDays() on each tick. The
 // caller passes a function so admin updates to the retention
@@ -431,6 +440,23 @@ func (m *Manager) RunRetention(ctx context.Context, retentionDays func() int) {
 				expired = append(expired, f)
 			}
 		}
+
+		// Backends that keep side-car artefacts (the JSONL driver's
+		// post-migration .db backups) expose days that ListFiles never
+		// returns. Without this merge those copies would never expire.
+		if lk, ok := m.driver.(legacyKeyLister); ok {
+			known := make(map[string]bool, len(expired))
+			for _, f := range expired {
+				known[f] = true
+			}
+			for _, k := range lk.ExpiredLegacyKeys(cutoffDay) {
+				if !known[k] {
+					known[k] = true
+					expired = append(expired, k)
+				}
+			}
+		}
+
 		if len(expired) == 0 {
 			return
 		}

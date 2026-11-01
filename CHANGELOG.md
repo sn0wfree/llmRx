@@ -7,8 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased] — Hardening + P7+ 闭环 + Passthrough + 多租户 + 热重载
 
 ### Changed
-- **Log storage now defaults to append-only JSONL** (`logstore_backend:
-  jsonl`). Request logs are written as one JSON object per line into
+- **Log storage now defaults to append-only JSONL**
+  (`logstore_backend: jsonl`). Request logs are written as one JSON
+  object per line into
   per-day files (`logs/YYYY-MM-DD.jsonl`), rolling over to
   `-N.jsonl` past `MaxFileBytes`. There is no SQL parsing, no B-tree
   and no WAL on the write path; a batch is a single buffered write.
@@ -22,6 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   backend. See `docs/P17-JSONL-LOGS.md`.
 
 ### Fixed
+- **Migrated `.db` backups were never reclaimed by retention.** The
+  JSONL migration renames each legacy file to `<day>.db.migrated`, but
+  retention discovers expired days through `ListFiles()`, which globs
+  `*.jsonl` only. An upgrade therefore left a full copy of all
+  historical logs on disk with no mechanism to remove it. Two fixes:
+  the delete/archive paths now strip the correct suffix (they built
+  `<day>.db.db.migrated`, one `.db` too many), and a new optional
+  driver capability (`ExpiredLegacyKeys`) lets the JSONL backend
+  report days that exist only as side-car artefacts, including
+  orphaned backups whose `.jsonl` is already gone. Retention merges
+  those keys into the same sweep.
 - **`TopByField` and `TimeSeries` failed with "no such column" when a
   filter was applied** on the SQLite log backend. The WHERE clause was
   applied to the outer `UNION ALL` subquery, but the inner SELECT

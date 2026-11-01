@@ -764,9 +764,10 @@ func (d *JSONLDriver) DeleteFiles(days []string) error {
 		_ = os.Remove(filepath.Join(d.dir, day+jsonlExt))
 		_ = os.Remove(filepath.Join(d.dir, day+metaExt))
 		_ = os.Remove(filepath.Join(d.dir, day+jsonlExt+".gz"))
-		// Legacy artefacts for the same day (post-migration backups).
+		// Legacy artefacts for the same day: the source .db (if a
+		// migration never ran) and the post-migration backup.
 		_ = os.Remove(filepath.Join(d.dir, day+legacyDBExt))
-		_ = os.Remove(filepath.Join(d.dir, day+legacyDBExt+migratedDBExt))
+		_ = os.Remove(filepath.Join(d.dir, day+migratedDBExt))
 	}
 	return nil
 }
@@ -789,7 +790,7 @@ func (d *JSONLDriver) ArchiveFiles(days []string) error {
 		_ = os.Remove(filepath.Join(d.dir, day+metaExt))
 		// Legacy artefacts are already redundant once the day is
 		// archived from its JSONL form.
-		_ = os.Remove(filepath.Join(d.dir, day+legacyDBExt+migratedDBExt))
+		_ = os.Remove(filepath.Join(d.dir, day+migratedDBExt))
 	}
 	return nil
 }
@@ -804,6 +805,43 @@ func (d *JSONLDriver) closeKey(key string) {
 	if d.current[extractDate(key)] == key {
 		delete(d.current, extractDate(key))
 	}
+}
+
+// ExpiredLegacyKeys returns day keys that have only a legacy artefact
+// left (a pre-migration .db, or a .db.migrated backup whose JSONL is
+// already gone) and that fall before cutoffDay. Retention merges these
+// into its sweep so orphaned backups cannot accumulate forever — they
+// never appear in ListFiles, which globs *.jsonl only.
+//
+// cutoffDay is a "YYYY-MM-DD" string compared lexicographically,
+// matching Manager.RunRetention's own comparison.
+func (d *JSONLDriver) ExpiredLegacyKeys(cutoffDay string) []string {
+	patterns := []string{
+		filepath.Join(d.dir, "*"+legacyDBExt),
+		filepath.Join(d.dir, "*"+migratedDBExt),
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, pat := range patterns {
+		matches, err := filepath.Glob(pat)
+		if err != nil {
+			continue
+		}
+		for _, m := range matches {
+			base := filepath.Base(m)
+			key := strings.TrimSuffix(strings.TrimSuffix(base, migratedDBExt), legacyDBExt)
+			if key == "" || seen[key] {
+				continue
+			}
+			if extractDate(key) >= cutoffDay {
+				continue
+			}
+			seen[key] = true
+			out = append(out, key)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Compile-time assertion that JSONLDriver satisfies Driver.

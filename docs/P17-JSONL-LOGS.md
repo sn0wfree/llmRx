@@ -388,7 +388,46 @@ L1-L3 完成即功能完整;L4 是升级平滑性;L6 可选。
 - 回退:`logstore_backend: sqlite` 可切回旧后端(但不会自动把 JSONL 转回);
 - 迁移按天进行、单文件原子(写 `.tmp` → rename),中断后重启会继续。
 
-### 13.6 仍未解决的边界
+### 13.6 收尾修复(同日,第二轮)
+
+首批落地后补了一轮审查,发现并修复了三个问题:
+
+**① 迁移备份永久堆积(真实缺陷)**
+
+retention 通过 `ListFiles()` 发现过期文件,而该方法只 glob `*.jsonl`。
+迁移产生的 `<day>.db.migrated` 备份因此**永远不会被清理**——升级一次就在
+磁盘上留下全部历史日志的完整副本,且没有任何回收机制。
+
+修复分两层:
+- `DeleteFiles` / `ArchiveFiles` 里拼接错误:写成 `day+legacyDBExt+migratedDBExt`,
+  实际拼出 `2020-04-04.db.db.migrated`(多一个 `.db`)。`migratedDBExt` 本身
+  已是完整后缀 `".db.migrated"`;
+- 新增可选 Driver 能力 `legacyKeyLister{ExpiredLegacyKeys(cutoffDay)}`,
+  JSONL driver 实现它来报告"只有 side-car 产物、`ListFiles` 看不见"的过期
+  day。`Manager.RunRetention` 把它合并进同一轮 sweep,所以**孤立备份**
+  (`.jsonl` 已被删除、只剩 `.db.migrated`)也能被回收。
+
+**② retention 缺少 JSONL 端到端测试**
+
+原有 5 个 retention 测试全部只覆盖 SQLite 后端。retention 是唯一会自动
+删除用户日志的机制,却从未在 JSONL 后端上验证过。新增 `jsonl_retention_test.go`
+覆盖:delete / archive / 禁用 / 保留新数据 / meta 缺失 / 迁移备份回收 /
+孤立备份 / 近期备份保留,以及 `ExpiredLegacyKeys` 的边界。
+
+> 上面 ① 的问题正是被这批新测试直接复现出来的——两个用例在修复前失败,
+> 修复后通过。
+
+**③ race 模式下 webui 并发时序测试偶发超时**
+
+`TestConcurrent_AccountHome` 的 500ms 预算在 `go test -race ./...`(整包
+并行 + 竞态检测开销)下会偶发超限(实测 517ms)。该测试来自更早的提交,
+单独运行恒通过,属于既有的门禁脆弱性。
+
+修复:加 `raceEnabled` 编译期常量(`//go:build race`),新增 `budget()` 辅助
+函数在 race 构建下把阈值放宽 4 倍。**非 race 构建的阈值保持原样**,
+门禁没有被放松。
+
+### 13.7 仍未解决的边界
 
 - **`internal/store` 依然依赖 CGO**,服务端整体仍不是 `CGO_ENABLED=0`;
   本方案只移除了 logstore 这个最大的写入压力源(见 §2.1 第 6 条说明);

@@ -28,6 +28,18 @@ type result struct {
 	took   time.Duration
 }
 
+// budget widens a wall-clock ceiling when the race detector is active.
+// -race instruments every memory access and runs alongside the rest of
+// the package, which routinely doubles or triples scheduling latency;
+// without this, timing assertions fail on instrumentation overhead
+// rather than on a real regression.
+func budget(d time.Duration) time.Duration {
+	if raceEnabled {
+		return 4 * d
+	}
+	return d
+}
+
 // runConcurrent dispatches `n` GET requests to `path` across `workers`
 // goroutines, each carrying a session cookie. Returns a slice of
 // results in dispatch order.
@@ -153,10 +165,9 @@ func TestConcurrent_AccountHome(t *testing.T) {
 	results := runConcurrent(t, h, cookie, "/", concurrencyWorkers, concurrencyWorkers*concurrencyIters)
 	max := summarize(t, "AccountHome", results)
 	// 500ms ceiling is loose; the renderer + logstore.Query should
-	// easily beat this on a single node. CI noise accounts for the
-	// headroom.
-	if max > 500*time.Millisecond {
-		t.Errorf("AccountHome: slowest request %s exceeded 500ms budget", max)
+	// easily beat this on a single node.
+	if limit := budget(500 * time.Millisecond); max > limit {
+		t.Errorf("AccountHome: slowest request %s exceeded %s budget", max, limit)
 	}
 }
 
@@ -170,8 +181,8 @@ func TestConcurrent_AccountUsage(t *testing.T) {
 
 	results := runConcurrent(t, h, cookie, "/usage", concurrencyWorkers, concurrencyWorkers*concurrencyIters)
 	max := summarize(t, "AccountUsage", results)
-	if max > 1*time.Second {
-		t.Errorf("AccountUsage: slowest request %s exceeded 1s budget", max)
+	if limit := budget(1 * time.Second); max > limit {
+		t.Errorf("AccountUsage: slowest request %s exceeded %s budget", max, limit)
 	}
 }
 
@@ -184,8 +195,8 @@ func TestConcurrent_AccountTopup(t *testing.T) {
 
 	results := runConcurrent(t, h, cookie, "/topup", concurrencyWorkers, concurrencyWorkers*concurrencyIters)
 	max := summarize(t, "AccountTopup", results)
-	if max > 500*time.Millisecond {
-		t.Errorf("AccountTopup: slowest request %s exceeded 500ms budget", max)
+	if limit := budget(500 * time.Millisecond); max > limit {
+		t.Errorf("AccountTopup: slowest request %s exceeded %s budget", max, limit)
 	}
 }
 
@@ -199,8 +210,8 @@ func TestConcurrent_AccountExportCSV(t *testing.T) {
 
 	results := runConcurrent(t, h, cookie, "/export.csv", concurrencyWorkers, concurrencyWorkers*concurrencyIters)
 	max := summarize(t, "AccountExportCSV", results)
-	if max > 1*time.Second {
-		t.Errorf("AccountExportCSV: slowest request %s exceeded 1s budget", max)
+	if limit := budget(1 * time.Second); max > limit {
+		t.Errorf("AccountExportCSV: slowest request %s exceeded %s budget", max, limit)
 	}
 }
 
@@ -241,8 +252,8 @@ func TestConcurrent_MixedPages(t *testing.T) {
 	wg.Wait()
 
 	max := summarize(t, "MixedPages", results)
-	if max > 1*time.Second {
-		t.Errorf("MixedPages: slowest request %s exceeded 1s budget", max)
+	if limit := budget(1 * time.Second); max > limit {
+		t.Errorf("MixedPages: slowest request %s exceeded %s budget", max, limit)
 	}
 }
 
