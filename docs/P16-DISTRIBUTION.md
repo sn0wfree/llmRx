@@ -119,10 +119,11 @@
 | **B. 切纯 Go SQLite** | `mattn/go-sqlite3` → `modernc.org/sqlite` | `CGO_ENABLED=0`,**一个 runner 交叉出全部 6 个目标**;镜像构造大幅简化 | 依赖替换,影响 store 热路径;性能与 pragma 行为需实测;`sqlite_tuning_test.go` 等测试要复核 |
 | **C. 双轨** | 服务端保留 CGO(只发 Linux);客户端用纯 Go | 服务端行为不变;客户端轻量好分发 | 两套构建 + 两套依赖管理 |
 
-**建议**:先按 **A** 打通发布流程(风险最低,不动任何业务代码);
-把 **B** 作为独立的性能验证 spike(它同时能解决 P15 客户端的分发问题,
-见 §9)。**不要**一开始就做 B——发布骨架和依赖替换混在一个 PR 里,
-出问题分不清是谁的锅。
+**建议**:先按 **A** 打通发布流程(风险最低,不动任何业务代码)。
+**B 不再是 P15 的前置条件**——客户端走双二进制、强制无 CGO 即可(见 §5 D7),
+B 只是让"服务端也能出轻量跨平台二进制"这一件事变得容易,优先级可降为可选 spike。
+
+**不要**一开始就做 B——发布骨架和依赖替换混在一个 PR 里,出问题分不清是谁的锅。
 
 ### D3 镜像策略:一次构建、多标签
 
@@ -161,12 +162,37 @@
 
 发布说明里每个含 schema 变更的版本都要标 `⚠️ schema change`。
 
-### D7 对 P15 客户端的影响(先记录,不阻塞)
+### D7 对 P15 客户端的影响(已澄清:两者解耦)
 
-- 若走 D2-A:客户端是 CGO 二进制,Windows 需要 MinGW 构建,P15 分发变复杂;
-- 若走 D2-B:客户端(以及服务端)全部无 CGO,`llmrx-client` 可以做到
-  几 MB 单文件,`goreleaser` 一次出全平台——**这是 P15 最想要的结果**;
-- 因此 **D2-B 的 spike 结果直接决定 P15 的交付体验**,建议在 P15 动工前完成。
+**早期版本的本文档错误地声称"客户端的分发依赖 D2"——事实并非如此。**
+
+客户端不需要 CGO,只要它**不 import `internal/store` 与 `internal/router`**:
+
+| 包 | 是否 import `internal/store` | 可用于客户端 |
+|---|---|---|
+| `internal/provider` | ❌ | ✅ 纯 Go |
+| `internal/cache` | ❌(只需传入 `*sql.DB`,驱动由调用方决定) | ✅ 纯 Go |
+| `internal/model` / `secrets` / `logging` / `ratelimit` | ❌ | ✅ 纯 Go |
+| `internal/router` | ✅(engine.go / breaker.go / static.go) | ❌ 会拖动 CGO |
+| `internal/store` | 自身即含 `_ "github.com/mattn/go-sqlite3"` | ❌ 会拖动 CGO |
+
+因为 `internal/store/sqlite.go` 有一行驱动注册的 blank import,所以**任何**
+对 `internal/store`(以及依赖它的 `internal/router`)的引用,都会把 CGO
+sqlite 链进二进制。
+
+结论:
+
+- **客户端**:零 CGO 路径 = `net/http` 转发 + `cache.MemoryCache`(或独立的
+  `modernc.org/sqlite`)+ JSONL 用量缓冲 + 自写极简 channel picker,
+  `CGO_ENABLED=0` 一次交叉出全平台。**不依赖 D2,不必等它**。
+- **服务端**:D2 仍然独立存在——它决定的是「能不能直接发 darwin/windows
+  的**服务端**二进制」。若服务端只走 Docker(现状),D2 可以延后。
+- 因此建议采用**双二进制**:`llmrx`(服务端,可保留 CGO)与
+  `llmrx-client`(客户端,强制 `CGO_ENABLED=0`)。两套构建的成本,
+  换来客户端分发的质变。
+
+唯一仍与 P15 耦合的是**版本号**:P15 的 `/client/v1/heartbeat` 要上报客户端
+版本、配置 bundle 带 `min_version`,所以 R1(版本注入)必须在 P15.1 之前完成。
 
 ## 6. 版本化设计细节
 
@@ -254,21 +280,14 @@ CHANGELOG.md                           首版 [v0.1.0] 切段
 R1-R4 完成即"能用":有版本号、有 arm 镜像、有可下载的二进制。
 R5 是"好用",R8 是锦上添花。
 
-## 9. 与 P15 的接口(重要)
+## 9. 与 P15 的接口(已解耦)
 
-D2 的选择会外溢到 P15:
+**客户端无需等待 D2**。详见 §5 D7:只要客户端不引用 `internal/store` /
+`internal/router`,就走纯 Go,`CGO_ENABLED=0` 可直接交叉出全平台。
 
-- **若采用 D2-B(纯 Go SQLite)**:`llmrx-client` 可以 `CGO_ENABLED=0` 交叉编译,
-  一次出全部平台;客户端二进制可从十几 MB 降到几 MB;桌面分发体验质变。
-  **建议在 P15.1 之前先做这个 spike**——它的结论决定 P15 的构建方式,
-  反过来做会返工。
-- **若坚持 D2-A**:P15 客户端也要走原生 runner 矩阵,Windows 用户拿到的
-  客户端需要 MinGW 构建产物;P15 §17 的打包步骤相应加重。
-
-另一个与 P15 的耦合点:**`client_id` 与版本的对应**。P15 的
-`/client/v1/heartbeat` 会上报客户端版本,而配置 bundle 里带 `min_version`
-(见 P15 §4 D4)。所以版本号必须在 P15.1 之前就位,否则控制面无法做版本
-兼容判断。
+唯一真实的耦合点是**版本号**:P15 的 `/client/v1/heartbeat` 会上报客户端版本,
+配置 bundle 带 `min_version`(见 P15 §4 D4)。所以 R1(`-version` 注入)
+必须在 P15.1 之前落地,否则控制面无法做版本兼容判断。
 
 ## 10. 验收标准
 

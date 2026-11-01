@@ -42,11 +42,19 @@ Helm、frp 公网暴露。
 
 ### 3.1 目标
 
-1. 单二进制客户端,`headless` / `desktop` 双模式,Docker 与原生等价可部署;
-2. 客户端在本地暴露 OpenAI 兼容 `/v1/*`,Agent 只需把 base_url 指向本机;
-3. **主动出站**连接服务端,不需要任何入站端口、不需要 frp 每客户端一条隧道;
-4. 四项能力:本地响应缓存、断网兜底、本地用量采集回传、统一配置下发;
-5. 服务端零数据面改动(复用现有 `/v1/*`)。
+1. **双二进制**:`llmrx`(服务端)与 `llmrx-client`(客户端)独立构建、
+   独立发布;客户端强制 `CGO_ENABLED=0`,单文件跨平台;
+2. 客户端 `headless` / `desktop` 双模式,Docker 与原生等价可部署;
+3. 客户端在本地暴露 OpenAI 兼容 `/v1/*`,Agent 只需把 base_url 指向本机;
+4. **主动出站**连接服务端,不需要任何入站端口、不需要 frp 每客户端一条隧道;
+5. 四项能力:本地响应缓存、断网兜底、本地用量采集回传、统一配置下发;
+6. 服务端零数据面改动(复用现有 `/v1/*`)。
+
+> **为什么是双二进制而不是单二进制多模式**:客户端一旦 import
+> `internal/store`(或依赖它的 `internal/router`),就会通过
+> `store/sqlite.go` 的 `_ "github.com/mattn/go-sqlite3"` 把 **CGO** 链进
+> 二进制,导致无法交叉编译、体积按服务端标准走。拆成两个二进制后,
+> 客户端可以做到零 CGO、几 MB、一次交叉出全平台。详见 §8 的复用边界。
 
 ### 3.2 非目标
 
@@ -331,15 +339,29 @@ internal/client/
 
 **复用清单**(这是本方案成本可控的关键):
 
-| 复用 | 来源 | 用途 |
-|---|---|---|
-| `internal/cache` | P8 | 缓存接口 + `Key()` 规范化,本地 SQLite 实现 |
-| `internal/provider` | P7+ | 本地直连兜底时的协议适配 |
-| `internal/router` | P1-P5 | 本地直连时的渠道选择(轻量单渠道即可) |
-| `internal/secrets` | P7+ | 本地 secret 加密 |
-| `internal/logging` | P0 | 结构化日志 |
-| `internal/sse` | P6 | 桌面 UI 的实时状态(可选) |
-| `internal/webui` 的渲染方式 | P2 | `html/template + HTMX + CDN`,不复制框架 |
+| 复用 | 来源 | 用途 | CGO |
+|---|---|---|---|
+| `internal/cache` | P8 | 缓存接口 + `Key()` 规范化;本地后端优先 `MemoryCache`,持久化可选独立的纯 Go sqlite | 无 |
+| `internal/provider` | P7+ | 本地直连兜底时的协议适配 | 无 |
+| `internal/secrets` | P7+ | 本地 secret 加密 | 无 |
+| `internal/logging` | P0 | 结构化日志 | 无 |
+| `internal/sse` | P6 | 桌面 UI 的实时状态(可选) | 无 |
+| `internal/webui` 的渲染方式 | P2 | `html/template + HTMX + CDN`,不复制框架 | 无 |
+
+**明确不复用**(重要):
+
+| 不复用 | 原因 |
+|---|---|
+| `internal/router` | 全 L1-L5 引擎、Thompson、熔断,客户端本地兜底只需"按配置挑一个 channel";且它 import `internal/store` |
+| `internal/store` | `store/sqlite.go` 含 `_ "github.com/mattn/go-sqlite3"` 驱动注册,引用即把 **CGO** 链进二进制,交叉编译全平台失败 |
+| 服务端 `webui` | 客户端不提供管理台,只做自己的本地状态页 |
+
+本地兜底的选路逻辑(约 40 行)在 `client/upstream.go` 内自实现:
+遍历配置里的 channel → 检查模型匹配与启用状态 → 取第一个可用 key 明文
+→ 调 `provider.Chat`。不需要 store、不需要路由引擎。
+
+这个边界让**客户端可以 `CGO_ENABLED=0` 编译**,一次交叉出全平台、
+体积从十几 MB 降到几 MB——这是双二进制方案的核心理由。
 
 ## 9. 断网兜底细节
 
@@ -365,7 +387,9 @@ internal/client/
 
 - 只对**非流式、确定性请求**缓存:`temperature == 0` 且无 `stream`、
   无 `cache_control: no-store`(复用 `internal/cache.Key()` 的既有判定);
-- 后端:SQLite 单文件(`<state_dir>/client-cache.db`),LRU + TTL;
+- 后端:**默认 `cache.MemoryCache`**(零 CGO、零文件);需要跨进程持久化时
+  才启用磁盘后端,且必须用**纯 Go** 的 `modernc.org/sqlite`
+  (不能用 `mattn/go-sqlite3`,否则客户端变成 CGO 依赖);
 - key 用 `internal/cache.Key(req)`,与**服务端缓存同构**,便于"服务端缓存
   purge 时同步下发 purge 指令"(bundle 里带 `purge_before` 时间戳);
 - 命中率写进心跳,管理台可见。
@@ -482,11 +506,14 @@ Agent → 本机客户端 ──出站──> https://<frp 域名> → frps → 
 | `internal/clientapi` | 接入码一次性/TTL/重复使用;HMAC 校验、重放拒绝;bundle 签名;usage 幂等去重与 `source` 计费规则 |
 | `internal/client/proxy` | SSE 直通、失败转移、`X-Forwarded-For`、`4xx` 不触发兜底 |
 | `internal/client/fallback` | cache→local→503 三级链;熔断开合;半开探测 |
-| `internal/client/cache` | TTL/LRU、非确定性请求不缓存、purge |
+| `internal/client/cache` | TTL/LRU、非确定性请求不缓存、purge、`CGO_ENABLED=0` 可编译 |
 | `internal/client/usage` | 批次边界、重试退避、超期丢弃 |
 | `tests/scenarios` | 端到端:mock server + 客户端 + mock 上游,在线/断网/断网+本地 key 三条路径 |
 | Web UI | 管理台 Clients 页 CRUD;客户端本地 UI 渲染 |
 | 竞态 | `go test -race` 全绿;覆盖率沿用 CI 门槛 |
+| 构建边界 | **强约束**:`go build ./cmd/gateway-client` 在 `CGO_ENABLED=0`
+  下必须成功;CI 加一条 `GOOS/GOARCH` 矩阵构建检查,防止有人误引
+  `internal/store` / `internal/router` 把 CGO 拖进来 |
 
 ## 17. 分期实施
 
