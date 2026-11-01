@@ -53,7 +53,17 @@ func main() {
 	wipeKeys := flag.Bool("wipe-keys", false, "clear all encrypted key material in the keys table, then exit. Used to recover from a master-key rotation that left stored ciphertext undecryptable.")
 	pprofAddr := flag.String("pprof-addr", "", "if set (e.g. 127.0.0.1:6060), serve net/http/pprof profiles on a separate listener; intended for on-demand performance debugging, never expose publicly")
 	migrateLogs := flag.Bool("migrate-logs", false, "convert legacy per-day SQLite log files (.db) in log_dir to JSONL, then exit. Normally runs automatically on first start; use this to migrate ahead of time or to report progress.")
+	showVersion := flag.Bool("version", false, "print the build version and exit")
 	flag.Parse()
+
+	// `-version` short-circuits before anything else: no config, no DB,
+	// no side effects. It must work on a binary that cannot start
+	// (e.g. missing master key) so operators can identify what they
+	// have installed.
+	if *showVersion {
+		fmt.Println(buildInfoString())
+		return
+	}
 
 	if *pprofAddr != "" {
 		go servePprof(*pprofAddr)
@@ -436,6 +446,7 @@ func main() {
 	}
 
 	srv := server.New(cfg, *cfgPath, eng, cp, st, logStore, tokCache, logBroker, rt, "/data/llmrx.key", byokHook, lim)
+	srv.SetBuildVersion(buildVersion())
 	srv.SetAlertManager(alertMgr)
 	
 	// 多例模式: 初始化 cluster 包
@@ -533,6 +544,8 @@ func main() {
 	}()
 
 	logging.Info("starting llmRx gateway",
+		logging.F("version", buildVersion()),
+		logging.F("commit", buildCommit()),
 		logging.F("port", cfg.Server.Port),
 		logging.F("channels", len(cp.GetAllChannels())),
 		logging.F("tokens", tokCache.Size()),

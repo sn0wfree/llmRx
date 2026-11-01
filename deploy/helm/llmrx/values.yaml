@@ -5,7 +5,9 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/sn0wfree/llmrx
-  tag: "latest"
+  # Empty means "use .Chart.AppVersion", which the release workflow sets
+  # to the git tag. Override only to pin a different build.
+  tag: ""
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []

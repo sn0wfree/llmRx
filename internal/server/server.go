@@ -83,6 +83,24 @@ type Server struct {
 	byokHook authmw.UnknownTokenHook
 	// clusterManager manages cluster nodes in multi-node mode.
 	clusterManager *cluster.Manager
+	// buildVersion is reported by GET /health and the X-Llmrx-Version
+	// response header. Set via SetBuildVersion; empty means "dev".
+	buildVersion string
+}
+
+// SetBuildVersion records the build identity so /health and the
+// version header can report it. Injected from cmd/gateway, which owns
+// the ldflags-injected values; the server package cannot see main's
+// variables. Call before the listener starts — the value is read-only
+// afterwards.
+func (s *Server) SetBuildVersion(v string) { s.buildVersion = v }
+
+// buildVersionOrDev returns a non-empty version string for responses.
+func (s *Server) buildVersionOrDev() string {
+	if s.buildVersion == "" {
+		return "dev"
+	}
+	return s.buildVersion
 }
 
 // New wires the HTTP router. byokHook (optional) is invoked
@@ -114,6 +132,17 @@ func New(cfg *config.Config, cfgPath string, eng *router.RouterEngine, cp *pool.
 }
 
 func (s *Server) registerMiddleware() {
+	// Stamp the build version on every response (including errors and
+	// SSE) so a client can tell which gateway answered without a
+	// separate health probe. Registered first so it wraps everything
+	// downstream, including the recoverer's 500 responses.
+	s.engine.Use(func(next http.Handler) http.Handler {
+		v := s.buildVersionOrDev()
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Llmrx-Version", v)
+			next.ServeHTTP(w, r)
+		})
+	})
 	s.engine.Use(requestid.Middleware)
 	s.engine.Use(requestLogger)
 	s.engine.Use(chimw.Recoverer)
@@ -322,7 +351,10 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 
 	s.engine.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"status":"ok","intent_backend":%q}`, s.router.IntentBackend())
+		// version is additive: existing clients read status and
+		// intent_backend only, so adding a field is backward compat.
+		fmt.Fprintf(w, `{"status":"ok","intent_backend":%q,"version":%q}`,
+			s.router.IntentBackend(), s.buildVersionOrDev())
 	})
 
 	// Phase 0: html/template admin UI. Legacy JSON API still

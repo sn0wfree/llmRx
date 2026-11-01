@@ -1,6 +1,6 @@
 # P16 — 交付与发布 / Distribution & Release
 
-> Date: 2026-11-01 · Owner: llmRx maintainers · Status: **规划稿(未实施)**
+> Date: 2026-11-01 · Owner: llmRx maintainers · Status: **R1-R8 已实施**
 > 优先级:**高于 P15**。没有版本化和发布骨架,后面所有分发形态都无从谈起。
 > 关联:[P15-CLIENT.md](P15-CLIENT.md)(客户端形态)、[OPERATIONS.md](OPERATIONS.md)(部署运维)。
 
@@ -315,7 +315,44 @@ R5 是"好用",R8 是锦上添花。
 | 版本号写进 `/health` 破坏现有测试 | CI 红 | 用包含式断言;改动与测试同 PR |
 | Helm chart 与 app 版本耦合过紧 | chart 改动被迫 bump app | 保持两个版本字段独立,仅 `appVersion` 跟 tag |
 
-## 12. 待拍板
+## 12. 实施结果(2026-11-01)
+
+R1-R8 全部落地。与规划稿的差异记录在此。
+
+| 步 | 内容 | 产出 |
+|---|---|---|
+| R1 | `-version` + build info + `/health` 版本字段 + `X-Llmrx-Version` 头 | `cmd/gateway/version.go`, `internal/server/server.go` |
+| R2 | go.mod 1.18 → 1.22;Makefile `VERSION/COMMIT/BUILD_DATE` + `make version`;`scripts/release-check.sh` | `Makefile`, `go.mod` |
+| R3 | goreleaser 五平台矩阵 + release 工作流 | `.goreleaser.yaml`, `.github/workflows/release.yml` |
+| R4 | 多架构镜像(per-arch build + manifest) | 同上 |
+| R5 | darwin/windows 矩阵 | 同上 |
+| R6 | Helm `image.tag` 回退 `.Chart.AppVersion`;Chart 版本对齐 | `deploy/helm/llmrx/*` |
+| R7 | README 四种安装形态 + CHANGELOG `[v0.1.0]` 切段 | `README.md`, `CHANGELOG.md` |
+| R8 | systemd unit(非 root + hardening) | `deploy/systemd/llmrx.service` |
+
+### 12.1 关键决定
+
+- **D2 采纳 A(原生 runner 矩阵)**:不替换 `mattn/go-sqlite3`。goreleaser
+  按平台显式声明 `CC`(linux/arm64 用 `aarch64-linux-gnu-gcc`,darwin 走
+  macOS runner,windows 走 MinGW)。运行时性能 100% 保留。
+- **首个版本号 `v0.1.0`**:功能闭环但 API 未承诺稳定,SemVer 的 `0.x`
+  正好表达这一点。
+- **docker.yml 与 release.yml 职责分离**:前者只出分支开发镜像
+  (`edge` / `sha-*`),后者负责正式版本与多架构 manifest,避免抢 `latest`。
+
+### 12.2 版本回退链路(实测)
+
+```
+裸 go build          → dev (9cf4306, 2026-11-01T14:00:40Z, go1.22.12)   ← VCS stamp 回退
+ldflags 注入         → v0.1.0 (abc1234, 2026-11-01T10:00:00Z, go1.22.12)
+-version + 坏 config → 正常输出后退出(不加载配置)
+```
+
+### 12.3 仍需人工确认的事项
+
+- `release.yml` 无法在本地验证(GitHub Actions 环境),首次打 tag 时需实跑一次;
+- windows 的 CGO 构建依赖 runner 上的 MinGW,若首次失败按 §11 风险表处理;
+- Helm chart 打包依赖 `helm` CLI,已在 workflow 中通过 `azure/setup-helm` 提供。
 
 1. **D2 走哪条路**(A 原生矩阵 / B 纯 Go / C 双轨)——建议 A 起步、B 做 spike;
    这个答案同时决定 P15 的构建方式。

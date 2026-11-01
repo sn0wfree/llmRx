@@ -196,27 +196,67 @@ docker compose up -d --build
   mirrors = ["<your mirror>"]
   ```
 
+## 安装
+
+四种形态，按部署场景选一种即可。
+
+### 1. Docker（推荐）
+
+```bash
+# 生成 master key（用于渠道 API key 的静态加密，丢失后已存 key 不可解）
+export KEY=$(openssl rand -hex 32)
+
+docker run -d --name llmrx \
+  -p 8787:8787 \
+  -v llmrx-data:/data \
+  -e LLMRX_KEY_MASTER=$KEY \
+  ghcr.io/sn0wfree/llmrx:v0.1.0
+```
+
+镜像约 13 MB（`FROM scratch`，无 shell / busybox），首次启动会自动在
+`/data` 生成 config 与密钥文件。访问 `http://localhost:8787/admin/`。
+
+支持 **linux/amd64** 与 **linux/arm64**（树莓派 / ARM 云主机）。
+
+### 2. 预编译二进制（裸机 / 内网 / 离线）
+
+从 [Releases](https://github.com/sn0wfree/llmRx/releases) 下载对应平台的压缩包：
+
+```bash
+tar -xzf llmrx_v0.1.0_linux_amd64.tar.gz
+./llmrx -version          # 确认版本与 commit
+export LLMRX_KEY_MASTER=$(openssl rand -hex 32)
+./llmrx -config config.yml
+```
+
+产物覆盖 linux(amd64/arm64)、darwin(amd64/arm64)、windows(amd64)，
+附 `checksums.txt` 可校验。生产环境建议用 systemd 托管，
+模板见 [`deploy/systemd/llmrx.service`](deploy/systemd/llmrx.service)。
+
+### 3. Helm（Kubernetes）
+
+```bash
+helm install llmrx deploy/helm/llmrx \
+  --set secrets.masterKey=$(openssl rand -hex 32)
+```
+
+不指定 `image.tag` 时自动使用 chart 的 `appVersion`，与 release 版本一致。
+集群模式（共享 Postgres、多副本）见 `values.yaml` 的 `cluster` 段。
+
+### 4. 从源码构建
+
+```bash
+make build      # 自动注入版本号（来自 git tag/describe）
+make run
+```
+
+需要 Go 1.22+。构建 CGO 依赖（sqlite3）需要系统 C 编译器。
+
+> 首次运行也可直接用 `./start.sh`：自动生成 master key + 构建 + 启动。
+
 ## 快速开始
 
-### 一键启动
-
-```bash
-./start.sh
-```
-
-首次运行自动生成 master key + 构建二进制 + 启动服务。再次运行直接用已有二进制。
-
-访问 `http://localhost:8787/admin/`（默认 `admin / admin`），详细用法见下方。
-
-等价于手动三步：
-
-```bash
-export LLMRX_KEY_MASTER=$(openssl rand -hex 32)
-go build -o llmRx ./cmd/gateway
-./llmRx -config config.yml
-```
-
-> ⚠️ **生产环境必须设置 `LLMRX_KEY_MASTER`**，否则网关启动会直接退出。
+> ⚠️ **生产环境必须设置 `LLMRX_KEY_MASTER`**，否则启动会拒绝运行。
 > 仅本地开发可在 `config.yml` 中设 `secrets.dev_allow_plaintext_keys: true` 跳过该要求，
 > 此时 channel key 以明文存储，**不要**在任何非本机部署中使用。
 

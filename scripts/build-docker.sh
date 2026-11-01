@@ -36,9 +36,13 @@ else
     # Robust GOPROXY chain — works behind Chinese mirrors too.
     export GOPROXY="${GOPROXY:-https://goproxy.cn,https://goproxy.io,https://proxy.golang.org,direct}"
     export GOSUMDB="${GOSUMDB:-off}"
+    # Embed build identity so `docker run <img> -version` reports it.
+    VER="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
+    SHA="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo none)}"
+    STAMP="${BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
     # Static link so the runtime image can be `FROM scratch`.
     CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-        go build -ldflags="-s -w -extldflags '-static'" \
+        go build -ldflags "-s -w -extldflags '-static' -X main.version=$VER -X main.commit=$SHA -X main.date=$STAMP" \
             -o "$BUILD_DIR/llmRx" ./cmd/gateway
 fi
 

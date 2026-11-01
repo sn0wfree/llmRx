@@ -2,8 +2,10 @@ apiVersion: v2
 name: llmrx
 description: llmRx — LLM API gateway with smart routing
 type: application
+# Both versions are rewritten to the git tag by
+# .github/workflows/release.yml before packaging.
 version: 0.1.0
-appVersion: "latest"
+appVersion: "0.1.0"
 maintainers:
   - name: llmrx
 keywords:

@@ -2,23 +2,40 @@ GO ?= go
 BIN := llmRx
 PKG := ./...
 
+# ----- build identity -----
+#
+# VERSION comes from the git tag when HEAD is tagged (v1.2.3), from
+# `git describe` when it is a few commits past one, and "dev" otherwise.
+# CI overrides it explicitly so the binary always matches the release.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
+LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(BUILD_DATE)
+
 # The admin UI is Go html/template + HTMX + Tailwind CDN. There is
 # no JavaScript build step: just `go build`. The Makefile has no
 # web-sync / web-build / npm targets.
 
-.PHONY: all build test test-race cover cover-check run clean build-go-only intent-rust
+.PHONY: all build test test-race cover cover-check run clean build-go-only intent-rust version
 
 all: build
 
 # ----- top-level targets -----
 
 build:
-	$(GO) build -o $(BIN) ./cmd/gateway
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/gateway
 
 # build-go-only is the same as build today; kept for backwards
 # compatibility with scripts that referenced the old target name.
 build-go-only:
-	$(GO) build -o $(BIN) ./cmd/gateway
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/gateway
+
+# version prints the identity the next build would embed.
+version:
+	@echo "version:    $(VERSION)"
+	@echo "commit:     $(COMMIT)"
+	@echo "build_date: $(BUILD_DATE)"
 
 test:
 	$(GO) test $(PKG)

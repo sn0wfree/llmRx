@@ -1,0 +1,80 @@
+# systemd unit for llmRx (bare-metal / VM install).
+#
+# Install:
+#   sudo install -m 0755 llmrx /usr/local/bin/llmrx
+#   sudo useradd --system --home /var/lib/llmrx --shell /usr/sbin/nologin llmrx
+#   sudo mkdir -p /etc/llmrx && sudo chown llmrx:llmrx /etc/llmrx
+#   sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/llmrx/master.key'
+#   sudo chown llmrx:llmrx /etc/llmrx/master.key
+#   printf 'LLMRX_KEY_MASTER=%s\n' "$(cat /etc/llmrx/master.key)" \
+#     | sudo tee /etc/llmrx/llmrx.env >/dev/null
+#   sudo chmod 0600 /etc/llmrx/llmrx.env
+#   sudo cp config.yml /etc/llmrx/config.yml
+#   sudo cp llmrx.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now llmrx
+#
+# The gateway drops privileges to the llmrx user itself when started as
+# root, but running it as a dedicated non-root user is preferred; this
+# unit does the latter and never needs root.
+
+[Unit]
+Description=llmRx LLM API gateway
+Documentation=https://github.com/sn0wfree/llmRx
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=llmrx
+Group=llmrx
+
+# --- configuration ---
+# LLMRX_KEY_MASTER (and any other overrides) come from this file; the
+# binary reads the env var directly, so this is the only key source.
+EnvironmentFile=/etc/llmrx/llmrx.env
+ExecStart=/usr/local/bin/llmrx -config /etc/llmrx/config.yml
+WorkingDirectory=/var/lib/llmrx
+StateDirectory=llmrx
+StateDirectoryMode=0750
+ConfigurationDirectory=llmrx
+
+# --- lifecycle ---
+Restart=on-failure
+RestartSec=5s
+# Long enough for in-flight SSE streams to finish (default stream
+# timeout is 300s in config; adjust if you raise it).
+TimeoutStopSec=90s
+KillSignal=SIGTERM
+SuccessExitStatus=0
+
+# --- health ---
+# The binary implements its own probe (raw TCP + HTTP/1.0) so no curl
+# is needed on the host. It probes GET /health on the configured port.
+ExecStartPost=/bin/sh -c 'sleep 2; /usr/local/bin/llmrx -healthcheck 127.0.0.1:8787'
+
+# --- hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+ReadWritePaths=/var/lib/llmrx
+# The service only needs outbound TCP (upstream providers) and its
+# listening socket.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# --- logging ---
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=llmrx
+
+[Install]
+WantedBy=multi-user.target

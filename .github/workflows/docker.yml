@@ -1,11 +1,21 @@
 name: docker
 
+# Development images only. Tagged releases are published by
+# release.yml, which builds per-arch (amd64 native, arm64 via cross
+# gcc) and pushes a multi-arch manifest. Keeping this workflow to
+# branch pushes avoids two workflows racing to publish :latest.
+
 on:
   push:
     branches: [master]
-    tags: ['v*']
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
   pull_request:
     branches: [master]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
 
 env:
   REGISTRY: ghcr.io
@@ -27,15 +37,16 @@ jobs:
           go-version: '1.22'
 
       # The Dockerfile COPYs build/llmRx (statically linked, CGO
-      # sqlite3). Nothing in the repo produces it at checkout, so
-      # the image must be built here first. Keep GOARCH in sync
-      # with scripts/build-docker.sh — cross-compiling CGO sqlite3
-      # for arm64 needs a cross gcc, so CI is amd64-only for now.
+      # sqlite3). Nothing in the repo produces it at checkout, so the
+      # image must be built here first. arm64 lives in release.yml.
       - name: Build gateway binary
         run: |
           mkdir -p build
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-            go build -ldflags="-s -w -extldflags '-static'" \
+            go build -ldflags="-s -w -extldflags '-static' \
+              -X main.version=${GITHUB_REF_NAME}-$(git rev-parse --short HEAD) \
+              -X main.commit=${{ github.sha }} \
+              -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o build/llmRx ./cmd/gateway
 
       - name: Set up QEMU
@@ -59,9 +70,8 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
             type=sha
+            type=raw,value=edge,enable={{is_default_branch}}
 
       - name: Build and push
         uses: docker/build-push-action@v5

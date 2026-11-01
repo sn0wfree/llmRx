@@ -4,45 +4,64 @@ All notable changes to llmRx are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — Hardening + P7+ 闭环 + Passthrough + 多租户 + 热重载
+## [v0.1.0] — 2026-11-01
+
+首个带版本号与发布产物的版本。功能面在 P0–P13 已闭环；本版补齐的是
+"用户能装"所需的一切：版本自述、多平台产物、容器多架构、Helm 版本对齐。
+
+### Added
+
+#### 构建与发布
+- **`-version` flag** 打印语义版本、commit、构建时间与 Go 版本，且在
+  config 加载/DB 打开之前短路——一个无法启动的二进制也能自报身份。
+  未注入 ldflags 的裸 `go build` 会回退到工具链嵌入的 VCS stamp，
+  所以永远不是 "unknown"。
+- **`GET /health` 增加 `version` 字段**（纯增量，旧客户端不受影响），
+  响应头 `X-Llmrx-Version` 覆盖所有响应（含错误与 SSE），便于确认对端版本。
+- **`.goreleaser.yaml` + `release.yml`**：打 tag 自动产出 linux/amd64、
+  linux/arm64、darwin/amd64、darwin/arm64、windows/amd64 二进制，
+  归档 + `checksums.txt` + GitHub Release（按 commit 前缀分组）。
+- **多架构容器镜像**：release 工作流 per-arch 构建（amd64 原生、arm64 交叉 gcc）
+  后合并 manifest；`latest` 只跟随非预发布 tag。
+- **Helm 版本同源**：`image.tag` 默认空，回退到 `.Chart.AppVersion`，
+  由 release 工作流改写为 git tag。`helm install` 不带参数即装对版本。
+- **`deploy/systemd/llmrx.service`**：以专用非 root 用户运行，
+  含 hardening 指令与内置健康检查。
+- **`scripts/release-check.sh`**：发版前自检（工作区干净、tag 未占用、
+  CHANGELOG 已切段、go 版本与 CI 一致、测试通过）。
+- **`make version`** 显示下次构建将嵌入的版本信息。
+
+#### 日志存储
+- **默认后端改为 append-only JSONL**（`logstore_backend: jsonl`）。见下方
+  Changed 段与 `docs/P17-JSONL-LOGS.md`。
 
 ### Changed
-- **Log storage now defaults to append-only JSONL**
-  (`logstore_backend: jsonl`). Request logs are written as one JSON
-  object per line into
-  per-day files (`logs/YYYY-MM-DD.jsonl`), rolling over to
-  `-N.jsonl` past `MaxFileBytes`. There is no SQL parsing, no B-tree
-  and no WAL on the write path; a batch is a single buffered write.
-  Measured on WSL2/amd64: **3.85x faster** than the SQLite backend for
-  a 20k-row batch. Aggregates (`Stats`, unfiltered `TopByField`) are
-  served from a per-file `<key>.meta.json` rollup, keeping them
-  O(files): `LogStats` over 30 files / 30k rows takes **~416µs**.
-  Existing `*.db` day files are migrated automatically on first start
-  and kept as `*.db.migrated`; `-migrate-logs` runs the migration
-  explicitly. `logstore_backend: sqlite` still selects the old
-  backend. See `docs/P17-JSONL-LOGS.md`.
+- **日志写入路径改为 JSONL + rotate**。每行一个 JSON 对象写入按天文件
+  （`logs/YYYY-MM-DD.jsonl`），超过 `MaxFileBytes` 滚动到 `-N.jsonl`。
+  写入路径没有 SQL 解析、没有 B-tree、没有 WAL——一个批次就是一次带缓冲的
+  write。实测（WSL2/amd64）**比 SQLite 后端快 3.85 倍**（2 万行批量）。
+  聚合（`Stats`、无过滤的 `TopByField`）由每文件的 `<key>.meta.json`
+  增量汇总提供，复杂度 O(文件数)：30 文件 / 3 万行的 `LogStats` 约 **416µs**。
+  已有 `*.db` 日志文件在首次启动时自动迁移，原文件保留为 `*.db.migrated`；
+  `-migrate-logs` 可显式执行。`logstore_backend: sqlite` 仍可切回旧后端。
+- **`go.mod` 的 go 版本从 1.18 对齐到 1.22**（与 CI 一致；1.18 早已 EOL）。
+- **`docker.yml` 收窄为分支开发镜像**（tag `edge` / `sha-*`），
+  正式版本镜像统一由 `release.yml` 发布，避免两个工作流抢 `latest`。
 
 ### Fixed
-- **Migrated `.db` backups were never reclaimed by retention.** The
-  JSONL migration renames each legacy file to `<day>.db.migrated`, but
-  retention discovers expired days through `ListFiles()`, which globs
-  `*.jsonl` only. An upgrade therefore left a full copy of all
-  historical logs on disk with no mechanism to remove it. Two fixes:
-  the delete/archive paths now strip the correct suffix (they built
-  `<day>.db.db.migrated`, one `.db` too many), and a new optional
-  driver capability (`ExpiredLegacyKeys`) lets the JSONL backend
-  report days that exist only as side-car artefacts, including
-  orphaned backups whose `.jsonl` is already gone. Retention merges
-  those keys into the same sweep.
-- **`TopByField` and `TimeSeries` failed with "no such column" when a
-  filter was applied** on the SQLite log backend. The WHERE clause was
-  applied to the outer `UNION ALL` subquery, but the inner SELECT
-  projected only the columns the aggregate consumed, so filtering by
-  `token_id`, `channel_id`, `key_id`, `model`, `endpoint` or
-  `cache_hit` errored. Callers (Analytics, usage pages) discard the
-  error, so the symptom was a silently empty chart whenever a user
-  added a filter. New `unionProjection()` projects every column
-  `buildWhere` can reference.
+- **迁移产生的 `.db` 备份永远不被回收。** 迁移把旧文件重命名为
+  `<day>.db.migrated`，而 retention 通过 `ListFiles()` 找过期文件，该方法只
+  glob `*.jsonl`。升级一次就会在磁盘上留下全部历史日志的完整副本且无法回收。
+  两处修复：删除/归档路径的后缀拼接错误（原先生成 `<day>.db.db.migrated`，
+  多一个 `.db`），以及新增可选驱动能力 `ExpiredLegacyKeys`，让 JSONL 后端
+  报告"只以 side-car 存在"的过期天（含 `.jsonl` 已消失的孤立备份），
+  retention 将其合并进同一轮 sweep。
+- **`TopByField` 与 `TimeSeries` 在带过滤条件时报 "no such column"**
+  （SQLite 日志后端）。WHERE 挂在外层 `UNION ALL` 子查询，而内层 SELECT 只
+  投影了聚合用到的列，因此按 `token_id`/`channel_id`/`key_id`/`model`/
+  `endpoint`/`cache_hit` 过滤会报错。调用方（Analytics、用量页）丢弃了该
+  错误，症状是用户一加筛选图表就静默变空白。新增 `unionProjection()`
+  投影 `buildWhere` 可能引用的全部列。
 
 ### Security
 - **Argon2id** password hash replaces P6 bcrypt. New params:
