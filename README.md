@@ -359,6 +359,8 @@ go test -v ./internal/admin ./internal/api
 | [docs/operations-guide.md](docs/operations-guide.md) | 运维手册 |
 | [docs/developer-guide.md](docs/developer-guide.md) | 开发者指南 |
 | [docs/cluster-design/](docs/cluster-design/) | 集群设计文档 |
+| [docs/P14-BALANCE-MONITOR.md](docs/P14-BALANCE-MONITOR.md) | 上游渠道余额监控设计(调研 + 方案,待实施) |
+| [docs/P15-CLIENT.md](docs/P15-CLIENT.md) | 客户端形态(边缘代理 + 桌面 GUI)与服务端连接设计(规划稿) |
 | [CHANGELOG.md](CHANGELOG.md) | 各 Phase 变更记录 |
 
 ## 路线图
