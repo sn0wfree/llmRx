@@ -18,6 +18,10 @@ name: release
 # Those jobs only produce binaries. A single `package-and-release` job
 # collects them, builds the archives, writes checksums and publishes one
 # Release — so several jobs can never race to create it.
+#
+# A final `checksums` job re-hashes the complete asset set once the Helm
+# chart is attached, because package-and-release cannot see files that a
+# later job uploads.
 
 on:
   push:
@@ -205,12 +209,18 @@ jobs:
           pack() {
             local name="$1" os="$2" arch="$3" bin="$4"
             local stage; stage=$(mktemp -d)
+            # mktemp -d is 700 and actions/download-artifact does not
+            # preserve unix modes, so both the directory and every
+            # executable are normalised here instead of trusting dist/.
+            chmod 755 "$stage"
             cp "$bin" "$stage/"
+            chmod 755 "$stage/$(basename "$bin")"
             if [ "$name" = "llmrx" ]; then
               # Ship the sample config and the systemd unit with the
               # server, mirroring what an operator needs to start it.
               cp config.yml "$stage/" 2>/dev/null || true
               mkdir -p "$stage/systemd"
+              chmod 755 "$stage/systemd"
               cp deploy/systemd/llmrx.service "$stage/systemd/" 2>/dev/null || true
             fi
             cp README.md CHANGELOG.md "$stage/" 2>/dev/null || true
@@ -248,6 +258,8 @@ jobs:
             pack gateway-client "$os" "$arch" "$bin"
           done < <(for b in $client_bins; do emit "$b"; done)
 
+          # Provisional: covers the archives only. The checksums job
+          # replaces this file once the Helm chart has been attached.
           ( cd out && sha256sum * > checksums.txt )
           echo "--- produced ---"
           ls -lh out
@@ -371,3 +383,33 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "$GITHUB_REF_NAME" out/*.tgz --clobber
+
+  # ---------------------------------------------------------------- checksums
+  #
+  # package-and-release can only hash what it produced itself, and the Helm
+  # chart is uploaded later by the helm job. Running sha256sum after both
+  # have finished is the only way to cover every asset in one file.
+  checksums:
+    runs-on: ubuntu-latest
+    needs: [package-and-release, helm]
+    steps:
+      - name: Download every release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p assets
+          gh release download "$GITHUB_REF_NAME" --dir assets --clobber
+          ls -lh assets
+
+      - name: Recompute checksums over the whole asset set
+        run: |
+          # The download brings the old checksums.txt with it; hashing it
+          # would fold the previous manifest into the new one.
+          rm -f assets/checksums.txt
+          ( cd assets && sha256sum * > checksums.txt )
+          cat assets/checksums.txt
+
+      - name: Replace checksums.txt on the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" assets/checksums.txt --clobber

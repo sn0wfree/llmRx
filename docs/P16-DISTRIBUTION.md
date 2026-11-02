@@ -506,3 +506,84 @@ git push origin v0.1.0
 # 3. 观察 Actions:goreleaser -> docker -> helm 三个 job
 # 4. 下载一个产物验证版本号,并 docker run ghcr.io/...:v0.1.0 -version
 ```
+
+## 14. 首次真实发布记录(v0.1.0,2026-11-02)
+
+### 14.1 结果
+
+`v0.1.0` 于 2026-11-02T06:00:57Z 触发第 5 次 release 运行,全部 job 通过
+(`build-linux` / `build-client` / `build-darwin` / `build-windows` /
+`package-and-release` / `docker` / `helm`),发布 12 个资产,总计 56.76 MB。
+
+| 资产 | 大小 |
+|---|---|
+| `llmrx_0.1.0_linux_amd64.tar.gz` | 8,073,333 |
+| `llmrx_0.1.0_linux_arm64.tar.gz` | 7,373,856 |
+| `llmrx_0.1.0_darwin_amd64.tar.gz` | 7,611,012 |
+| `llmrx_0.1.0_darwin_arm64.tar.gz` | 7,126,999 |
+| `llmrx_0.1.0_windows_amd64.zip` | 7,673,106 |
+| `gateway-client_*` × 5 | 4.0–4.5 MB |
+| `checksums.txt` | 1,017 |
+| `llmrx-0.1.0.tgz`(Helm) | 4,547 |
+
+### 14.2 下载校验
+
+用 GitHub API 的资产 `digest` 字段(服务端计算的 sha256)与 `checksums.txt`
+逐条比对,**10 个二进制全部一致**,不需要下载即可确认归档未损坏。
+
+实际下载 linux/amd64 两个归档后:
+
+```
+gateway-client_0.1.0_linux_amd64.tar.gz: OK
+llmrx_0.1.0_linux_amd64.tar.gz: OK
+
+$ ./gateway-client -version
+0.1.0 (c778253, 2026-11-02T06:01:13Z, go1.22.12, edge)
+```
+
+> 注:本机到 GitHub release CDN 的带宽只有 ~16 KB/s,单次请求 150 s 超时,
+> 必须用 `curl -C -` 断点续传。这是网络环境问题,不是产物问题。
+
+### 14.3 发现的两个打包缺陷
+
+**缺陷 1:两个平台的 unix 归档里,二进制都丢了可执行位。**
+
+```
+$ tar -tvzf llmrx_0.1.0_linux_amd64.tar.gz
+drwx------ runner/runner        0 ./                # ← 700
+-rw-r--r-- runner/runner 21652056 ./llmrx           # ← 644
+$ tar -tvzf gateway-client_0.1.0_linux_amd64.tar.gz
+-rw-r--r-- runner/runner 11219096 ./gateway-client  # ← 644
+
+$ ./llmrx -version
+bash: ./llmrx: Permission denied
+```
+
+根因:`goreleaser build` 产出的 `dist/` 里二进制是 755,但
+`package-and-release` job 用 `actions/download-artifact` 把 `dist/` 从构建
+job 取回来——**upload/download-artifact 不保留 unix 权限位**,下载回来一律
+644,`cp` 之后仍然是 644,`tar` 如实记录。
+
+同一条流水线还顺带泄漏了第二个权限问题:stage 目录用 `mktemp -d`,默认 700,
+被打进 `./` 条目。解压后如果以另一个用户运行(典型:`tar -C /opt` 后用非
+root 启动),会连目录都进不去。
+
+**缺陷 2:Helm chart 不在 `checksums.txt` 里。**
+
+`( cd out && sha256sum * > checksums.txt )` 在 `package-and-release` job 里执行,
+而 chart 由后面的 `helm` job 单独 `helm package` 后上传,两者没有先后依赖。
+结果 12 个资产里只有 10 个有校验和。对运维来说,chart 恰恰是需要校验的那个。
+
+### 14.4 修复
+
+- 打包时把 stage 目录 `chmod 755`,二进制 `chmod 755`,**不依赖上游权限位**;
+  Windows 的 zip 分支跳过(zip 不记录 unix 权限位,`python3` 写出的条目
+  在 Windows 上也不需要可执行位);
+- `package-and-release` 的 `sha256sum *` 只覆盖它自己产出的文件。
+  Helm chart 由后面的 `helm` job 单独打包上传,两者无依赖关系,因此 12 个
+  资产里只有 10 个有校验和。
+  **修复:新增独立 `checksums` job,`needs: [package-and-release, helm]`,
+  下载全部资产、统一计算、覆盖上传 `checksums.txt`。**
+
+已按此修改 `.github/workflows/release.yml`;`v0.1.0` 的资产保持原样不改——
+校验和缺失已在本节记录,重新发版会在 `v0.1.1` 生效。

@@ -4,6 +4,22 @@ All notable changes to llmRx are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+#### 发布产物
+- **归档里的二进制丢了可执行位**。`actions/download-artifact` 不保留
+  unix 权限位，取回 `dist/` 后二进制一律变 644，`tar` 如实记录，
+  解压后 `./llmrx` 直接 `Permission denied`。打包时显式 `chmod 755`
+  二进制与 stage 目录，不再依赖上游权限。
+- **归档根目录是 700**。stage 由 `mktemp -d` 创建，默认权限被打进 `./`
+  条目，非 root 用户解压后进不去目录。改为 `chmod 755 "$stage"`。
+- **`checksums.txt` 漏掉 Helm chart**。原步骤只对 `package-and-release`
+  自己产出的文件求哈希，而 chart 由后续 `helm` job 上传，导致 12 个资产
+  只有 10 个有校验和。新增独立 `checksums` job，待两个 job 完成后重新
+  计算全集并覆盖上传。
+
 ## [v0.1.0] — 2026-11-01
 
 首个带版本号与发布产物的版本。功能面在 P0–P13 已闭环；本版补齐的是
