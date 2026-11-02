@@ -117,9 +117,14 @@ func (s *controlState) touch(client, clientVersion string, now time.Time) int {
 // status reports clients that have checked in recently.
 type clientStatus struct {
 	Name          string     `json:"name"`
+	ClientID      string     `json:"client_id,omitempty"`
 	LastSeen      *time.Time `json:"last_seen,omitempty"`
 	ClientVersion string     `json:"client_version,omitempty"`
 	Online        bool       `json:"online"`
+	Revoked       bool       `json:"revoked,omitempty"`
+	// UpdatedAt is a display convenience: the last activity timestamp as
+	// a string, from either source.
+	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
 func (s *controlState) statuses(now time.Time, onlineWithin time.Duration) []clientStatus {
@@ -236,12 +241,52 @@ func VerifyBundle(b ConfigBundle, signature, key string) bool {
 
 // ---------- admin surface ----------
 
-// EdgeClientsStatus is the read model for the admin page.
-func (ing *Ingestor) EdgeClientsStatus() []clientStatus {
-	if ing.control == nil {
-		return nil
+// StatusesJSON exposes the client list to the admin API, merging the
+// static config list with the enrolled registry.
+func (ing *Ingestor) StatusesJSON() any {
+	return ing.mergedStatuses()
+}
+
+// mergedStatuses combines static-config clients (which only have
+// in-memory heartbeat state) with enrolled clients (which have a
+// persisted last_seen). Enrolled rows win on name collision: they are
+// the authoritative record once enrollment is in play.
+func (ing *Ingestor) mergedStatuses() []clientStatus {
+	now := time.Now().UTC()
+	out := ing.control.statuses(now, 90*time.Second)
+
+	if ing.enrollStore == nil {
+		return out
 	}
-	return ing.control.statuses(time.Now().UTC(), 90*time.Second)
+	enrolled, err := ing.enrollStore.ListEdgeClients()
+	if err != nil {
+		return out
+	}
+
+	seen := make(map[string]bool, len(out))
+	for _, c := range out {
+		seen[c.Name] = true
+	}
+	for i := range enrolled {
+		c := &enrolled[i]
+		if seen[c.Name] {
+			continue
+		}
+		st := clientStatus{
+			Name:      c.Name,
+			ClientID:  c.ClientID,
+			Revoked:   c.Revoked(),
+			UpdatedAt: c.CreatedAt.UTC().Format(time.RFC3339),
+		}
+		if !c.LastSeenAt.IsZero() {
+			t := c.LastSeenAt.UTC()
+			st.LastSeen = &t
+			st.Online = now.Sub(t) <= 90*time.Second
+			st.UpdatedAt = t.Format(time.RFC3339)
+		}
+		out = append(out, st)
+	}
+	return out
 }
 
 // handleAdminStatus serves the admin-visible client list. Mounted
@@ -250,7 +295,7 @@ func (ing *Ingestor) EdgeClientsStatus() []clientStatus {
 func (ing *Ingestor) AdminStatusHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"clients": ing.EdgeClientsStatus(),
+			"clients": ing.mergedStatuses(),
 			"config_version": func() int {
 				if ing.control == nil {
 					return 0
@@ -289,12 +334,14 @@ func (ing *Ingestor) controlEnabled() bool { return ing.control != nil }
 // free of this package (and therefore of the log store's CGO
 // dependency).
 
-// EdgeClientsStatusJSON exposes the client list to the admin API.
+// EdgeClientsStatusJSON exposes the client list to the admin API,
+// merging static-config clients with the enrolled registry so an
+// operator sees one list.
 func (ing *Ingestor) EdgeClientsStatusJSON() any {
 	if ing.control == nil {
 		return []clientStatus{}
 	}
-	return ing.control.statuses(time.Now().UTC(), 90*time.Second)
+	return ing.mergedStatuses()
 }
 
 // CurrentBundleJSON exposes the active bundle to the admin API.

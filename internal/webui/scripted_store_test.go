@@ -162,6 +162,36 @@ func (s *ScriptedStore) RecordChannelSpend(channelID int64, cost float64) error 
 func (s *ScriptedStore) UpdateChannelBalance(channelID int64, balance, currency string, checkedAt time.Time, balanceErr string) error {
 	return s.underlying.UpdateChannelBalance(channelID, balance, currency, checkedAt, balanceErr)
 }
+
+// --- Edge clients (P15 phase 3) ---
+
+func (s *ScriptedStore) CreateEnrollToken(tokenHash, clientName string, expiresAt time.Time) error {
+	return s.underlying.CreateEnrollToken(tokenHash, clientName, expiresAt)
+}
+
+func (s *ScriptedStore) ConsumeEnrollToken(tokenHash, usedClient string, now time.Time) (string, error) {
+	return s.underlying.ConsumeEnrollToken(tokenHash, usedClient, now)
+}
+
+func (s *ScriptedStore) CreateEdgeClient(c *store.EdgeClient) error {
+	return s.underlying.CreateEdgeClient(c)
+}
+
+func (s *ScriptedStore) GetEdgeClientBySecret(secretHash string) (*store.EdgeClient, error) {
+	return s.underlying.GetEdgeClientBySecret(secretHash)
+}
+
+func (s *ScriptedStore) ListEdgeClients() ([]store.EdgeClient, error) {
+	return s.underlying.ListEdgeClients()
+}
+
+func (s *ScriptedStore) RevokeEdgeClient(clientID string) error {
+	return s.underlying.RevokeEdgeClient(clientID)
+}
+
+func (s *ScriptedStore) TouchEdgeClient(clientID string, at time.Time) error {
+	return s.underlying.TouchEdgeClient(clientID, at)
+}
 func (s *ScriptedStore) GetKeys(channelID int64) ([]model.Key, error) {
 	if s.GetKeysFunc != nil {
 		return s.GetKeysFunc(channelID)

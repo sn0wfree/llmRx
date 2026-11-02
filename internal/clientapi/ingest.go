@@ -25,10 +25,15 @@ type EdgeClient struct {
 // (heartbeat + signed config) that edge clients poll.
 type Ingestor struct {
 	logStore *logstore.Manager
-	clients  []EdgeClient
+	// clients is the static config.yml list plus any client enrolled at
+	// runtime. Guarded by mu because enroll appends to it.
+	clients []EdgeClient
 	// control holds the pull-based control plane state. nil disables
 	// /client/v1/heartbeat and /client/v1/config.
 	control *controlState
+	// enrollStore persists enrolled clients and one-time codes (P15
+	// phase 3). nil disables /client/v1/enroll.
+	enrollStore EnrollStore
 
 	// dedup guards against retried uploads double-counting rows. An
 	// in-memory LRU of recent (client, request_id) pairs; a restart
@@ -90,6 +95,9 @@ func (ing *Ingestor) Handler() http.Handler {
 	r.HandleFunc("/client/v1/healthz", ing.handleHealth)
 	r.HandleFunc("/client/v1/heartbeat", ing.handleHeartbeat)
 	r.HandleFunc("/client/v1/config", ing.handleConfig)
+	// Enrollment is unauthenticated by design: the one-time code is the
+	// credential. It answers 503 when no registry is configured.
+	r.HandleFunc("/client/v1/enroll", ing.handleEnroll)
 	return r
 }
 
@@ -101,7 +109,11 @@ func (ing *Ingestor) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusUnauthorized, `{"error":{"code":"invalid_client","message":"unknown edge client token"}}`)
 		return
 	}
-	_ = token
+	// Persist last_seen for enrolled clients (best effort: telemetry for
+	// the admin page must never fail a heartbeat).
+	if c, found := ing.clientBySecret(token); found {
+		_ = ing.enrollStore.TouchEdgeClient(c.ClientID, time.Now().UTC())
+	}
 	if ing.control == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "control plane disabled")
 		return
@@ -132,20 +144,25 @@ func (ing *Ingestor) authenticate(r *http.Request) (string, bool) {
 
 // authenticateFull also returns the matched token, which the control
 // plane needs as the HMAC key for the client's config signature.
+//
+// Resolution order: static config list, then the enrolled-client
+// registry. A secret enrolled at runtime signs its own config, so the
+// control plane keeps working across restarts without the operator
+// editing config.yml.
 func (ing *Ingestor) authenticateFull(r *http.Request) (name, token string, ok bool) {
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
 		return "", "", false
 	}
 	got := strings.TrimPrefix(auth, "Bearer ")
-	for _, c := range ing.clients {
-		// Constant-time comparison: these tokens authenticate writes
-		// from semi-trusted edge machines.
-		if c.Token != "" && equalFoldConstantTime(got, c.Token) {
-			return c.Name, c.Token, true
-		}
+	if got == "" {
+		return "", "", false
 	}
-	return "", "", false
+	name, ok = ing.verifyClient(got)
+	if !ok {
+		return "", "", false
+	}
+	return name, got, true
 }
 
 func equalFoldConstantTime(a, b string) bool {

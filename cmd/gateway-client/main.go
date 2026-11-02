@@ -37,10 +37,22 @@ import (
 func main() {
 	cfgPath := flag.String("config", "client.yml", "client config file path")
 	showVersion := flag.Bool("version", false, "print the build version and exit")
+	enrollToken := flag.String("enroll", "", "exchange a one-time enrollment code for credentials, write them into the config file, then exit")
+	enrollName := flag.String("enroll-name", "", "optional label for this client (defaults to the name the code was issued for)")
+	serverURL := flag.String("server", "", "server base URL (used with -enroll when the config file does not exist yet)")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println(buildInfoString())
+		return
+	}
+
+	// `-enroll` runs once and exits: redeem the code, plant the
+	// credentials, and let the normal startup path take over next time.
+	if *enrollToken != "" {
+		if err := runEnroll(*serverURL, *enrollToken, *cfgPath, *enrollName); err != nil {
+			fatal(err)
+		}
 		return
 	}
 

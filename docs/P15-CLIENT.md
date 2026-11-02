@@ -731,3 +731,33 @@ secret 只在 enroll 响应里出现一�?服务端只�?hash�?
 - 配置回退:数据库无行时静态配置仍可用;
 - 客户�?`-enroll`:写盘权限 0600、重�?enroll 覆盖语义明确;
 - 全量测试 + race + �?CGO 交叉编译�?
+
+### 22.7 实施记录
+
+落地完成,�?§22.1-22.6 的设计一�?实现中发现并修正了一处设计缺陷�?
+**发现的问�?吊销不生效�?* 初版�?enroll 成功后把 secret 追加进内存的
+`ing.clients` 列表(为了"无需重启即可�?)。但 `verifyClient` 先查内存,
+所�?*吊销一个已 enroll 的客户端�?它的 secret 仍然能认�?*——直到进程重启�?�?`TestEnroll_RevokedSecretRejected` 直接抓到�?
+修复:删掉那个内存缓存。数据库是唯一真相,每次请求都查(heartbeat 30s
+一次、usage 60s 一�?查询成本可以忽略)。吊销立即生效�?
+**落地清单**
+
+| 位置 | 产出 |
+|---|---|
+| `store/edge_repo.go` | `EdgeClientRepository` 接口 + `EdgeClient` 类型 |
+| `store/edge_sql.go` | 七个方法;`ConsumeEnrollToken` 用条�?UPDATE 保证原子单次使用 |
+| `store/sqlite.go` | `edge_enroll_tokens` / `edge_clients` 两张�?|
+| `clientapi/enroll.go` | enroll 端点、`IssueEnrollToken`、`verifyClient`(静�?数据库双�?、吊销 |
+| `clientapi/ingest.go` | 路由 + 鉴权改走 `verifyClient` + heartbeat �?last_seen |
+| `clientapi/control.go` | `mergedStatuses` 合并静态与注册表两个来�?|
+| `admin/edge.go` | 签发接入码、吊销两个端点 |
+| `cmd/gateway-client/enroll.go` | `-enroll` / `-server` / `-enroll-name` |
+
+**验证**
+
+- `clientapi` 17 个用�?成功注册(secret 能立即认证、库里只�?hash)�?  单次使用�?*8 并发抢同一个码只成功一�?*、过期拒绝、未知码拒绝�?  **三种失败模式响应完全一�?*(防枚�?、未配置注册表时 503�?  需�?POST/需�?token、名字必填、enrolled secret 可用于控制面且签名可验证�?  **吊销后立即拒�?*、静态配置仍可用、heartbeat 记录 last_seen、admin 包装;
+- `admin` 5 个用�?签发返回一次性码且不出现在列表里、名字必填、会话守卫�?  吊销幂等且列表标记、正常流�?
+- 全量 `go test ./...` 通过;`go test -race`(clientapi/client/admin/store)全绿;
+- �?CGO 交叉编译四目标通过�?
+**仍未�?*:凭证轮换(吊销+重新 enroll 可替�?、管理台 HTML 页面
+(目前�?JSON API)、桌�?GUI�?

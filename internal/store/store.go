@@ -73,6 +73,8 @@ type Store interface {
 	SecurityRepository
 	MCPRepository
 	ModelCostRepository
+	// EdgeClientRepository backs edge-client enrollment (P15 phase 3).
+	EdgeClientRepository
 
 	Ping(ctx context.Context) error
 	Close() error

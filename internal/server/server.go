@@ -411,6 +411,10 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 		}
 		if len(edgeClients) > 0 {
 			ing := clientapi.NewIngestor(s.logStore, edgeClients)
+			// P15 phase 3: the persistent registry enables enrollment.
+			// A deployment that only uses config.yml static tokens simply
+			// never calls the enroll endpoint.
+			ing.SetEnrollStore(s.store)
 			s.engine.Mount("/", ing.Handler())
 			logging.Info("edge client ingest enabled",
 				logging.F("clients", len(edgeClients)))

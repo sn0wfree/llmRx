@@ -115,6 +115,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   anyone imports `internal/store`/`internal/router` into the client,
   which would silently reintroduce the CGO sqlite dependency.
 
+#### Edge client enrollment (P15 phase 3)
+- **One-time enrollment codes**: an admin issues a 15-minute code via
+  `POST /admin/api/v1/edge-clients/enroll-tokens`; the client redeems it
+  at `POST /client/v1/enroll` for a `client_id`/`client_secret` pair.
+  Only hashes are stored on both sides, so a database dump yields no
+  usable credentials, and the plaintext code is shown exactly once.
+- Redemption is atomically single-use (a conditional UPDATE, so eight
+  concurrent requests with the same code yield exactly one credential).
+  Unknown, already-used and expired codes return an identical 401 so a
+  prober cannot enumerate valid codes.
+- Secrets are 192 bits of randomness hashed with sha256 — not Argon2id,
+  which is for low-entropy user passwords and would add tens of
+  milliseconds to every 30-second heartbeat.
+- `DELETE /admin/api/v1/edge-clients/{id}` revokes immediately: the
+  database is consulted on every request rather than cached, so a
+  revoked secret stops working without a restart.
+- Client side: `gateway-client -enroll <code> -server <url>` writes the
+  credentials into the config file atomically with mode 0600.
+- `config.yml` `edge_clients` remains as a bootstrap path for
+  deployments without a database; both sources are consulted and the
+  admin listing merges them.
+
 #### Edge client control plane (P15 phase 2)
 - **Pull-based control plane**: clients poll `POST /client/v1/heartbeat`
   every 30s and fetch `GET /client/v1/config` only when the server

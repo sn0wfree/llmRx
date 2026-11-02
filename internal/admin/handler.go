@@ -182,6 +182,9 @@ func (h *Handler) Routes() http.Handler {
 		// P15 phase 2: edge clients and their pushed config.
 		r.Get("/edge-clients", h.EdgeClients)
 		r.Put("/edge-clients/config", h.PushEdgeConfig)
+		// P15 phase 3: enrollment and revocation.
+		r.Post("/edge-clients/enroll-tokens", h.IssueEnrollToken)
+		r.Delete("/edge-clients/{id}", h.RevokeEdgeClient)
 		r.Get("/providers", h.ListProviders)
 		r.Post("/providers", h.CreateProvider)
 		r.Delete("/providers/{id}", h.DeleteProvider)

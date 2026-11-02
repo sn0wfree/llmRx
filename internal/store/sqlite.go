@@ -345,6 +345,31 @@ func (s *dbStore) migrate() error {
 			created_at INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_byok_owner_ip ON byok_channels(owner_ip, status)`,
+		// P15 phase 3: edge client enrollment.
+		//
+		// enroll tokens are single-use and short-lived; only the hash is
+		// stored so a database dump cannot be replayed at /enroll.
+		`CREATE TABLE IF NOT EXISTS edge_enroll_tokens (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			token_hash TEXT NOT NULL UNIQUE,
+			client_name TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL,
+			used_at INTEGER NOT NULL DEFAULT 0,
+			used_client TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_edge_enroll_expires ON edge_enroll_tokens(expires_at)`,
+		// Registered edge clients. secret_hash is sha256, not Argon2id:
+		// the secret is 192 bits of randomness (not a user password), and
+		// it is verified on every 30s heartbeat.
+		`CREATE TABLE IF NOT EXISTS edge_clients (
+			client_id TEXT PRIMARY KEY,
+			name TEXT NOT NULL UNIQUE,
+			secret_hash TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			last_seen_at INTEGER NOT NULL DEFAULT 0,
+			revoked_at INTEGER NOT NULL DEFAULT 0
+		)`,
 		`CREATE TABLE IF NOT EXISTS mcp_servers (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT UNIQUE NOT NULL,

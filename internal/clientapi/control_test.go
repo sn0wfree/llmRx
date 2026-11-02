@@ -225,7 +225,7 @@ func TestStatuses_TracksLastSeen(t *testing.T) {
 	_ = doControl(t, ing, http.MethodPost, "/client/v1/heartbeat", "tok-1",
 		`{"client_version":"v9.9.9","config_version":1}`)
 
-	list := ing.EdgeClientsStatus()
+	list := ing.mergedStatuses()
 	if len(list) != 1 {
 		t.Fatalf("clients = %d", len(list))
 	}
@@ -248,7 +248,7 @@ func TestStatuses_OfflineAfterWindow(t *testing.T) {
 	ing.control.lastSeen["edge-1"] = time.Now().Add(-10 * time.Minute)
 	ing.control.mu.Unlock()
 
-	list := ing.EdgeClientsStatus()
+	list := ing.mergedStatuses()
 	if len(list) != 1 || list[0].Online {
 		t.Fatalf("stale client must be offline: %+v", list)
 	}
