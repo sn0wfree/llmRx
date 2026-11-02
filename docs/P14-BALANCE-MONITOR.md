@@ -594,3 +594,70 @@ GET /admin/api/v1/channels/{id}/balance-history?days=30
 - 全量 `go test ./...` 通过;`go build` / `go vet` 干净�?
 **仍未�?*:管理台只在渠道列表做行内展开,没有独立的余额趋势页�?
 多币种渠道的对比图也没有(需要先统一币种口径)�?
+
+---
+
+## 25. 三期实施:per-key 余额
+
+### 25.1 问题
+
+余额本质�?*账号�?*�?而一个渠道可以有多个 key(每个 key 对应一个账�?�?现在的实现取"第一�?active key"查询,把结果写在渠道行�?于是:
+
+- �?key 渠道显示的是**一�?*账号的余�?却看起来像整个渠道的;
+- 某个 key 耗尽�?渠道余额可能还很好看(因为查的是另一�?key);
+- 无法判断"这个渠道是不是有一�?key 快用完了"�?
+§16 把它列为二期待办,§4.2 也写�?�?key 渠道的精确拆账留二期"�?
+### 25.2 存储:keys 表加余额�?渠道行保留汇�?
+```sql
+ALTER TABLE keys ADD COLUMN balance          TEXT NOT NULL DEFAULT '';
+ALTER TABLE keys ADD COLUMN balance_currency TEXT NOT NULL DEFAULT '';
+ALTER TABLE keys ADD COLUMN balance_updated_at INTEGER;      -- NULL = 从未查询
+ALTER TABLE keys ADD COLUMN balance_error    TEXT NOT NULL DEFAULT '';
+```
+
+渠道行的 `balance` 继续存在,但语�?*收窄�?该渠道被查询到的余额"**:
+
+- �?key 渠道:�?key 的余额相�?行为不变);
+- �?key 渠道:�?*已查�?key 中的最小�?*—�?这个渠道最快会用完的钱",
+  这正是运营者关心的数字�?
+不做的事�?**不把渠道余额改成求和**。多个账号的余额相加没有业务含义
+(它们不能互相挪用),而且会让"渠道余额"�?key 增减时跳变�?
+### 25.3 采集:�?key 而非首个 key
+
+`Monitor.QueryChannel` 改为:
+
+```
+for each active key in channel:
+    query balance with that key
+    write keys.<balance fields>
+    失败: 记录 keys.balance_error,不写历史
+write channels.balance = min(queried values)   �?汇�?append channel_balances 一�?min �?
+```
+
+**并发**:同一个渠道的多个 key **串行**查询,不并发。理�?上游余额接口通常
+按账号限�?并发打同一个上游容易触发风�?而且渠道数量×key 数量本来就小
+(典型 3×2),串行多花的几百毫秒在每小时一次的任务里无关紧要�?
+**失败隔离**:一�?key 查询失败不影响其�?key。全部失败时渠道余额保持不变,
+`channels.balance_error` 记录"所�?key 查询失败"�?
+**key 失活的处�?*:`keys.status != active` �?key 不查�?�?*清空**其余额列�?一个被禁用�?key 上保留旧余额会误导——它已经不会被使用了�?
+### 25.4 API �?UI
+
+```
+GET /admin/api/v1/channels/{id}/balances
+�?{"channel_id":1,"keys":[{"key_id":2,"masked":"sk-a***mnop","balance":"10","currency":"CNY",
+                            "updated_at":"...","error":""}, ...]}
+```
+
+Channels �?Keys 页面:每行显示�?key 的余�?+ 刷新按钮(�?key 刷新)�?
+渠道列表�?上游余额"列在�?key 时加后缀 `(最�?`,并在 tooltip 里说�?"该渠�?N �?key 中的最低余�?,避免误读为总额�?
+### 25.5 保留与历�?
+`channel_balances` 继续记录**渠道�?*�?min �?语义�?渠道可用余额的下�?�?per-key 历史本次不做:key 的生命周期比渠道短得�?轮换、禁�?,为一堆短�?序列建时间线,查询和使用价值都不高�?
+### 25.6 验证计划
+
+- �?key 渠道:行为与之前完全一�?回归);
+- �?key 渠道:�?key 查询、渠道余额取 min;
+- 一�?key 失败:其他 key 照常�?渠道余额取成功的 min;
+- 全部失败:渠道余额不变,error 记录;
+- �?active key:不查询、余额清�?
+- key 余额列往�?精度);
+- 端点:�?key 列表、masked�?04、会话守卫�?
