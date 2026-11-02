@@ -99,7 +99,7 @@ func runEnroll(serverURL, enrollToken, cfgPath, nameOverride string) error {
 		// buffered usage live together.
 		cfg.UsageFile = filepath.Join(filepath.Dir(cfgPath), "usage.jsonl")
 	}
-	if err := writeConfigFile(cfgPath, cfg); err != nil {
+	if err := client.WriteConfigFile(cfgPath, cfg); err != nil {
 		return err
 	}
 
@@ -121,7 +121,7 @@ func loadOrInitConfig(path string) (*client.Config, error) {
 			// exactly the step that supplies one. The caller fills in
 			// servers and the normal startup path validates later.
 			return &client.Config{
-				Listen:      "127.0.0.1:3425",
+				Listen:       "127.0.0.1:3425",
 				CacheEnabled: true,
 			}, nil
 		}
@@ -132,52 +132,4 @@ func loadOrInitConfig(path string) (*client.Config, error) {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return &cfg, nil
-}
-
-// writeConfigFile writes the config atomically with mode 0600.
-//
-// The temp-file-then-rename dance means a crash mid-write cannot leave a
-// truncated config that the next start would fail to parse; the 0600
-// mode is applied to the temp file so the secret is never world-readable
-// even for an instant.
-func writeConfigFile(path string, cfg *client.Config) error {
-	out, err := yaml.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-	dir := filepath.Dir(path)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return fmt.Errorf("mkdir %s: %w", dir, err)
-		}
-	}
-
-	tmp, err := os.CreateTemp(dir, ".client-*.yml")
-	if err != nil {
-		return fmt.Errorf("create temp config: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer func() {
-		_ = os.Remove(tmpName) // no-op after a successful rename
-	}()
-
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod temp config: %w", err)
-	}
-	if _, err := tmp.Write(out); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write temp config: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("sync temp config: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp config: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("rename config: %w", err)
-	}
-	return nil
 }

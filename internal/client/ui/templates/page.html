@@ -1,0 +1,193 @@
+{{define "page"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llmRx Client</title>
+<style>
+/* Inlined on purpose: this page must render when the machine is
+   offline, which is exactly when someone opens it. No CDN, no fonts. */
+:root {
+  --bg: #0f1115; --panel: #171a21; --line: #262b36;
+  --fg: #e6e9ef; --muted: #98a1b3;
+  --ok: #34d399; --warn: #fbbf24; --bad: #f87171; --accent: #60a5fa;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --line: #e2e5ea;
+    --fg: #1b1f27; --muted: #5b6474;
+    --ok: #059669; --warn: #b45309; --bad: #dc2626; --accent: #2563eb;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 24px 16px 48px;
+  background: var(--bg); color: var(--fg);
+  font: 14px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+.wrap { max-width: 880px; margin: 0 auto; }
+header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+h1 { font-size: 20px; margin: 0; font-weight: 600; }
+h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+.ver { color: var(--muted); font-size: 12px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.dot.ok { background: var(--ok); }
+.dot.warn { background: var(--warn); }
+.dot.bad { background: var(--bad); }
+.panel {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 18px; margin-bottom: 16px;
+}
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
+.kv .k { color: var(--muted); font-size: 12px; }
+.kv .v { font-size: 15px; font-variant-numeric: tabular-nums; word-break: break-all; }
+.big { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+.err { color: var(--bad); }
+.flash {
+  border-radius: 8px; padding: 10px 14px; margin-bottom: 16px;
+  border: 1px solid var(--line); background: var(--panel);
+}
+.flash.ok { border-color: var(--ok); }
+.flash.bad { border-color: var(--bad); }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+th { color: var(--muted); font-weight: 500; }
+tr:last-child td { border-bottom: none; }
+label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+input[type=text], input[type=number], input[type=password], textarea, select {
+  width: 100%; padding: 7px 10px; font: inherit; color: var(--fg);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 7px;
+}
+textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.field { margin-bottom: 14px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+button {
+  font: inherit; font-weight: 500; padding: 8px 16px; cursor: pointer;
+  color: #fff; background: var(--accent); border: none; border-radius: 7px;
+}
+button.ghost { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.check { display: flex; align-items: center; gap: 8px; }
+.check label { margin: 0; color: var(--fg); font-size: 14px; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.note { font-size: 12px; color: var(--muted); margin-top: 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>llmRx Client</h1>
+  <span class="ver">{{.Version}}</span>
+  <span style="margin-left:auto">
+    <span class="dot {{connDot .Connectivity}}"></span>{{connText .Connectivity}}
+  </span>
+</header>
+
+{{if .Flash}}<div class="flash ok">{{.Flash}}</div>{{end}}
+{{if .Error}}<div class="flash bad">{{.Error}}</div>{{end}}
+
+<div class="panel">
+  <h2>状态</h2>
+  <div class="grid">
+    <div class="kv"><div class="k">本地入口</div><div class="v"><code>http://{{.Listen}}/v1</code></div></div>
+    <div class="kv"><div class="k">运行时长</div><div class="v">{{.Uptime}}</div></div>
+    <div class="kv"><div class="k">熔断状态</div><div class="v">
+      {{if .BreakerOpen}}<span class="err">已熔断（{{.BreakerFails}} 次失败）</span>{{else}}{{if .BreakerFails}}失败 {{.BreakerFails}} 次{{else}}正常{{end}}{{end}}
+    </div></div>
+    <div class="kv"><div class="k">配置版本</div><div class="v">{{if .ConfigVersion}}{{.ConfigVersion}}{{else}}—{{end}}</div></div>
+  </div>
+  <div style="margin-top:14px">
+    <div class="k muted" style="font-size:12px">上游服务端</div>
+    <table>
+      {{range .Servers}}<tr><td><code>{{.}}</code></td></tr>{{else}}<tr><td class="muted">未配置</td></tr>{{end}}
+    </table>
+  </div>
+  {{if .ControlErr}}
+  <p class="err" style="margin:12px 0 0;font-size:12px">控制面错误：{{.ControlErr}}</p>
+  {{end}}
+  {{if .ControlOK}}
+  <p class="note">控制面最近成功：{{.ControlOK}}</p>
+  {{end}}
+</div>
+
+<div class="panel">
+  <h2>缓存</h2>
+  <div class="grid">
+    <div class="kv"><div class="k">命中率</div><div class="big">{{.CacheHitRate}}</div></div>
+    <div class="kv"><div class="k">条目</div><div class="v">{{.CacheSize}}</div></div>
+    <div class="kv"><div class="k">命中 / 未命中</div><div class="v">{{.CacheHits}} / {{.CacheMisses}}</div></div>
+    <div class="kv"><div class="k">开关</div><div class="v">{{if .CacheEnabled}}启用{{else}}<span class="muted">已关闭</span>{{end}}</div></div>
+  </div>
+  <form method="post" action="/ui/cache/purge" class="row" style="margin-top:16px">
+    <button type="submit" class="ghost">清空缓存</button>
+    <span class="note">只影响本地缓存，不影响服务端。</span>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>用量</h2>
+  <div class="grid">
+    <div class="kv"><div class="k">待上传</div><div class="v">{{.PendingUsage}} 条</div></div>
+    <div class="kv"><div class="k">持久化文件</div><div class="v"><code>{{if .UsageFile}}{{.UsageFile}}{{else}}未配置{{end}}</code></div></div>
+    <div class="kv"><div class="k">上传端点</div><div class="v"><code>{{if .UsageURL}}{{.UsageURL}}{{else}}跟随 servers{{end}}</code></div></div>
+  </div>
+</div>
+
+<form method="post" action="/ui/settings">
+<div class="panel">
+  <h2>设置</h2>
+
+  <div class="field">
+    <label for="servers">上游服务端（每行一个，按顺序故障转移）</label>
+    <textarea id="servers" name="servers" rows="3">{{.ServerList}}</textarea>
+  </div>
+
+  <div class="row" style="gap:16px;align-items:flex-start">
+    <div class="field" style="flex:1;min-width:180px">
+      <label for="cache_ttl_sec">缓存 TTL（秒）</label>
+      <input type="number" id="cache_ttl_sec" name="cache_ttl_sec" min="1" value="{{.CacheTTLSec}}">
+    </div>
+    <div class="field" style="flex:1;min-width:180px">
+      <label for="cache_max_items">缓存条目上限</label>
+      <input type="number" id="cache_max_items" name="cache_max_items" min="1" value="{{.CacheMax}}">
+    </div>
+    <div class="field" style="flex:1;min-width:180px">
+      <label for="fallback_mode">断网兜底</label>
+      <select id="fallback_mode" name="fallback_mode">
+        <option value="cache_then_fail"{{if eq .FallbackMode "cache_then_fail"}} selected{{end}}>先用缓存，再报错</option>
+        <option value="local"{{if eq .FallbackMode "local"}} selected{{end}}>本地直连上游</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="field check">
+    <input type="checkbox" id="cache_enabled" name="cache_enabled"{{if .CacheEnabled}} checked{{end}}>
+    <label for="cache_enabled">启用本地响应缓存</label>
+  </div>
+
+  <div class="row" style="gap:16px">
+    <div class="kv"><div class="k">用户 Token</div><div class="v"><code>{{.TokenMasked}}</code></div></div>
+    <div class="kv"><div class="k">客户端凭证</div><div class="v"><code>{{.ClientMasked}}</code></div></div>
+    <div class="kv"><div class="k">客户端名</div><div class="v">{{if .ClientName}}{{.ClientName}}{{else}}—{{end}}</div></div>
+  </div>
+  <p class="note">
+    凭证不在此处编辑：页面只显示掩码，回写会覆盖真实值。
+    更换凭证请用 <code>gateway-client -enroll</code>，或直接编辑配置文件。
+  </p>
+
+  <div class="row" style="margin-top:16px">
+    <button type="submit">保存设置</button>
+    <span class="note">写入配置文件（权限 0600），立即生效。</span>
+  </div>
+</div>
+</form>
+
+<p class="note" style="text-align:center">
+  本页仅在回环地址可用 · <code>/healthz</code> 提供同样的状态（JSON）
+</p>
+
+</div>
+</body>
+</html>{{end}}

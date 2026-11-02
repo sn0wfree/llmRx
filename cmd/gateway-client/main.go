@@ -15,6 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/sn0wfree/llmRx/internal/client"
+	"github.com/sn0wfree/llmRx/internal/client/ui"
 )
 
 // gateway-client — the llmRx edge client (P15).
@@ -100,9 +101,24 @@ func main() {
 		go ctl.Run(ctx, 30*time.Second)
 	}
 
+	// The local status page shares the proxy's listener: the client
+	// already owns 127.0.0.1:<listen>, and a second port would be one
+	// more thing to firewall or forget.
+	uiSrv, err := ui.New(proxy, cfg, *cfgPath, buildVersion())
+	if err != nil {
+		fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("/ui", uiSrv.Handler())
+	mux.Handle("/ui/", uiSrv.Handler())
+	// Everything else is the proxy (which itself routes /healthz,
+	// /v1/* and the passthrough).
+	mux.Handle("/", proxy.Handler())
+
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           proxy.Handler(),
+		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -113,6 +129,7 @@ func main() {
 	}
 	fmt.Printf("llmRx client listening on %s → %s (version %s)\n",
 		cfg.Listen, cfg.Servers[0], buildInfoString())
+	fmt.Printf("status page: http://%s/ui\n", cfg.Listen)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)

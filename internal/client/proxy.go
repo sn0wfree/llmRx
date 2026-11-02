@@ -88,6 +88,10 @@ func (p *Proxy) Handler() http.Handler {
 // state.
 func (p *Proxy) SetControl(c *Control) { p.control = c }
 
+// Control returns the control-plane poller (nil when no client token is
+// configured).
+func (p *Proxy) Control() *Control { return p.control }
+
 // handleLocalHealth is the client's own liveness endpoint, distinct
 // from the server's /health which is proxied through "/".
 func (p *Proxy) handleLocalHealth(w http.ResponseWriter, r *http.Request) {

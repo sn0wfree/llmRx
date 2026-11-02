@@ -115,6 +115,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   anyone imports `internal/store`/`internal/router` into the client,
   which would silently reintroduce the CGO sqlite dependency.
 
+#### Edge client local status page (P15 phase 4)
+- `GET /ui` serves a self-contained status page on the client's own
+  listener: connectivity (breaker state), uptime, config version,
+  control-plane errors, cache hit rate and size, pending usage, and a
+  settings form that writes back to `client.yml`.
+- **No external resources.** The server's admin UI loads Tailwind from a
+  CDN; the client cannot, because it exists so agents keep working
+  offline — a page needing a CDN renders blank at exactly the moment a
+  user opens it to find out why they are offline. Styles are inlined and
+  everything ships via `go:embed`. A test asserts the markup contains no
+  `cdn.`/`unpkg`/`jsdelivr`/`htmx`/`<script src=`.
+- Three actions are plain form POSTs with 303 redirects, so the page
+  works without JavaScript.
+- Credentials are always masked and never echoed: the settings form
+  deliberately cannot edit tokens, since a round-trip of a displayed
+  mask would overwrite the real secret. Rotation stays with `-enroll`.
+- Settings writes reuse the same atomic temp+rename 0600 writer as
+  `-enroll`, so both paths produce identical file permissions.
+
 #### Edge client enrollment (P15 phase 3)
 - **One-time enrollment codes**: an admin issues a 15-minute code via
   `POST /admin/api/v1/edge-clients/enroll-tokens`; the client redeems it

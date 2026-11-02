@@ -85,6 +85,10 @@ func (c *Cache) purge(ctx context.Context) error {
 	return c.inner.Purge(ctx)
 }
 
+// Purge clears every cached entry. Exported for the status page's
+// "clear cache" action.
+func (c *Cache) Purge(ctx context.Context) error { return c.purge(ctx) }
+
 // stats is exposed on the local status page and in heartbeats.
 func (c *Cache) stats(ctx context.Context) cache.Stats {
 	if c == nil {
@@ -93,6 +97,9 @@ func (c *Cache) stats(ctx context.Context) cache.Stats {
 	s, _ := c.inner.Stats(ctx)
 	return s
 }
+
+// Stats returns the cache counters for the status page.
+func (c *Cache) Stats(ctx context.Context) cache.Stats { return c.stats(ctx) }
 
 // ---------- Server reachability ----------
 
@@ -378,6 +385,11 @@ func (c *Config) ApplyBundle(b Bundle) {
 		c.MaxInflight = b.Limits.MaxInflight
 	}
 }
+
+// Mu exposes the guard for bundle application so callers that must
+// mutate several fields atomically (the settings form) can hold it.
+// Only for writers; readers should prefer ServersSnapshot and friends.
+func (c *Config) Mu() *sync.RWMutex { return &c.mu }
 
 // ServersSnapshot returns the current server list under the lock.
 func (c *Config) ServersSnapshot() []string {

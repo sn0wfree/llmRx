@@ -822,3 +822,36 @@ http://127.0.0.1:3425/ui
 - token 在页面上是掩�?不出现在 HTML �?
 - 缓存清空�?`stats().Size` 归零;
 - �?CGO 交叉编译仍然通过�?
+
+### 23.7 实施记录
+
+落地完成,�?§23.1-23.5 一致。端到端实测通过�?
+**落地清单**
+
+| 位置 | 产出 |
+|---|---|
+| `internal/client/ui/ui.go` | `Server`(渲染 + 三个动作)、`Data` 视图模型、`maskSecret`/`formatRate`/`parseInt` 辅助 |
+| `internal/client/ui/templates/page.html` | 单页模板,内嵌 `<style>`,无外部资�?|
+| `internal/client/configfile.go` | `WriteConfigFile` �?cmd 提到 client 包并导出(UI �?`-enroll` 共用,保证权限一�? |
+| `internal/client/client.go` | `Cache.Purge`/`Cache.Stats` 导出、`Config.Mu()` 访问�?|
+| `internal/client/proxy.go` | `Control()` 访问�?|
+| `cmd/gateway-client/main.go` | UI 与代理共用同一监听(`/ui` 优先�?`/`),启动日志打印状态页地址 |
+
+**端到端实�?*(真实二进�?+ curl)
+
+```
+GET  /ui              �?200,包含 状�?缓存/设置/demo-edge/sk-de***1234
+token 泄漏检�?        �?完整 token 不在页面�?GET  /healthz         �?200,JSON 未受影响
+POST /ui/settings     �?303,配置文件 cache_ttl_sec=120 fallback_mode=local
+配置文件权限          �?-rw-------(0600,保存后仍�?
+POST /ui/cache/purge  �?303
+```
+
+**验证**
+
+- 15 个用�?核心面板渲染�?*无外部资�?*(逐项断言不含 cdn/unpkg/jsdelivr/googleapis/htmx/`<script src=`)�?  token 掩码且明文不出现、方法校验、连通性三态、purge 后缓存归�?经由真实代理路径播种)�?  设置持久�?+ 权限 0600�?*设置不会覆盖凭证**(写盘后仍是真实�?不含 `***`)�?  非法 fallback 值被忽略、保存失败走 error flash、三个辅助函�?
+- 全量 `go test ./...` 通过;`go test -race ./internal/client/...` 全绿;
+- �?CGO 交叉编译四目标通过�?
+**一个实现细节值得�?*:`parseInt` 初版在溢�?*�?*判断,导致 `999999999999`
+返回 9999999999 而不是钳制值。改成先累加再钳制后被测试抓到并修正——表单输�?这类外部数据必须假设任意值�?
+**仍未�?*:`-enroll` 之外的凭证轮�?UI、桌面托盘图标、图表化的用量趋势�?
