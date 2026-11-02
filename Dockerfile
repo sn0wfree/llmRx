@@ -6,7 +6,7 @@
 #   - /etc/passwd + /etc/group — for `os/user.Lookup("llmrx")` during
 #                                bootstrap (privilege drop)
 #
-# Final image size: ~13 MB.
+# Final image size: ~7.9 MB (measured on the v0.1.0 build).
 #
 # Build:  ./scripts/build-docker.sh   (or `make docker-build`)
 # Run:    docker compose up -d --build

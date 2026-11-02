@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   自己产出的文件求哈希，而 chart 由后续 `helm` job 上传，导致 12 个资产
   只有 10 个有校验和。新增独立 `checksums` job，待两个 job 完成后重新
   计算全集并覆盖上传。
+- **镜像没有 `v` 前缀 tag**。`docker/metadata-action` 的 `{{version}}`
+  会去掉 `v`，但 README、release notes 和验收表都写
+  `ghcr.io/sn0wfree/llmrx:v0.1.0`，实际 404。增加
+  `type=semver,pattern=v{{version}}`。
+- **镜像声称支持 arm64，实际只有 amd64**。`docker` job 装了
+  `gcc-aarch64-linux-gnu` 却从未使用，`platforms` 只写了
+  `linux/amd64`。改为逐架构构建后 `imagetools create` 合并 manifest。
+- **镜像体积数字错误**。实测 7.9 MB，README 写 13 MB，P16 演练表写
+  30.3 MB（那是未加 `-s -w` 的旧产物）。
 
 ## [v0.1.0] — 2026-11-01
 

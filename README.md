@@ -213,7 +213,7 @@ docker run -d --name llmrx \
   ghcr.io/sn0wfree/llmrx:v0.1.0
 ```
 
-镜像约 13 MB（`FROM scratch`，无 shell / busybox），首次启动会自动在
+镜像约 8 MB（`FROM scratch`，无 shell / busybox），首次启动会自动在
 `/data` 生成 config 与密钥文件。访问 `http://localhost:8787/admin/`。
 
 支持 **linux/amd64** 与 **linux/arm64**（树莓派 / ARM 云主机）。

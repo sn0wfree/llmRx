@@ -317,15 +317,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      - name: Build amd64 binary
+      - name: Build binaries for both architectures
         run: |
-          mkdir -p build
-          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-            go build -ldflags="-s -w -extldflags '-static' \
-              -X main.version=${{ steps.ver.outputs.version }} \
-              -X main.commit=${{ github.sha }} \
-              -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -o build/llmRx ./cmd/gateway
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            mkdir -p "build/$arch"
+            cc=gcc
+            [ "$arch" = arm64 ] && cc=aarch64-linux-gnu-gcc
+            CGO_ENABLED=1 GOOS=linux GOARCH="$arch" CC="$cc" \
+              go build -ldflags="-s -w -extldflags '-static' \
+                -X main.version=${{ steps.ver.outputs.version }} \
+                -X main.commit=${{ github.sha }} \
+                -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              -o "build/$arch/llmRx" ./cmd/gateway
+            file "build/$arch/llmRx"
+          done
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -347,19 +353,39 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=semver,pattern={{version}}
+            type=semver,pattern=v{{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}},enable=${{ !startsWith(github.ref_name, 'v0.') }}
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
             type=sha,prefix=sha-
 
-      - name: Build and push amd64
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+      # Build one image per architecture from its own prebuilt binary, then
+      # merge the two manifests. The Dockerfile is untouched (it still
+      # COPYs build/llmRx), so local `docker build` and docker.yml keep
+      # working and buildx never has to run Go under emulation.
+      - name: Build and push per-architecture images
+        run: |
+          set -euo pipefail
+          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          for arch in amd64 arm64; do
+            cp "build/$arch/llmRx" build/llmRx
+            docker buildx build \
+              --platform "linux/$arch" \
+              -t "$IMG:build-$arch" \
+              --push .
+          done
+
+      - name: Merge into a multi-arch manifest
+        run: |
+          set -euo pipefail
+          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          tags=()
+          while IFS= read -r t; do
+            [ -n "$t" ] && tags+=("--tag" "$t")
+          done <<< "${{ steps.meta.outputs.tags }}"
+          docker buildx imagetools create "${tags[@]}" \
+            "$IMG:build-amd64" "$IMG:build-arm64"
+          docker buildx imagetools inspect "$IMG:build-amd64"
 
   # --------------------------------------------------------------------- helm
   helm:

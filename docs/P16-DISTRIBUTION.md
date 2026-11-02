@@ -441,7 +441,7 @@ X-Llmrx-Version   -> dev                          BAD
 | `gateway-client` darwin/arm64 | 13.0 MB | 同上 |
 | `gateway-client` windows/amd64 | 13.5 MB | 同上 |
 | `llmrx` linux/amd64 | 21 MB | CGO 静态链接 |
-| `llmrx:drill` 镜像 | 30.3 MB | `FROM scratch`,含 ca-certificates |
+| `llmrx:drill` 镜像 | 30.3 MB | 演练产物,未加 `-s -w`;发布实测 7.9 MB |
 
 **版本自述验证**:
 
@@ -587,3 +587,70 @@ root 启动),会连目录都进不去。
 
 已按此修改 `.github/workflows/release.yml`;`v0.1.0` 的资产保持原样不改——
 校验和缺失已在本节记录,重新发版会在 `v0.1.1` 生效。
+
+### 14.5 镜像与文档的三处不一致
+
+**缺陷 3:镜像 tag 是 `0.1.0`,文档里写的是 `v0.1.0`。**
+
+`docker/metadata-action` 的 `type=semver,pattern={{version}}` 会**去掉 `v`
+前缀**。实测 ghcr 上的 tag 列表:
+
+```
+master, sha-*, 0.1.0, 0.1, latest, ...
+```
+
+没有 `v0.1.0`。而 README 第 213 行、本文件第 42/299/507 行、以及 release
+notes 的 Install 段落全都写 `ghcr.io/sn0wfree/llmrx:v0.1.0`——照抄会 404。
+
+**缺陷 4:镜像只有 linux/amd64,但文档声称支持 arm64。**
+
+实测 manifest index 里只有一个真实平台条目:
+
+```
+linux/amd64    layers=5  total=7.9 MB
+unknown/unknown               (buildx attestation)
+```
+
+`docker` job 装了 `gcc-aarch64-linux-gnu`,**但从未使用**——`Build and push
+amd64` 步骤只写了一条 `platforms: linux/amd64`。README 第 219 行「支持
+linux/amd64 与 linux/arm64(树莓派 / ARM 云主机)」和 §10 验收表的 ✅ 都是
+不成立的。
+
+**缺陷 5:实际镜像体积 7.9 MB,文档写 13 MB / 30.3 MB。**
+
+`FROM scratch` + `-s -w` 静态链接后实测 7.9 MB,而 README 写「约 13 MB」、
+§13.3 演练表写「30.3 MB」。后者是没加 `-s -w` 的 drill 产物,不该作为
+发布数据留在表里。
+
+### 14.6 修复
+
+- `docker/metadata-action` 增加一行 `type=semver,pattern=v{{version}}`,
+  让 `ghcr.io/sn0wfree/llmrx:v0.1.1` 这样的 tag 真实存在,文档里的命令成立。
+- `docker` job 改为真正的 multi-arch:两个架构各编一次二进制到
+  `build/<arch>/llmRx`,再逐架构 `docker buildx build --push`,
+  最后用 `docker buildx imagetools create` 合并 manifest。
+  `Dockerfile` 保持 `COPY build/llmRx` 不动——本地
+  `scripts/build-docker.sh` 和 `docker.yml` 不受影响,buildx 也不需要
+  在 QEMU 里跑 Go 编译器。
+- 文档体积数字改成实测 7.9 MB。
+
+**本地验证**(本机只有 amd64 工具链,arm64 逻辑靠 CI):
+
+```
+$ docker buildx build --platform linux/amd64 -t llmrx:multitest --load .
+$ docker run --rm llmrx:multitest -version
+dev (4810723, 2026-11-02T07:47:39Z, go1.22.12)
+$ docker image inspect llmrx:multitest --format '{{.Size}}'
+7930000            # 7.56 MiB 解压后 7.93 MB
+
+$ # 合并机制用本地 registry 验证
+$ docker buildx imagetools create \
+    --tag 127.0.0.1:5001/llmrx:v9.9.9 --tag 127.0.0.1:5001/llmrx:latest \
+    127.0.0.1:5001/llmrx:build-amd64
+$ docker buildx imagetools inspect 127.0.0.1:5001/llmrx:v9.9.9
+MediaType: application/vnd.oci.image.index.v1+json
+  Platform: linux/amd64
+```
+
+`v` 前缀 tag 与 manifest index 合并两条路径都实测通过。arm64 那一半需要
+CI 的 `gcc-aarch64-linux-gnu`。
