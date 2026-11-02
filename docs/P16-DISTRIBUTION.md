@@ -761,3 +761,22 @@ $ curl -o /dev/null -w '%{http_code}' https://ghcr.io/v2/sn0wfree/llmrx/tags/lis
 **修复**:新增 `Normalise the image reference` 步骤,用
 `tr '[:upper:]' '[:lower:]'` 生成 `ref`,三个步骤统一引用
 `${{ steps.img.outputs.ref }}`。
+
+**第四次(`4bde99b`)**:两个架构的镜像都推送成功,`imagetools create`
+也完成了,失败在最后一步 `imagetools inspect`——`steps.meta.outputs.tags`
+是**多行**的多个 tag,`inspect` 只接受一个引用。改成取第一行。
+这是纯诊断步骤的失败,发布本身已成功。
+
+**实测发布结果**(`ghcr.io/sn0wfree/llmrx`):
+
+```
+v0.1.1: application/vnd.oci.image.index.v1+json
+   linux/amd64            7.94 MB  layers=5
+   unknown/unknown      attestation
+   linux/arm64            7.32 MB  layers=5
+   unknown/unknown      attestation
+
+0.1.1   同上   latest  同上
+```
+
+多架构 manifest、`v` 前缀 tag、arm64 平台三项全部达成。

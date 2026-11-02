@@ -403,7 +403,10 @@ jobs:
           done <<< "${{ steps.meta.outputs.tags }}"
           docker buildx imagetools create "${tags[@]}" \
             "$IMG:build-amd64" "$IMG:build-arm64"
-          docker buildx imagetools inspect "${{ steps.meta.outputs.tags }}"
+          # steps.meta.outputs.tags is newline-separated; inspect takes one
+          # reference, so read the first line only.
+          first=$(echo "${{ steps.meta.outputs.tags }}" | head -1)
+          docker buildx imagetools inspect "$first"
 
   # --------------------------------------------------------------------- helm
   helm:
