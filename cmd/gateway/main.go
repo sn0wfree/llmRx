@@ -458,6 +458,9 @@ func main() {
 		Interval: cfg.Balance.BalanceInterval(),
 		Timeout:  cfg.Balance.BalanceTimeout(),
 	}, cp, cp, st)
+	// P14 phase 3: record a time series alongside the live snapshot.
+	balanceMon.SetHistoryStore(st)
+	balanceMon.SetRetentionDays(cfg.Balance.BalanceRetentionDays)
 	srv.SetBalanceMonitor(balanceMon)
 	if cfg.Balance.BalanceEnabled() {
 		go balanceMon.Start(ctx)

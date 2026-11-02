@@ -2,8 +2,12 @@ package webui
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"html/template"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -71,4 +75,73 @@ func (h *Handler) ChannelBalanceRefresh(w http.ResponseWriter, r *http.Request) 
 
 // compile-time assertion that the monitor satisfies the webui contract.
 var _ BalanceQuerier = (*balance.Monitor)(nil)
+
+// ChannelBalanceTrend renders (or collapses) the inline balance-trend row.
+//
+// Collapsing returns an empty string so the HTMX outerHTML swap removes
+// the row entirely — that is simpler than tracking a visible flag.
+func (h *Handler) ChannelBalanceTrend(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("collapse") != "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		return // empty body removes the row
+	}
+
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	ch, err := h.store.GetChannel(id)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	const days = 30
+	from := time.Now().UTC().AddDate(0, 0, -days)
+	points, err := h.store.BalanceHistory(id, from, 5000)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// The chart wants plain numbers; the string form stays authoritative
+	// in storage, this is only for plotting.
+	type plotPoint struct {
+		T int64   `json:"t"`
+		V float64 `json:"v"`
+	}
+	series := make([]plotPoint, 0, len(points))
+	for _, p := range points {
+		v, perr := strconv.ParseFloat(p.Balance, 64)
+		if perr != nil {
+			continue // an unparsable point cannot be plotted
+		}
+		series = append(series, plotPoint{T: p.TS.Unix(), V: v})
+	}
+	raw, _ := json.Marshal(series)
+
+	data := map[string]any{
+		"ChannelID":  id,
+		"Name":       ch.Name,
+		"Currency":   ch.BalanceCurrency,
+		"Points":     len(series),
+		"HasData":    len(series) > 0,
+		"Days":       days,
+		"SeriesJSON": template.JS(raw),
+	}
+	if n := len(series); n >= 2 {
+		delta := series[n-1].V - series[0].V
+		data["ChangeText"] = fmt.Sprintf("%+.2f", delta)
+		if delta < 0 {
+			data["ChangeClass"] = "text-red-600"
+		} else {
+			data["ChangeClass"] = "text-green-600"
+		}
+	}
+
+	if err := h.renderer.RenderPartial(w, "channel_balance_trend", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
 

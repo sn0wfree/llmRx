@@ -44,6 +44,11 @@ type BalanceConfig struct {
 	IntervalSec int `yaml:"interval_sec"`
 	// TimeoutSec bounds a single upstream query.
 	TimeoutSec int `yaml:"timeout_sec"`
+	// RetentionDays is how long balance history points are kept.
+	// Deliberately separate from log_retention_days: log retention is an
+	// ops preference, balance history is financial data with its own
+	// natural window (90 days covers a quarter of spend).
+	RetentionDays int `yaml:"retention_days"`
 }
 
 // BalanceEnabled resolves the tri-state Enabled pointer: unset means
@@ -69,6 +74,14 @@ func (b BalanceConfig) BalanceTimeout() time.Duration {
 		return 10 * time.Second
 	}
 	return time.Duration(b.TimeoutSec) * time.Second
+}
+
+// BalanceRetentionDays returns the history window, defaulting to 90.
+func (b BalanceConfig) BalanceRetentionDays() int {
+	if b.RetentionDays <= 0 {
+		return 90
+	}
+	return b.RetentionDays
 }
 
 type ServerConfig struct {

@@ -53,6 +53,9 @@ balance_monitor:
   enabled: true
   interval_sec: 3600   # 刷新周期；0 = 关闭自动刷新
   timeout_sec: 10      # 单次查询超时
+  # 余额历史保留天数（默认 90）。刻意与 log_retention_days 分开：
+  # 日志保留是运维偏好，余额历史是财务数据，两者的自然窗口不同。
+  retention_days: 90
 
 # edge_clients: 允许上传用量的 gateway-client 边缘实例（P15）。
 # token 用 `openssl rand -hex 24` 生成。列表为空时 /client/v1/* 完全不挂载。

@@ -75,6 +75,8 @@ type Store interface {
 	ModelCostRepository
 	// EdgeClientRepository backs edge-client enrollment (P15 phase 3).
 	EdgeClientRepository
+	// BalanceHistoryRepository backs the balance time series (P14).
+	BalanceHistoryRepository
 
 	Ping(ctx context.Context) error
 	Close() error

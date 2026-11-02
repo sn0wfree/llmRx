@@ -63,9 +63,13 @@
     <button hx-post="/admin/channels/{{.ID}}/balance-refresh"
             hx-target="#channel-row-{{.ID}}"
             hx-swap="outerHTML"
-            hx-indicator="#bal-{{.ID}}"
             class="ml-2 text-xs text-blue-600 hover:text-blue-900"
             title="立即查询上游余额">刷新</button>
+    <button hx-get="/admin/channels/{{.ID}}/balance-trend"
+            hx-target="#channel-row-{{.ID}}"
+            hx-swap="afterend"
+            class="ml-1 text-xs text-gray-600 hover:text-gray-900"
+            title="查看 30 天余额趋势">趋势</button>
     {{end}}
   </td>
   <td class="px-6 py-4 whitespace-nowrap">{{statusBadge .Status}}</td>

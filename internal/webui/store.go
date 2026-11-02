@@ -2,6 +2,7 @@ package webui
 
 import (
 	"context"
+	"time"
 
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/store"
@@ -27,6 +28,8 @@ type WebuiStore interface {
 	CreateChannel(ch *model.Channel) error
 	UpdateChannel(ch *model.Channel) error
 	DeleteChannel(id int64) error
+	// BalanceHistory backs the inline trend chart (P14 phase 3).
+	BalanceHistory(channelID int64, from time.Time, limit int) ([]store.BalancePoint, error)
 
 	// Keys
 	GetKeys(channelID int64) ([]model.Key, error)

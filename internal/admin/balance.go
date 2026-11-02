@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/sn0wfree/llmRx/internal/balance"
 	"github.com/sn0wfree/llmRx/internal/model"
@@ -138,6 +139,53 @@ func (h *Handler) RefreshChannelBalance(w http.ResponseWriter, r *http.Request) 
 		"currency":   ch.BalanceCurrency,
 		"source":     b.Source,
 		"note":       b.Note,
+	})
+}
+
+// BalanceHistory returns one channel's balance time series (P14 phase 3).
+//
+// Query: ?days=N (default 30). Points are oldest-first and carry the
+// channel's currency once, not per point: a channel's balance currency
+// does not change over time.
+func (h *Handler) BalanceHistory(w http.ResponseWriter, r *http.Request) {
+	id, err := pathInt(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	ch, err := h.store.GetChannel(id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "channel not found")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	days := atoiOr(r.URL.Query().Get("days"), 30)
+	if days <= 0 || days > 365 {
+		days = 30
+	}
+	from := time.Now().UTC().AddDate(0, 0, -days)
+
+	// 5000 is a defensive ceiling, not an expected volume: an hourly
+	// sweep over 90 days is ~2160 points.
+	points, err := h.store.BalanceHistory(id, from, 5000)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if points == nil {
+		points = []store.BalancePoint{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"channel_id": id,
+		"name":       ch.Name,
+		"currency":   ch.BalanceCurrency,
+		"days":       days,
+		"points":     points,
 	})
 }
 

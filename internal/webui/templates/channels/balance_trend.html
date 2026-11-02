@@ -1,0 +1,79 @@
+{{define "channel_balance_trend"}}
+<tr id="balance-trend-{{.ChannelID}}">
+  <td colspan="7" class="px-6 py-4 bg-gray-50">
+    <div class="flex items-center justify-between mb-2">
+      <div class="text-sm font-medium text-gray-700">
+        余额趋势 · {{.Name}}{{if .Currency}}<span class="ml-2 text-xs text-gray-500">{{.Currency}}</span>{{end}}
+      </div>
+      <div class="flex items-center gap-3">
+        <span class="text-xs text-gray-500">{{.Points}} 个数据点</span>
+        <button hx-get="/admin/channels/{{.ChannelID}}/balance-trend?collapse=1"
+                hx-target="#balance-trend-{{.ChannelID}}"
+                hx-swap="outerHTML"
+                class="text-xs text-gray-500 hover:text-gray-800">收起</button>
+      </div>
+    </div>
+    {{if .HasData}}
+    <canvas id="bal-chart-{{.ChannelID}}" height="140" class="w-full"></canvas>
+    <div class="mt-2 text-xs text-gray-500">
+      {{if .ChangeText}}近 {{.Days}} 天变化：<span class="{{.ChangeClass}}">{{.ChangeText}}</span>{{end}}
+    </div>
+    <script>
+    (function() {
+      var el = document.getElementById('bal-chart-{{.ChannelID}}');
+      if (!el) return;
+      var pts = {{.SeriesJSON}};
+      var dpr = window.devicePixelRatio || 1;
+      var W = el.clientWidth || 600, H = 140;
+      el.width = W * dpr; el.height = H * dpr;
+      el.style.height = H + 'px';
+      var ctx = el.getContext('2d');
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, W, H);
+
+      var pad = {left: 8, right: 8, top: 10, bottom: 18};
+      var plotW = W - pad.left - pad.right;
+      var plotH = H - pad.top - pad.bottom;
+
+      var vals = pts.map(function(p) { return p.v; });
+      var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+      if (max === min) { max = min + 1; }  // avoid divide-by-zero on a flat line
+
+      function xPos(i) {
+        return pts.length === 1 ? pad.left + plotW / 2
+          : pad.left + (i / (pts.length - 1)) * plotW;
+      }
+      function yPos(v) { return pad.top + plotH - ((v - min) / (max - min)) * plotH; }
+
+      // Area fill, then the line on top.
+      ctx.beginPath();
+      ctx.moveTo(xPos(0), pad.top + plotH);
+      for (var i = 0; i < pts.length; i++) ctx.lineTo(xPos(i), yPos(pts[i].v));
+      ctx.lineTo(xPos(pts.length - 1), pad.top + plotH);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(59,130,246,0.12)';
+      ctx.fill();
+
+      ctx.beginPath();
+      for (var j = 0; j < pts.length; j++) {
+        var x = xPos(j), y = yPos(pts[j].v);
+        if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = '#3b82f6';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Min / max labels so the chart is readable without hovering.
+      ctx.fillStyle = '#6b7280';
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(max.toFixed(2), pad.left, pad.top + 2);
+      ctx.fillText(min.toFixed(2), pad.left, H - 4);
+    })();
+    </script>
+    {{else}}
+    <p class="text-sm text-gray-500">还没有历史数据。余额刷新成功后会自动记录。</p>
+    {{end}}
+  </td>
+</tr>
+{{end}}

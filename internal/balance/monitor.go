@@ -22,6 +22,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/provider"
+	"github.com/sn0wfree/llmRx/internal/store"
 )
 
 // Config controls the refresh loop.
@@ -58,12 +59,32 @@ type BalanceStore interface {
 	UpdateChannelBalance(channelID int64, balance, currency string, checkedAt time.Time, balanceErr string) error
 }
 
+// HistoryStore persists the balance time series (P14 phase 3). Kept a
+// separate interface because it is optional: a monitor wired without it
+// still refreshes the live snapshot, it just records no history.
+type HistoryStore interface {
+	AppendBalancePoint(channelID int64, at time.Time, balance, currency string) error
+	LastBalancePoint(channelID int64) (*store.BalancePoint, error)
+	PruneBalanceHistory(cutoff time.Time) (int64, error)
+}
+
+// historyDedupWindow suppresses a second point for the same channel
+// within this duration. A manual refresh seconds after an automatic
+// sweep would otherwise put two dots on the chart a hair apart.
+const historyDedupWindow = 10 * time.Minute
+
 // Monitor refreshes channel balances on a timer.
 type Monitor struct {
 	cfg   Config
 	chans ChannelLister
 	keys  KeyPicker
 	store BalanceStore
+	// history is optional: nil means "record no time series". Set via
+	// SetHistoryStore.
+	history HistoryStore
+	// retentionDays returns the history window read live each sweep, so
+	// an admin change applies without a restart. nil = 90 days.
+	retentionDays func() int
 
 	// query lets tests substitute the upstream call.
 	query func(ctx context.Context, providerName, apiKey, baseURL, overrideURL string) (provider.Balance, error)
@@ -96,6 +117,23 @@ func (m *Monitor) SetQuery(fn func(ctx context.Context, providerName, apiKey, ba
 	if fn != nil {
 		m.query = fn
 	}
+}
+
+// SetHistoryStore enables balance time-series recording.
+func (m *Monitor) SetHistoryStore(h HistoryStore) { m.history = h }
+
+// SetRetentionDays installs the live history-window provider.
+func (m *Monitor) SetRetentionDays(fn func() int) { m.retentionDays = fn }
+
+// historyRetention resolves the effective retention window.
+func (m *Monitor) historyRetention() time.Duration {
+	days := 90
+	if m.retentionDays != nil {
+		if d := m.retentionDays(); d > 0 {
+			days = d
+		}
+	}
+	return time.Duration(days) * 24 * time.Hour
 }
 
 // Start runs the refresh loop until Stop is called or ctx is cancelled.
@@ -167,6 +205,11 @@ func (m *Monitor) Sweep(ctx context.Context) {
 			logging.F("skipped", len(channels)-refreshed-failed),
 		)
 	}
+
+	// Retention runs with the sweep rather than on its own timer: an
+	// hourly sweep is frequent enough that a reduced window takes effect
+	// promptly, and one goroutine is easier to reason about than two.
+	m.PruneHistory(time.Now().UTC())
 }
 
 // eligible reports whether a channel can have its balance queried:
@@ -240,7 +283,54 @@ func (m *Monitor) QueryChannel(ctx context.Context, ch *model.Channel) (provider
 	ch.BalanceCurrency = b.Currency
 	ch.BalanceUpdatedAt = &now
 	ch.BalanceError = ""
+
+	// History is written only on success: a failed query records
+	// balance_error, but must not insert a row. "No data" and "balance
+	// is zero" are different facts, and conflating them draws a cliff
+	// into the trend chart that never happened.
+	m.recordHistory(ch, now, value, b.Currency)
+
 	return b, nil
+}
+
+// recordHistory appends a time-series point, honouring the dedup window.
+//
+// Failures are logged and swallowed: the live snapshot is the primary
+// record, and history falling behind must never turn a successful
+// balance refresh into an error the caller has to handle.
+func (m *Monitor) recordHistory(ch *model.Channel, at time.Time, balance, currency string) {
+	if m.history == nil {
+		return
+	}
+	// Dedup: a manual refresh seconds after an automatic sweep would
+	// otherwise put two points a hair apart on the chart.
+	if last, err := m.history.LastBalancePoint(ch.ID); err == nil && last != nil {
+		if at.Sub(last.TS) < historyDedupWindow {
+			return
+		}
+	}
+	if err := m.history.AppendBalancePoint(ch.ID, at, balance, currency); err != nil {
+		logging.Warn("balance: record history failed",
+			logging.F("channel_id", ch.ID), logging.F("error", err.Error()))
+	}
+}
+
+// PruneHistory deletes points outside the retention window. Called from
+// the sweep so a reduced window takes effect within one interval.
+func (m *Monitor) PruneHistory(now time.Time) {
+	if m.history == nil {
+		return
+	}
+	cutoff := now.Add(-m.historyRetention())
+	n, err := m.history.PruneBalanceHistory(cutoff)
+	if err != nil {
+		logging.Warn("balance: prune history failed", logging.F("error", err.Error()))
+		return
+	}
+	if n > 0 {
+		logging.Info("balance history pruned",
+			logging.F("rows", n), logging.F("cutoff", cutoff.UTC().Format(time.RFC3339)))
+	}
 }
 
 // queryWithKey resolves the credential and dispatches to the parser.

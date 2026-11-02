@@ -564,3 +564,33 @@ GET /admin/api/v1/channels/{id}/balance-history?days=30
 - 上限护栏生效;
 - 空历史返回空数组而不�?null;
 - 全量测试 + race�?
+
+### 24.8 实施记录
+
+落地完成,�?§24.1-24.6 一致�?
+**落地清单**
+
+| 位置 | 产出 |
+|---|---|
+| `store/balance_history_repo.go` | `BalanceHistoryRepository` 接口 + `BalancePoint` |
+| `store/balance_history_sql.go` | 四个方法(lookback / last / prune / append),dbStore 嵌入�?Postgres 免费获得 |
+| `store/sqlite.go` | `channel_balances` �?+ `(channel_id, ts)` 索引 |
+| `balance/monitor.go` | `HistoryStore`(可�?、`recordHistory`(10 分钟去重)、`PruneHistory`(跟随 sweep) |
+| `config` | `balance_monitor.retention_days`(默认 90) |
+| `admin/balance.go` | `GET /channels/{id}/balance-history?days=N` |
+| `webui` | `ChannelBalanceTrend` 处理 + 内联展开�?+ canvas 折线 |
+| `main.go` | 注入 history store �?live retention provider |
+
+**两处实现中确认的细节**
+
+1. **去重窗口是必要的,不是优化**。没有它�?`TestHistory_DedupWindow` 显示
+   三次连续刷新会写三个点——手动点一�?刷新"就在图上多一个尖刺�?2. **失败绝不写点**。`TestHistory_FailureWritesNothing` 直接断言这一�?
+   把空值写�?0 会让趋势图出现不存在的悬崖�?
+**验证**
+
+- `balance`:10 个用例——成功写点且与快照字节一致、失败不写、去重窗口内合并�?  窗口外照写、保留清�?旧删新留)、保留天数热更新、无 history store 时快照仍
+  工作、跨渠道隔离、limit 上限、空历史返回�?
+- `admin`:6 个用例——空历史返回 `[]` 而非 null、按时间升序、窗口过滤�?  404、`days` 参数钳制(0/负数/超大/非数字都回落 30)、会话守�?
+- 全量 `go test ./...` 通过;`go build` / `go vet` 干净�?
+**仍未�?*:管理台只在渠道列表做行内展开,没有独立的余额趋势页�?
+多币种渠道的对比图也没有(需要先统一币种口径)�?

@@ -359,6 +359,18 @@ func (s *dbStore) migrate() error {
 			used_client TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_edge_enroll_expires ON edge_enroll_tokens(expires_at)`,
+		// P14 phase 3: balance history. A separate table rather than extra
+		// channels columns: one channel accumulates hundreds of points,
+		// and channels sits on the routing hot path.
+		`CREATE TABLE IF NOT EXISTS channel_balances (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel_id INTEGER NOT NULL,
+			ts INTEGER NOT NULL,
+			balance TEXT NOT NULL,
+			currency TEXT NOT NULL DEFAULT '',
+			FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_channel_balances_lookup ON channel_balances(channel_id, ts)`,
 		// Registered edge clients. secret_hash is sha256, not Argon2id:
 		// the secret is 192 bits of randomness (not a user password), and
 		// it is verified on every 30s heartbeat.

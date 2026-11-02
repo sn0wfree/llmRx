@@ -192,6 +192,24 @@ func (s *ScriptedStore) RevokeEdgeClient(clientID string) error {
 func (s *ScriptedStore) TouchEdgeClient(clientID string, at time.Time) error {
 	return s.underlying.TouchEdgeClient(clientID, at)
 }
+
+// --- Balance history (P14 phase 3) ---
+
+func (s *ScriptedStore) AppendBalancePoint(channelID int64, at time.Time, balance, currency string) error {
+	return s.underlying.AppendBalancePoint(channelID, at, balance, currency)
+}
+
+func (s *ScriptedStore) BalanceHistory(channelID int64, from time.Time, limit int) ([]store.BalancePoint, error) {
+	return s.underlying.BalanceHistory(channelID, from, limit)
+}
+
+func (s *ScriptedStore) LastBalancePoint(channelID int64) (*store.BalancePoint, error) {
+	return s.underlying.LastBalancePoint(channelID)
+}
+
+func (s *ScriptedStore) PruneBalanceHistory(cutoff time.Time) (int64, error) {
+	return s.underlying.PruneBalanceHistory(cutoff)
+}
 func (s *ScriptedStore) GetKeys(channelID int64) ([]model.Key, error) {
 	if s.GetKeysFunc != nil {
 		return s.GetKeysFunc(channelID)

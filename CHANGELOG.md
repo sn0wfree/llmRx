@@ -115,6 +115,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   anyone imports `internal/store`/`internal/router` into the client,
   which would silently reintroduce the CGO sqlite dependency.
 
+#### Balance history trend (P14 phase 3)
+- New `channel_balances` time-series table records every successful
+  balance query, so operators can answer the questions a single snapshot
+  cannot: how many days of runway remain, whether yesterday dropped
+  unexpectedly, which channel burns faster.
+- **Failed queries insert no row.** `channels.balance_error` records the
+  failure, but mixing "no data" with "balance is zero" would draw a cliff
+  into the chart that never happened.
+- Collection piggybacks on the existing refresh rather than adding a
+  second timer (two timers would produce two inconsistent timelines),
+  with a 10-minute per-channel dedup window so a manual refresh right
+  after an automatic sweep does not add a second point moments later.
+- Retention is its own `balance_monitor.retention_days` (default 90) and
+  deliberately not shared with `log_retention_days`: log retention is an
+  ops preference while balance history is financial data with its own
+  natural window. Cleanup runs with the hourly sweep, so a reduced window
+  takes effect within one interval.
+- `GET /admin/api/v1/channels/{id}/balance-history?days=N` returns the
+  series (oldest first, currency once, empty array rather than null).
+- The channels list gains a "趋势" button that expands an inline 30-day
+  canvas line chart — hand-written, matching the Analytics page, keeping
+  the project free of front-end dependencies.
+
 #### Edge client local status page (P15 phase 4)
 - `GET /ui` serves a self-contained status page on the client's own
   listener: connectivity (breaker state), uptime, config version,
