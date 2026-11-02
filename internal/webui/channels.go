@@ -110,15 +110,17 @@ func (h *Handler) ChannelEditForm(w http.ResponseWriter, r *http.Request) {
 var channelFormFields = []string{
 	"name", "provider", "base_url", "models", "intents",
 	"priority", "input_price", "output_price", "status",
+	"balance_threshold", "balance_url",
 }
 
 var channelFormRenames = map[string]string{
-	"models":       "ModelsStr",
-	"intents":      "IntentsStr",
-	"priority":     "PriorityStr",
-	"input_price":  "InputPriceStr",
-	"output_price": "OutputPriceStr",
-	"base_url":     "BaseURL",
+	"models":            "ModelsStr",
+	"intents":           "IntentsStr",
+	"priority":          "PriorityStr",
+	"input_price":       "InputPriceStr",
+	"output_price":      "OutputPriceStr",
+	"base_url":          "BaseURL",
+	"balance_threshold": "BalanceThresholdStr",
 }
 
 // ChannelCreate handles form POST to create a new channel.
@@ -144,9 +146,13 @@ func (h *Handler) ChannelCreate(w http.ResponseWriter, r *http.Request) {
 		Priority:    parseIntDefault(r.FormValue("priority"), 5),
 		InputPrice:  parseFloatDefault(r.FormValue("input_price"), 0),
 		OutputPrice: parseFloatDefault(r.FormValue("output_price"), 0),
-		Status:      model.ChannelEnabled,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		// P14: low-balance alert line (in the channel's currency) and
+		// an optional balance endpoint override for relays.
+		BalanceThreshold: parseFloatDefault(r.FormValue("balance_threshold"), 0),
+		BalanceURL:       strings.TrimSpace(r.FormValue("balance_url")),
+		Status:           model.ChannelEnabled,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
 	}
 	if r.FormValue("status") != "1" {
 		ch.Status = model.ChannelDisabled
@@ -214,6 +220,13 @@ func (h *Handler) updateChannelByID(w http.ResponseWriter, r *http.Request, id i
 	if v := r.FormValue("output_price"); v != "" {
 		cur.OutputPrice = parseFloatDefault(v, cur.OutputPrice)
 	}
+	// Both balance fields are settable to zero/empty (clearing the
+	// threshold disables monitoring for this channel), so unlike the
+	// numeric fields above they are applied unconditionally.
+	if v := strings.TrimSpace(r.FormValue("balance_threshold")); v != "" {
+		cur.BalanceThreshold = parseFloatDefault(v, cur.BalanceThreshold)
+	}
+	cur.BalanceURL = strings.TrimSpace(r.FormValue("balance_url"))
 	cur.Status = model.ChannelDisabled
 	if r.FormValue("status") == "1" {
 		cur.Status = model.ChannelEnabled

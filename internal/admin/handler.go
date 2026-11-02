@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -488,6 +489,11 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 		MaxFailures         *int     `json:"max_failures"`
 		ResetTimeoutMs      *int     `json:"reset_timeout_ms"`
 		Status              *int     `json:"status"`
+		// P14: balance settings. BalanceThreshold is expressed in the
+		// channel's own currency; BalanceURL overrides the provider's
+		// balance endpoint for relays.
+		BalanceThreshold *float64 `json:"balance_threshold"`
+		BalanceURL       *string  `json:"balance_url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
@@ -538,6 +544,18 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	if patch.Status != nil {
 		cur.Status = model.ChannelStatus(*patch.Status)
+	}
+	// Negative thresholds are meaningless (a balance below a negative
+	// line never fires); reject rather than silently storing it.
+	if patch.BalanceThreshold != nil {
+		if *patch.BalanceThreshold < 0 {
+			writeErr(w, http.StatusBadRequest, "balance_threshold must be >= 0")
+			return
+		}
+		cur.BalanceThreshold = *patch.BalanceThreshold
+	}
+	if patch.BalanceURL != nil {
+		cur.BalanceURL = strings.TrimSpace(*patch.BalanceURL)
 	}
 	if err := h.store.UpdateChannel(cur); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -1251,7 +1269,7 @@ func (h *Handler) CreateAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validAlertType(a.Type) {
-		writeErr(w, http.StatusBadRequest, "type must be error_rate|p95_latency|cost_spike|key_exhausted")
+		writeErr(w, http.StatusBadRequest, "type must be error_rate|p95_latency|cost_spike|key_exhausted|balance_low")
 		return
 	}
 	if a.WindowSec <= 0 {
@@ -1296,7 +1314,7 @@ func (h *Handler) UpdateAlert(w http.ResponseWriter, r *http.Request) {
 	}
 	if patch.Type != nil {
 		if !validAlertType(*patch.Type) {
-			writeErr(w, http.StatusBadRequest, "type must be error_rate|p95_latency|cost_spike|key_exhausted")
+			writeErr(w, http.StatusBadRequest, "type must be error_rate|p95_latency|cost_spike|key_exhausted|balance_low")
 			return
 		}
 		cur.Type = *patch.Type
@@ -1361,7 +1379,8 @@ func (h *Handler) AckAlertEvent(w http.ResponseWriter, r *http.Request) {
 
 func validAlertType(t model.AlertType) bool {
 	switch t {
-	case model.AlertErrorRate, model.AlertP95Latency, model.AlertCostSpike, model.AlertKeyExhausted:
+	case model.AlertErrorRate, model.AlertP95Latency, model.AlertCostSpike,
+		model.AlertKeyExhausted, model.AlertBalanceLow:
 		return true
 	}
 	return false

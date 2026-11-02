@@ -12,6 +12,13 @@ const (
 	AlertP95Latency   AlertType = "p95_latency"   // approximate p95 of duration_ms in window
 	AlertCostSpike    AlertType = "cost_spike"    // cost in window vs prior window
 	AlertKeyExhausted AlertType = "key_exhausted" // any channel has 0 active keys
+	// AlertBalanceLow fires when channels drop below their own
+	// balance_threshold (P14). Thresholds live per channel — not on the
+	// rule — because each channel has its own currency and its own
+	// definition of "low" (110 CNY and 110 USD are not the same money).
+	// The rule's Threshold field counts how many low channels are
+	// required to fire; 0 means any one of them.
+	AlertBalanceLow AlertType = "balance_low"
 )
 
 // Alert is a user-configured rule. Threshold semantics depend on

@@ -427,6 +427,9 @@ func (s *dbStore) migrate() error {
 	if err := s.addColumn("channels", "balance_url", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := s.addColumn("channels", "balance_threshold", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	if err := s.addColumn("tokens", "used_usd", "REAL NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
@@ -650,7 +653,7 @@ func decodeTiers(s string) map[string]model.TierConfig {
 // between the two is a runtime scan error, not a compile error.
 const channelColumns = `id, name, provider, protocol, base_url, models, intents, priority, ` +
 	`input_price, output_price, cached_input_discount, circuit_breaker, status, total_cost_usd, ` +
-	`balance, balance_currency, balance_updated_at, balance_error, balance_url, ` +
+	`balance, balance_currency, balance_updated_at, balance_error, balance_url, balance_threshold, ` +
 	`created_at, updated_at`
 
 func (s *dbStore) GetChannels() ([]model.Channel, error) {
@@ -686,12 +689,14 @@ func (s *dbStore) CreateChannel(ch *model.Channel) error {
 		ch.CachedInputDiscount = 0.1
 	}
 	id, err := dialect.InsertOne(s.d, s.db,
-		`INSERT INTO channels(name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO channels(name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, balance, balance_currency, balance_url, balance_threshold, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ch.Name, ch.Provider, ch.Protocol, ch.BaseURL,
 		encodeStrings(ch.Models), encodeStrings(ch.Intents),
 		ch.Priority, ch.InputPrice, ch.OutputPrice, ch.CachedInputDiscount, encodeCB(ch.CircuitBreaker),
-		int(ch.Status), toUnix(ch.CreatedAt), toUnix(ch.UpdatedAt),
+		int(ch.Status),
+		ch.Balance, ch.BalanceCurrency, ch.BalanceURL, ch.BalanceThreshold,
+		toUnix(ch.CreatedAt), toUnix(ch.UpdatedAt),
 	)
 	if err != nil {
 		return err
@@ -706,11 +711,11 @@ func (s *dbStore) UpdateChannel(ch *model.Channel) error {
 		ch.Protocol = "openai"
 	}
 	_, err := s.exec(
-		`UPDATE channels SET name=?, provider=?, protocol=?, base_url=?, models=?, intents=?, priority=?, input_price=?, output_price=?, cached_input_discount=?, circuit_breaker=?, status=?, updated_at=? WHERE id=?`,
+		`UPDATE channels SET name=?, provider=?, protocol=?, base_url=?, models=?, intents=?, priority=?, input_price=?, output_price=?, cached_input_discount=?, circuit_breaker=?, status=?, balance_url=?, balance_threshold=?, updated_at=? WHERE id=?`,
 		ch.Name, ch.Provider, ch.Protocol, ch.BaseURL,
 		encodeStrings(ch.Models), encodeStrings(ch.Intents),
 		ch.Priority, ch.InputPrice, ch.OutputPrice, ch.CachedInputDiscount, encodeCB(ch.CircuitBreaker),
-		int(ch.Status), toUnix(ch.UpdatedAt), ch.ID,
+		int(ch.Status), ch.BalanceURL, ch.BalanceThreshold, toUnix(ch.UpdatedAt), ch.ID,
 	)
 	return err
 }
@@ -781,6 +786,7 @@ func scanChannel(r interface {
 		&ch.InputPrice, &ch.OutputPrice, &ch.CachedInputDiscount, &cbJSON, &status,
 		&ch.TotalCostUSD,
 		&ch.Balance, &ch.BalanceCurrency, &balanceUpdated, &ch.BalanceError, &ch.BalanceURL,
+		&ch.BalanceThreshold,
 		&created, &updated); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound

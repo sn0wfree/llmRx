@@ -145,6 +145,11 @@ type Channel struct {
 	// BalanceURL overrides the provider descriptor's balance path for
 	// this channel (relay/proxy deployments that move the endpoint).
 	BalanceURL string `json:"balance_url,omitempty"`
+	// BalanceThreshold is the "low balance" alert line, in the
+	// channel's own currency (P14 phase 2). 0 = not monitored by the
+	// balance_low alert. Per channel rather than per rule because each
+	// channel has its own currency and its own definition of low.
+	BalanceThreshold float64 `json:"balance_threshold,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

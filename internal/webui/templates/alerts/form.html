@@ -23,7 +23,9 @@
       <option value="p95_latency" {{if $a}}{{if eq (printf "%s" $a.Type) "p95_latency"}}selected{{end}}{{end}}>P95 延迟 (p95_latency)</option>
       <option value="cost_spike" {{if $a}}{{if eq (printf "%s" $a.Type) "cost_spike"}}selected{{end}}{{end}}>成本突增 (cost_spike)</option>
       <option value="key_exhausted" {{if $a}}{{if eq (printf "%s" $a.Type) "key_exhausted"}}selected{{end}}{{end}}>密钥耗尽 (key_exhausted)</option>
+      <option value="balance_low" {{if $a}}{{if eq (printf "%s" $a.Type) "balance_low"}}selected{{end}}{{end}}>上游余额不足 (balance_low)</option>
     </select>
+    <p class="mt-1 text-xs text-gray-500">balance_low 的阈值是"触发所需的低余额渠道数"（0 或 1 = 任一渠道）；每个渠道的低余额线在通道编辑页设置。</p>
   </div>
   <div class="grid grid-cols-3 gap-4">
     <div>

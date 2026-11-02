@@ -235,7 +235,8 @@ func (h *Handler) alertSave(w http.ResponseWriter, r *http.Request, existing int
 		return
 	}
 	switch a.Type {
-	case model.AlertErrorRate, model.AlertP95Latency, model.AlertCostSpike, model.AlertKeyExhausted:
+	case model.AlertErrorRate, model.AlertP95Latency, model.AlertCostSpike,
+		model.AlertKeyExhausted, model.AlertBalanceLow:
 	default:
 		http.Error(w, "invalid alert type", http.StatusBadRequest)
 		return

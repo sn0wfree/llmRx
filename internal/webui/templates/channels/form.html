@@ -150,6 +150,25 @@
                class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
       </div>
     </div>
+
+    <!-- P14: upstream balance monitoring -->
+    <div class="mt-4 grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700">余额告警线</label>
+        <input type="number" step="0.0001" min="0" name="balance_threshold"
+               value="{{if .Channel}}{{or (getFormValue .FormData "BalanceThresholdStr") (balanceThresholdStr .Channel.BalanceThreshold)}}{{else}}{{getFormValue .FormData "BalanceThresholdStr"}}{{end}}"
+               placeholder="留空或 0 = 不监控"
+               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+        <p class="mt-1 text-xs text-gray-500">低于此值时触发 balance_low 告警，单位与渠道余额币种一致。</p>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700">余额接口覆盖 URL</label>
+        <input type="url" name="balance_url" value="{{if .Channel}}{{or (getFormValue .FormData "BalanceURL") .Channel.BalanceURL}}{{else}}{{getFormValue .FormData "BalanceURL"}}{{end}}"
+               placeholder="留空 = 用 provider 默认路径"
+               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+        <p class="mt-1 text-xs text-gray-500">中转站把余额接口换了位置时填这里。</p>
+      </div>
+    </div>
   </div>
 
   <div>

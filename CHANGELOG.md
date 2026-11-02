@@ -115,6 +115,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   anyone imports `internal/store`/`internal/router` into the client,
   which would silently reintroduce the CGO sqlite dependency.
 
+#### Balance alerting (P14 phase 2)
+- New **`balance_low`** alert type. Thresholds live per channel
+  (`channels.balance_threshold`, in that channel's own currency — 110
+  CNY and 110 USD are not the same money), while the rule's threshold
+  is the *count* of low channels required to fire (0 = any one).
+  Fires on strictly-below; "never queried" and "query failed" do not
+  count as low (different problems, different fixes); a stale value
+  from a failed refresh still evaluates, since losing the last known
+  number is worse than a slightly old alarm.
+- Channels page gains **balance alert line** and **balance endpoint
+  override** inputs; the alerts form offers the new type with a note
+  on its threshold semantics.
+
 #### Upstream balance monitoring (P14)
 - **Channel balance queries** for providers that expose a public
   endpoint: DeepSeek, Moonshot (Kimi), Zhipu and SiliconFlow, plus the

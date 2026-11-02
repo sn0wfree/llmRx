@@ -70,6 +70,25 @@ func NewRenderer() (*Renderer, error) {
 		// providerSupportsBalance lets the channels template show "—"
 		// for providers with no balance endpoint (P14).
 		"providerSupportsBalance": providerSupportsBalance,
+		// getFormValue reads a form-data map key, tolerating a nil map
+		// (the create form has no FormData). Templates cannot index a
+		// nil map with a missing key without panicking, and reaching
+		// into a nil *model.Channel errors out the whole page.
+		"getFormValue": func(m map[string]string, key string) string {
+			if m == nil {
+				return ""
+			}
+			return m[key]
+		},
+		// balanceThresholdStr renders the low-balance line for the
+		// channel form: "" for 0 so the placeholder shows instead of a
+		// misleading "0.0000" (0 means "not monitored").
+		"balanceThresholdStr": func(v float64) string {
+			if v <= 0 {
+				return ""
+			}
+			return strconv.FormatFloat(v, 'f', -1, 64)
+		},
 		// balanceCell renders the upstream balance column (P14).
 		// Three distinct states matter to an operator: a value, a
 		// value with a stale-warning, and "not supported".

@@ -2,6 +2,7 @@ package alert
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/logging"
@@ -28,6 +29,13 @@ import (
 //                     and previous_window_cost > 0.
 //   - key_exhausted:  threshold is unused (0). Fired when any channel
 //                     has zero active keys.
+//   - balance_low:    threshold lives per channel (channels.balance_
+//                     threshold, in the channel's own currency; 0 = not
+//                     monitored). The rule's Threshold is the number of
+//                     low channels required to fire (0 = any one). A
+//                     channel counts only when its balance is known and
+//                     parseable — "never queried" and "query failed"
+//                     are not "low".
 func Evaluate(r *model.Alert, now time.Time, st store.Store, ls *logstore.Manager) (bool, map[string]any, error) {
 	switch r.Type {
 	case model.AlertErrorRate:
@@ -38,9 +46,58 @@ func Evaluate(r *model.Alert, now time.Time, st store.Store, ls *logstore.Manage
 		return evalCostSpike(r, now, st, ls)
 	case model.AlertKeyExhausted:
 		return evalKeyExhausted(r, st)
+	case model.AlertBalanceLow:
+		return evalBalanceLow(r, st)
 	default:
 		return false, nil, fmt.Errorf("unknown alert type: %s", r.Type)
 	}
+}
+
+// evalBalanceLow reports channels whose upstream balance has dropped
+// below their configured threshold. See the Evaluate doc comment for
+// the threshold semantics.
+func evalBalanceLow(r *model.Alert, st store.Store) (bool, map[string]any, error) {
+	channels, err := st.GetChannels()
+	if err != nil {
+		return false, nil, err
+	}
+
+	var low []map[string]any
+	for i := range channels {
+		ch := &channels[i]
+		if ch.Status != model.ChannelEnabled {
+			continue
+		}
+		if ch.BalanceThreshold <= 0 || ch.Balance == "" {
+			continue // not monitored, or never queried
+		}
+		value, perr := strconv.ParseFloat(ch.Balance, 64)
+		if perr != nil {
+			continue // unparseable snapshot: not a low signal
+		}
+		if value < ch.BalanceThreshold {
+			low = append(low, map[string]any{
+				"channel_id": ch.ID,
+				"name":       ch.Name,
+				"balance":    ch.Balance,
+				"currency":   ch.BalanceCurrency,
+				"threshold":  ch.BalanceThreshold,
+			})
+		}
+	}
+
+	need := int(r.Threshold)
+	if need <= 0 {
+		need = 1
+	}
+	if len(low) >= need {
+		return true, map[string]any{
+			"low_channels":  low,
+			"low_count":     len(low),
+			"required_count": need,
+		}, nil
+	}
+	return false, nil, nil
 }
 
 func evalErrorRate(r *model.Alert, now time.Time, ls *logstore.Manager) (bool, map[string]any, error) {

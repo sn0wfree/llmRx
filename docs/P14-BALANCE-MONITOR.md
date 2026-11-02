@@ -439,3 +439,55 @@ docs/P14-BALANCE-MONITOR.md             本文件
   金额格式�?
 - `go test ./internal/admin/ -run Balance`:8 个端点用�?空列表�?  不支持标记�?03/404/409/502 分档、成功路径持久化、会话守�?;
 - `go test -race` 覆盖 balance/provider/admin/server/webui 全绿�?
+
+---
+
+## 18. 二期实施:balance_low 告警(2026-11-01)
+
+�?§16 列出的第一项已落地�?
+### 18.1 阈值语�?与最初设想不�?值得记录)
+
+设计稿原本写"阈值必�?per-channel 或带币种"。实现选了 **per-channel**,
+并额外把规则上的 `Threshold` 重新定义�?*低余额渠道的计数门槛**:
+
+| 字段 | 含义 |
+|---|---|
+| `channels.balance_threshold` | 该渠�?低余�?�?单位�?*该渠道自己的币种**�? = 不监�?|
+| `alerts.threshold`(`balance_low`) | 需要几个渠道低余额才触发�? �?1 = 任一渠道 |
+
+这样既避开了跨币种比较(110 CNY �?110 USD 不是一回事),又保留了
+"先别为单条渠道告�?这种运维偏好�?
+**严格小于才触�?*:余额恰好等于阈值不告警("低于�?是开区间)�?
+**未知不等于低**:`balance = ''`(从没查过)和查询失败都不计入。这两种
+情况是不同的故障,修复动作也不�?配置 vs 网络),混进余额告警会误导�?
+**陈旧值仍参与判定**:失败时保留的上一次余额照样按阈值判断——丢掉唯一
+已知的数字比报一个稍旧的警更糟�?
+### 18.2 落地清单
+
+| 位置 | 改动 |
+|---|---|
+| `model/alert.go` | `AlertBalanceLow` 常量 |
+| `alert/rules.go` | `evalBalanceLow` + Evaluate 分发 |
+| `model/types.go` | `Channel.BalanceThreshold` |
+| `store/sqlite.go` | 懒迁移列 + `channelColumns` + scan + Create/Update 持久�?|
+| `admin/handler.go` | `validAlertType` �?`balance_low`;channel patch 支持 `balance_threshold` / `balance_url`(拒绝负数) |
+| `webui/phase2.go` | 告警类型白名�?|
+| `webui/channels.go` | 表单解析两个新字�?|
+| `webui/templates/channels/form.html` | 余额告警�?+ 余额接口覆盖 URL 两个输入 |
+| `webui/templates/alerts/form.html` | `balance_low` 选项 + 阈值语义说�?|
+
+### 18.3 顺带修复的两个缺�?
+1. **`CreateChannel` 从不持久�?`balance` / `balance_currency`**�?   INSERT 语句缺这两列,通过 API 创建渠道时预置的余额快照会静默丢失�?   由新�?`balance_low` 测试直接暴露(测试里创建带余额的渠�?查回来是空的)�?2. **渠道表单在新建时整页渲染失败**。模板里 `printf "%s"` 作用�?float64
+   会报�?而对 nil `.Channel` 取字段同样会报错——两处叠加导致新建表�?   完全空白。新�?nil 安全�?`getFormValue` 模板函数,并改�?`if .Channel`
+   分支�?
+### 18.4 验证
+
+- `alert`:6 个用例——低渠道触发(�?currency payload)、严格小于�?  计数门槛、未知余额不计入、陈旧值仍判定、未知类型仍报错;
+- `webui` / `admin` / `store` 全量测试通过(渠道创建/更新与表单渲�?;
+- `go test -race` 覆盖 alert / webui / admin / store 全绿�?
+### 18.5 剩余二期待办
+
+- 余额历史趋势(`channel_balances` 时序�?;
+- per-key 余额(�?key 渠道�?key 查询);
+- OpenAI / Anthropic Admin Key 用量查询;
+- 配额窗口型渠�?Coding Plan / M Plan)�?
