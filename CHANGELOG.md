@@ -115,6 +115,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   anyone imports `internal/store`/`internal/router` into the client,
   which would silently reintroduce the CGO sqlite dependency.
 
+#### Admin Clients page (P15 phase 5)
+- `/admin/clients` gives the three client features a UI: the client list
+  (online / offline / revoked, version, last heartbeat), enrollment-code
+  issuance, and a config-bundle editor with push.
+- Enrollment codes are shown exactly once with an explicit "unrecoverable
+  after leaving this page" notice and the exact command to run. There is
+  deliberately no "view existing code" affordance — the server stores only
+  a hash, so such a control would be a lie.
+- A revoked client never renders as online even if it checked in recently:
+  the credential no longer works.
+- The bundle editor is a JSON textarea rather than six form fields; the
+  payload has few keys and operators copy configs around.
+- When no edge clients are configured the page shows the exact
+  `edge_clients` YAML to add instead of erroring.
+- webui still does not import clientapi (it would drag in the log store's
+  CGO dependency): a narrow `EdgeControl` interface is declared locally
+  and the server injects the concrete ingestor, mirroring
+  `admin.EdgeControl`.
+
 #### Balance history trend (P14 phase 3)
 - New `channel_balances` time-series table records every successful
   balance query, so operators can answer the questions a single snapshot

@@ -419,10 +419,11 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 			logging.Info("edge client ingest enabled",
 				logging.F("clients", len(edgeClients)))
 			s.edgeIngestor = ing
-			// Admin-visible client status + config push live on the
-			// admin handler (session-guarded), never on the public
-			// /client surface.
+			// P15 phase 5: the admin Clients page. Both the JSON API
+			// (admin handler) and the HTML page (webui) get the ingestor
+			// through narrow interfaces.
 			s.admin.SetEdgeIngestor(ing)
+			webUI.SetEdgeControl(ing)
 		}
 	}
 }

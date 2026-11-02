@@ -916,3 +916,35 @@ type EdgeControl interface {
 - 推�?合法 JSON 版本 +1、非�?JSON 报错;
 - 吊销:行变为已吊销;
 - 会话守卫(未登录不能访�?�?
+
+### 26.7 实施记录
+
+落地完成。端到端实测通过(真实二进�?+ cookie 会话)�?
+**落地清单**
+
+| 位置 | 产出 |
+|---|---|
+| `webui/clients.go` | `EdgeControl` 窄接口、`ClientsPage`、签�?吊销/推配置三个动�?|
+| `webui/templates/clients.html` | 列表 + 签发表单 + JSON 配置编辑�?|
+| `webui/handler.go` | 四条路由 + `edgeControl` 字段 |
+| `webui/templates/partials/sidebar.html` | 侧边�?客户�?入口 |
+| `server/server.go` | 同一 ingestor 同时注入 admin(JSON)�?webui(HTML) |
+
+**端到端实�?*
+
+```
+POST /admin/login          �?200，拿�?cookie
+GET  /admin/clients        �?200�?3892 字节�?                             包含：客户端 / 签发接入�?/ 配置下发 / demo-edge / 在线
+POST /admin/api/v1/edge-clients/enroll-tokens �?enr_cfd5...
+POST /client/v1/enroll     �?{"client_id":"ec_5d6f...","client_secret":"ecs_5a30...","name":"e2e-client"}
+PUT  /admin/api/v1/edge-clients/config        �?200
+GET  /admin/channels/999/balances             �?404（符合预期）
+```
+
+**验证**
+
+- 10 个用�?未配置时的引导面�?包含配置示例而非报错)、四种客户端状态渲�?  (在线/离线/已吊销/静态无 id)�?*已吊销永不显示在线**、接入码只显示一次并�?  警告与用法提示、签发跳转带 token、签发错误走 error flash、推配置生效�?  空配置拒绝、非�?JSON 错误上抛、吊销跳转�?*三个动作在未配置时都�?error
+  而不�?panic**;
+- 全量 `go test ./...` 通过;`go test -race`(balance/webui/admin/client/clientapi)
+  全绿;�?CGO 客户端编译通过�?
+**一处环境注�?*:`/admin/clients` �?HTML 页面，走的是 webui �?**cookie 会话**�?`X-Session-Token` 头只�?`/admin/api/v1` �?JSON API 有效。第一次端到端测试�?header 访问得到 303，是预期行为而非缺陷�?

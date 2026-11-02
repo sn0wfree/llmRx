@@ -32,6 +32,9 @@ type Handler struct {
 	// balanceMon refreshes upstream balances (P14). nil makes the
 	// per-row refresh a no-op error rather than a panic.
 	balanceMon BalanceQuerier
+	// edgeControl backs the Clients page (P15 phase 5). nil renders the
+	// "not configured" guidance instead of erroring.
+	edgeControl EdgeControl
 }
 
 // New creates a web UI handler. adminAPI provides the legacy
@@ -121,6 +124,11 @@ func (h *Handler) Routes() http.Handler {
 		// just that table row.
 		r.Post("/channels/{id}/balance-refresh", h.ChannelBalanceRefresh)
 		r.Get("/channels/{id}/balance-trend", h.ChannelBalanceTrend)
+		// P15 phase 5: edge clients.
+		r.Get("/clients", h.ClientsPage)
+		r.Post("/clients/enroll", h.ClientsEnroll)
+		r.Post("/clients/config", h.ClientsPushConfig)
+		r.Post("/clients/{id}/revoke", h.ClientsRevoke)
 		r.Get("/api/models-by-provider", h.ModelsByProvider)
 		r.Get("/api/meta-providers", h.MetaProviders)
 		r.Get("/api/available-models", h.AvailableModels)
