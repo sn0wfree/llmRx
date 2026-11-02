@@ -1,9 +1,12 @@
-//go:build !cgo && (linux || darwin)
+//go:build !cgo
 
-// Linux/macOS built without cgo: the dlopen path is impossible, so Load
-// always falls back to Nop. dlopen_unix.go is excluded (it needs cgo)
-// and dlopen_other.go is excluded (it is for other OSes), so the stub
-// helpers live here.
+// Builds without cgo cannot dlopen a cdylib at all, on any platform, so
+// Load always fails and callers fall back to Nop.
+//
+// This is the only file defining Load for a no-cgo build: intent.go is
+// '//go:build cgo', and dlopen_other.go is 'cgo && !linux && !darwin'.
+// The three build sets are mutually exclusive, which is what keeps
+// every symbol declared exactly once.
 package intent
 
 import (

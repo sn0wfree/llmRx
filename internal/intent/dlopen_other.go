@@ -1,13 +1,12 @@
-//go:build !linux && !darwin
+//go:build cgo && !linux && !darwin
 
-// Stub dlopen for platforms without the cdylib path (Windows, BSD, ...).
-// The classifier always reports "unknown"; the gateway runs normally
-// with L4 intent classification disabled.
+// Stub dlopen for cgo builds on platforms without a dlopen path
+// (Windows). The classifier always reports "unknown"; the gateway runs
+// normally with L4 intent classification disabled.
 //
-// This file is selected purely by OS, NOT by cgo: intent.go is
-// '//go:build cgo' and provides Load()/loadFrom() plus the native type.
-// Gating this file on !cgo as well made both files compile on
-// windows+cgo, which produced "Load redeclared".
+// The tag includes `cgo` deliberately: intent.go (also `cgo`) defines
+// Load/loadFrom, so a non-cgo build must not include this file or Load
+// is declared twice. Non-cgo builds are covered by dlopen_nocgo.go.
 package intent
 
 import (
@@ -29,12 +28,6 @@ func loadClose(_ unsafe.Pointer) (unsafe.Pointer, error) {
 	return nil, nil
 }
 func dlclose(_ unsafe.Pointer) error { return nil }
-
-// Load reports that no native classifier exists on this platform.
-// Callers treat the error as "fall back to Nop", which is exactly right.
-func Load() (Classifier, error) {
-	return nil, errors.New("intent: native classifier unsupported on this platform")
-}
 
 // The helpers below are unreachable: every load* returns an error, so no
 // caller ever holds a resolved pointer. They exist only to satisfy the
