@@ -689,3 +689,48 @@ runner 上复跑才能定位。已知的两个可疑点:
   在慢 runner 上会假失败。
 
 已记入遗留项,不在本次发布修复范围内。
+
+### 14.8 `v0.1.1` 的两次 release 失败
+
+**第一次(`5e09f3c`)**:`docker` 与 `checksums` 两个 job 失败。
+
+- `checksums` 失败在 `Download every release asset`。该 job 没有
+  `actions/checkout`,而 `gh release download` 需要从 git remote 推断
+  仓库名。修复:加 checkout,并显式传 `--repo "$GITHUB_REPOSITORY"`。
+  `helm` job 的 `gh release upload` 同样补上 `--repo`。
+- `docker` 失败在 `Build and push per-architecture images`。手写的
+  `docker buildx build --push` 在默认 `docker` driver 上没能按 ghcr
+  期望的方式建立 builder 与认证——ghcr 上根本查不到 `build-amd64`
+  tag,说明第一个镜像就没推上去。改为两个 `docker/build-push-action@v5`
+  步骤(与 `v0.1.0` 已验证的路径一致)。
+
+**第二次(`11f27aa`)**:`checksums` 通过(证明 `--repo` 修复有效),
+但 `docker` 仍在 `Build amd64 image` 失败。
+
+这次的改动是两个 `build-push-action` + 一个 `Stage amd64 binary`
+(`cp build/amd64/llmRx build/llmRx`)。失败仍无日志可读——`gho_` 类型的
+token 缺 `workflow` scope,`/logs` 端点返回 401。
+
+**采用的修复**:把 staging 步骤彻底去掉,改用构建参数。`Dockerfile`
+增加:
+
+```dockerfile
+ARG BIN_PATH=build/llmRx
+COPY ${BIN_PATH} /usr/local/bin/llmRx
+```
+
+release 的两个 build-push-action 分别传
+`BIN_PATH=build/amd64/llmRx` 与 `BIN_PATH=build/arm64/llmRx`;
+本地 `docker build` 与 `docker.yml` 不传参,默认值保持原行为。
+
+本地已验证:
+
+```
+$ docker build --build-arg BIN_PATH=build/amd64/llmRx -t llmrx:argtest .
+$ docker run --rm llmrx:argtest -version
+dev (4810723, 2026-11-02T07:47:39Z, go1.22.12)
+```
+
+同时 `Build binaries for both architectures` 增加了
+`ls -lR build` 与 `file` 输出,下次失败可以从日志直接看到二进制是否
+真的产出。这是一次有诊断价值的重试,不是盲目重跑到绿为止。

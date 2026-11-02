@@ -323,15 +323,16 @@ jobs:
           for arch in amd64 arm64; do
             mkdir -p "build/$arch"
             cc=gcc
-            [ "$arch" = arm64 ] && cc=aarch64-linux-gnu-gcc
+            if [ "$arch" = arm64 ]; then cc=aarch64-linux-gnu-gcc; fi
             CGO_ENABLED=1 GOOS=linux GOARCH="$arch" CC="$cc" \
               go build -ldflags="-s -w -extldflags '-static' \
                 -X main.version=${{ steps.ver.outputs.version }} \
                 -X main.commit=${{ github.sha }} \
                 -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               -o "build/$arch/llmRx" ./cmd/gateway
-            file "build/$arch/llmRx"
           done
+          ls -lR build
+          file build/amd64/llmRx build/arm64/llmRx
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -359,30 +360,19 @@ jobs:
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
             type=sha,prefix=sha-
 
-      # Build one image per architecture from its own prebuilt binary, then
-      # merge the two manifests. The Dockerfile is untouched (it still
-      # COPYs build/llmRx), so local `docker build` and docker.yml keep
-      # working and buildx never has to run Go under emulation.
-      #
-      # These use docker/build-push-action rather than a shell `docker buildx
-      # build`: the action sets up a container builder and registry auth the
-      # way ghcr expects, which a hand-rolled invocation on the default
-      # docker driver did not (the v0.1.1 run failed here before any image
-      # reached the registry).
-      - name: Stage amd64 binary
-        run: cp build/amd64/llmRx build/llmRx
-
+      # Build one image per architecture, then merge the manifests. BIN_PATH
+      # points the shared Dockerfile at the matching prebuilt binary, so no
+      # staging step and no Go under emulation is involved.
       - name: Build amd64 image
         uses: docker/build-push-action@v5
         with:
           context: .
           platforms: linux/amd64
           push: true
+          build-args: |
+            BIN_PATH=build/amd64/llmRx
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-amd64
           labels: ${{ steps.meta.outputs.labels }}
-
-      - name: Stage arm64 binary
-        run: cp build/arm64/llmRx build/llmRx
 
       - name: Build arm64 image
         uses: docker/build-push-action@v5
@@ -390,6 +380,8 @@ jobs:
           context: .
           platforms: linux/arm64
           push: true
+          build-args: |
+            BIN_PATH=build/arm64/llmRx
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-arm64
           labels: ${{ steps.meta.outputs.labels }}
 

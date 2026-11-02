@@ -34,7 +34,11 @@ llmrx:x:1000:
 EOF
 
 # --- the gateway (statically linked, ~12 MB) ---
-COPY build/llmRx /usr/local/bin/llmRx
+# BIN_PATH lets a multi-arch release build point at the right prebuilt
+# binary without duplicating this Dockerfile. Local builds and docker.yml
+# keep the default.
+ARG BIN_PATH=build/llmRx
+COPY ${BIN_PATH} /usr/local/bin/llmRx
 
 # Start as root so the binary can chown bind-mounted /data and
 # write the starter config.yml on a fresh volume. The binary
