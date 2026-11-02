@@ -734,3 +734,30 @@ dev (4810723, 2026-11-02T07:47:39Z, go1.22.12)
 同时 `Build binaries for both architectures` 增加了
 `ls -lR build` 与 `file` 输出,下次失败可以从日志直接看到二进制是否
 真的产出。这是一次有诊断价值的重试,不是盲目重跑到绿为止。
+
+**第三次(`a81c962`)** 仍然在 `Build amd64 image` 失败。三个不同的
+实现(手写 buildx、staging + action、build-arg + action)在同一处失败,
+说明问题不在二进制路径,而在镜像引用本身。
+
+**根因:GHCR 不接受大写仓库名。** `github.repository` 是
+`sn0wfree/llmRx`,而 GHCR 的镜像路径必须全小写:
+
+```
+$ curl -o /dev/null -w '%{http_code}' https://ghcr.io/v2/sn0wfree/llmRx/tags/list
+404
+$ curl -o /dev/null -w '%{http_code}' https://ghcr.io/v2/sn0wfree/llmrx/tags/list
+401        # 401 而非 404，说明路径存在、只是需要认证
+```
+
+`docker/metadata-action` 会把镜像名自动转小写,所以 `v0.1.0` 里
+`tags: ${{ steps.meta.outputs.tags }}` 是好的;而多架构方案里我手写了
+`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-amd64`——**大写 `R` 原样
+保留,推送到 `ghcr.io/sn0wfree/llmRx:build-amd64` 直接被拒**,而
+`build-push-action` 把它报成第一步失败。
+
+这解释了为什么 `v0.1.0` 成功、`v0.1.1` 连续三次失败:唯一变化就是
+中间镜像的引用从 metadata-action 的产物变成了手写字符串。
+
+**修复**:新增 `Normalise the image reference` 步骤,用
+`tr '[:upper:]' '[:lower:]'` 生成 `ref`,三个步骤统一引用
+`${{ steps.img.outputs.ref }}`。

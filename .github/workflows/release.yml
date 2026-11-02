@@ -363,6 +363,14 @@ jobs:
       # Build one image per architecture, then merge the manifests. BIN_PATH
       # points the shared Dockerfile at the matching prebuilt binary, so no
       # staging step and no Go under emulation is involved.
+      # GHCR rejects uppercase repository names, and github.repository is
+      # "sn0wfree/llmRx". metadata-action lowercases for the tags below, but
+      # a hand-written image reference does not -- that is what made the
+      # v0.1.1 attempts fail at the first build-push step.
+      - name: Normalise the image reference
+        id: img
+        run: echo "ref=$(echo '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
       - name: Build amd64 image
         uses: docker/build-push-action@v5
         with:
@@ -371,7 +379,7 @@ jobs:
           push: true
           build-args: |
             BIN_PATH=build/amd64/llmRx
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-amd64
+          tags: ${{ steps.img.outputs.ref }}:build-amd64
           labels: ${{ steps.meta.outputs.labels }}
 
       - name: Build arm64 image
@@ -382,20 +390,20 @@ jobs:
           push: true
           build-args: |
             BIN_PATH=build/arm64/llmRx
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-arm64
+          tags: ${{ steps.img.outputs.ref }}:build-arm64
           labels: ${{ steps.meta.outputs.labels }}
 
       - name: Merge into a multi-arch manifest
         run: |
           set -euo pipefail
-          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          IMG="${{ steps.img.outputs.ref }}"
           tags=()
           while IFS= read -r t; do
             [ -n "$t" ] && tags+=("--tag" "$t")
           done <<< "${{ steps.meta.outputs.tags }}"
           docker buildx imagetools create "${tags[@]}" \
             "$IMG:build-amd64" "$IMG:build-arm64"
-          docker buildx imagetools inspect "$IMG:$(echo '${{ github.ref_name }}' | sed 's/^v//')"
+          docker buildx imagetools inspect "${{ steps.meta.outputs.tags }}"
 
   # --------------------------------------------------------------------- helm
   helm:
