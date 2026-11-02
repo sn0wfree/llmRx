@@ -363,17 +363,35 @@ jobs:
       # merge the two manifests. The Dockerfile is untouched (it still
       # COPYs build/llmRx), so local `docker build` and docker.yml keep
       # working and buildx never has to run Go under emulation.
-      - name: Build and push per-architecture images
-        run: |
-          set -euo pipefail
-          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-          for arch in amd64 arm64; do
-            cp "build/$arch/llmRx" build/llmRx
-            docker buildx build \
-              --platform "linux/$arch" \
-              -t "$IMG:build-$arch" \
-              --push .
-          done
+      #
+      # These use docker/build-push-action rather than a shell `docker buildx
+      # build`: the action sets up a container builder and registry auth the
+      # way ghcr expects, which a hand-rolled invocation on the default
+      # docker driver did not (the v0.1.1 run failed here before any image
+      # reached the registry).
+      - name: Stage amd64 binary
+        run: cp build/amd64/llmRx build/llmRx
+
+      - name: Build amd64 image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-amd64
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Stage arm64 binary
+        run: cp build/arm64/llmRx build/llmRx
+
+      - name: Build arm64 image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-arm64
+          labels: ${{ steps.meta.outputs.labels }}
 
       - name: Merge into a multi-arch manifest
         run: |
@@ -385,7 +403,7 @@ jobs:
           done <<< "${{ steps.meta.outputs.tags }}"
           docker buildx imagetools create "${tags[@]}" \
             "$IMG:build-amd64" "$IMG:build-arm64"
-          docker buildx imagetools inspect "$IMG:build-amd64"
+          docker buildx imagetools inspect "$IMG:$(echo '${{ github.ref_name }}' | sed 's/^v//')"
 
   # --------------------------------------------------------------------- helm
   helm:
@@ -408,7 +426,9 @@ jobs:
       - name: Attach chart to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" out/*.tgz --clobber
+        run: |
+          gh release upload "$GITHUB_REF_NAME" out/*.tgz \
+            --repo "$GITHUB_REPOSITORY" --clobber
 
   # ---------------------------------------------------------------- checksums
   #
@@ -419,12 +439,17 @@ jobs:
     runs-on: ubuntu-latest
     needs: [package-and-release, helm]
     steps:
+      # gh needs a repository to resolve against; without a checkout it has
+      # no remote to infer one from, and the v0.1.1 run failed here.
+      - uses: actions/checkout@v4
+
       - name: Download every release asset
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p assets
-          gh release download "$GITHUB_REF_NAME" --dir assets --clobber
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --dir assets --clobber
           ls -lh assets
 
       - name: Recompute checksums over the whole asset set
@@ -438,4 +463,6 @@ jobs:
       - name: Replace checksums.txt on the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" assets/checksums.txt --clobber
+        run: |
+          gh release upload "$GITHUB_REF_NAME" assets/checksums.txt \
+            --repo "$GITHUB_REPOSITORY" --clobber
