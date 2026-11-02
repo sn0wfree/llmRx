@@ -93,10 +93,13 @@ builds:
 archives:
   - id: server
     builds: [linux-amd64, linux-arm64, darwin, windows]
-    formats: [tar.gz]
+    # `format` (singular) rather than `formats`: the plural form only
+    # exists from goreleaser v2.6, and this config must also validate
+    # against the v2.5.x line that CI pins.
+    format: tar.gz
     format_overrides:
       - goos: windows
-        formats: [zip]
+        format: zip
     name_template: >-
       llmrx_{{ .Version }}_{{ .Os }}_{{ .Arch }}
     files:
@@ -110,10 +113,10 @@ archives:
   # its archive carries only the binary and a config sample.
   - id: client
     builds: [client]
-    formats: [tar.gz]
+    format: tar.gz
     format_overrides:
       - goos: windows
-        formats: [zip]
+        format: zip
     name_template: >-
       gateway-client_{{ .Version }}_{{ .Os }}_{{ .Arch }}
     files:

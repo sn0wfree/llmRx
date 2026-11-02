@@ -359,3 +359,150 @@ ldflags 注入         → v0.1.0 (abc1234, 2026-11-01T10:00:00Z, go1.22.12)
 2. **首个 tag 版本号**:`v0.1.0`(建议)还是 `v1.0.0`?
 3. **是否公开分发**:如果只是内部/自用,ghcr.io 私有 + 本地产物足够,
    R5(darwin/windows)可以砍掉,工作量减半。
+
+---
+
+## 13. 发布演练记录(2026-11-02)
+
+在真正打 `v0.1.0` 之前,把整条发布链路在本机跑了一遍。**演练本身发现了 5 个
+缺陷**,其中 3 个是发布产物的真实错误,2 个是校验脚本的错误。
+
+### 13.1 演练范围
+
+| 环节 | 做法 | 结果 |
+|---|---|---|
+| 门禁脚本 | `scripts/release-check.sh v0.1.0`(含全量测试) | 通过(修 2 个 bug 后) |
+| goreleaser 配置 | `goreleaser check` | 1 个配置校验通过(修 1 个 bug 后) |
+| 客户端产物 | `goreleaser build --snapshot --id client` | 5 平台,31s |
+| 服务端产物 | `goreleaser build --snapshot --id linux-amd64` | 36s |
+| Docker 镜像 | `docker build` + 实际运行 | 30.3MB,`/health` 正常 |
+| Helm chart | `helm lint` / `template` / `package` | 0 失败,4.4KB |
+
+### 13.2 发现并修复的 5 个问题
+
+**① CI 在测两个已 EOL 的 Go 版本(真实缺陷)**
+
+```yaml
+go-version: ['1.18', '1.21', '1.22']   # 修复前
+```
+
+`go.mod` 早就声明 `go 1.22`。`setup-go` 遇到模块要求的版本高于矩阵版本时,
+构建必然失败——所以 1.18 和 1.21 两条腿**从来没有真正跑过**,只是白占 CI 时间,
+还与 P16 §5 D1"对齐到 1.22"的结论矛盾。改为 `['1.22']` 并加注释绑定 go.mod。
+
+**② goreleaser 用了 v2.6+ 才有的 `formats` 字段(真实缺陷)**
+
+配置里写的是 `formats: [tar.gz]`,但 `formats`(复数)从 v2.6 才有;CI 里是
+`~> v2` 所以线上碰巧没事,但本地用 v2.5.1 校验直接报:
+
+```
+field formats not found in type config.Archive
+```
+
+改成兼容整个 v2 系列的 `format: tar.gz`(单数)。**这意味着原配置在 v2.0-v2.5
+上会直接失败**——CI 只是恰好用了新版本。
+
+**③ `X-Llmrx-Version` 响应头永远是 `dev`(真实缺陷,最严重)**
+
+Docker 实测:
+
+```
+/health body      -> {"version":"v0.1.0-drill"}   OK
+X-Llmrx-Version   -> dev                          BAD
+```
+
+原因:中间件在 `registerMiddleware()`(由 `New()` 调用)里捕获了
+`s.buildVersionOrDev()` 的值,而 `SetBuildVersion()` 在 `New()` **返回之后**才调用。
+闭包捕获的是注册时的空值,于是永久定格为 `dev`。
+
+修复:改成每个请求读取一次。同时**测试本身也曾失效**——原来的
+`TestVersionHeaderMiddleware` 手工复制了闭包逻辑,所以测不出这个 bug;现在它驱动
+真正的 `registerMiddleware`,按真实顺序(先注册、后设版本)断言。
+
+**④ `release-check.sh` 的脏工作区检测误报**
+
+`git status --porcelain` 在 WSL 读 Windows 检出时把**每个文件**都报成已修改
+(索引 LF / 工作区 CRLF),505 个文件、11 万行"改动"。改用
+`git diff -w --ignore-blank-lines`,纯行尾差异被忽略,真实内容改动仍会失败。
+
+**⑤ `release-check.sh` 的 Go 版本解析错两次**
+
+- 原逻辑 `awk '/go-version:/{print $2}'` 假定单值。CI 是数组
+  `['1.18','1.21','1.22']`,取出来是 `[1.18,`,永远不匹配。
+- 改成提取所有带引号的版本后仍失败:因为 `go.mod` 在 Windows 侧是 CRLF,
+  `awk` 的字段带尾部 `\r`,比较 `1.22\r != 1.22`。两侧都 `tr -d '\r'` 后通过。
+
+### 13.3 产物实测数据
+
+| 产物 | 大小 | 说明 |
+|---|---|---|
+| `gateway-client` linux/amd64 | 13.4 MB | **statically linked + stripped**,零 CGO |
+| `gateway-client` linux/arm64 | 12.9 MB | 同上 |
+| `gateway-client` darwin/arm64 | 13.0 MB | 同上 |
+| `gateway-client` windows/amd64 | 13.5 MB | 同上 |
+| `llmrx` linux/amd64 | 21 MB | CGO 静态链接 |
+| `llmrx:drill` 镜像 | 30.3 MB | `FROM scratch`,含 ca-certificates |
+
+**版本自述验证**:
+
+```
+$ ./gateway-client -version
+0.0.1-next (359e6ff, 2026-11-02T04:35:59Z, go1.22.12, edge)
+
+$ docker run ... llmrx:drill -version
+v0.1.0-drill (local, 2026-11-02T00:00:00Z, go1.22.12)
+```
+
+**Helm 版本回退验证**:
+
+```
+$ helm template llmrx deploy/helm/llmrx | grep image:
+image: "ghcr.io/sn0wfree/llmrx:0.1.0"          # 回退到 appVersion
+
+$ helm template ... --set image.tag=v9.9.9 | grep image:
+image: "ghcr.io/sn0wfree/llmrx:v9.9.9"          # 覆盖生效
+```
+
+### 13.4 遗留风险(演练中观察到但未改)
+
+**静态链接的 glibc 警告**。服务端二进制构建时持续输出:
+
+```
+warning: Using 'getaddrinfo' in statically linked applications requires
+at runtime the shared libraries from the glibc version used for linking
+```
+
+这是 CGO 静态链接的已知特性。`FROM scratch` 镜像里没有 glibc,理论上 DNS 解析
+可能在某些环境下失败(尤其配置了 NSS 模块的域名)。实测 `/health` 与上游请求均
+正常,因为 Go 的纯 DNS 解析器在多数场景接管;但**如果生产环境出现上游域名解析
+失败,这是第一个要查的地方**。缓解手段:改用 `gcr.io/distroless/static`,或在
+scratch 镜像里补 `/etc/nsswitch.conf`。已记入风险,不在本次演练中改动。
+
+**其余未验证项**(需要真实 GitHub 环境):
+
+- `release.yml` 的 goreleaser 全平台矩阵(arm64 需 `gcc-aarch64-linux-gnu`,
+  windows 需 MinGW,本机均无);
+- 多架构 manifest 合并与 ghcr 推送;
+- Helm chart 上传到 Release。
+
+这些只能在首次 `git push origin v0.1.0` 时验证。
+
+### 13.5 演练结论
+
+**可以打 tag。** 本机能验证的部分全部通过,5 个缺陷已修;剩余的只有需要真实
+CI 环境才能跑的部分,且失败模式已知(交叉工具链缺失时会明确报错,不会静默产出
+坏产物)。
+
+发版步骤:
+
+```bash
+# 1. 确认门禁
+scripts/release-check.sh v0.1.0
+
+# 2. 打 tag 并推送(触发 release.yml)
+git tag v0.1.0
+git push origin v0.1.0
+
+# 3. 观察 Actions:goreleaser -> docker -> helm 三个 job
+# 4. 下载一个产物验证版本号,并 docker run ghcr.io/...:v0.1.0 -version
+```

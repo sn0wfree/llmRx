@@ -145,10 +145,13 @@ func (s *Server) registerMiddleware() {
 	// SSE) so a client can tell which gateway answered without a
 	// separate health probe. Registered first so it wraps everything
 	// downstream, including the recoverer's 500 responses.
+	//
+	// The version is read per request, not captured here: middleware is
+	// registered during New(), while SetBuildVersion runs afterwards, so
+	// capturing the value now would freeze it at "dev".
 	s.engine.Use(func(next http.Handler) http.Handler {
-		v := s.buildVersionOrDev()
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("X-Llmrx-Version", v)
+			w.Header().Set("X-Llmrx-Version", s.buildVersionOrDev())
 			next.ServeHTTP(w, r)
 		})
 	})

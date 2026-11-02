@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/sn0wfree/llmRx/internal/config"
 )
 
 // The version surface is small but load-bearing: operators read it from
@@ -30,34 +32,33 @@ func TestSetBuildVersion_StoresValue(t *testing.T) {
 
 // The version middleware must stamp every response, including ones the
 // handler did not otherwise touch.
+//
+// This drives the real registerMiddleware path rather than a copy of its
+// closure: an earlier version of this test re-created the middleware by
+// hand, so it could not catch that the value was captured at
+// registration time (before SetBuildVersion) and stayed "dev".
 func TestVersionHeaderMiddleware(t *testing.T) {
-	s := &Server{}
+	s := &Server{
+		cfg:    &config.Config{Server: config.ServerConfig{}},
+		engine: chi.NewRouter(),
+	}
+	// Registered first, exactly as New() does.
+	s.registerMiddleware()
+	// Set only afterwards, mirroring SetBuildVersion's real call order.
 	s.SetBuildVersion("v9.9.9")
 
-	// Reproduce registerMiddleware's wrapping without building the
-	// whole server: same closure, same ordering assumption.
-	mw := func(next http.Handler) http.Handler {
-		v := s.buildVersionOrDev()
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("X-Llmrx-Version", v)
-			next.ServeHTTP(w, r)
-		})
-	}
-
-	mux := chi.NewRouter()
-	mux.Use(mw)
-	mux.Get("/anything", func(w http.ResponseWriter, r *http.Request) {
+	s.engine.Get("/anything", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	})
-	mux.Get("/boom", func(w http.ResponseWriter, r *http.Request) {
+	s.engine.Get("/boom", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nope", http.StatusInternalServerError)
 	})
 
 	for _, path := range []string{"/anything", "/boom"} {
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		s.engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if got := rec.Header().Get("X-Llmrx-Version"); got != "v9.9.9" {
-			t.Fatalf("%s: X-Llmrx-Version = %q, want v9.9.9", path, got)
+			t.Fatalf("%s: X-Llmrx-Version = %q, want v9.9.9 (value captured too early?)", path, got)
 		}
 	}
 }
