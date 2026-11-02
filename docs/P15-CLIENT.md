@@ -600,3 +600,64 @@ Agent → 本机客户端 ──出站──> https://<frp 域名> → frps → 
 - 桌面 GUI(§12);
 - 管理�?Clients 注册�?生成接入码、在线状�?;
 - per-key 余额、订阅配额窗口型渠道(�?P14 §16)�?
+
+---
+
+## 21. 二期实施:控制�?heartbeat + 签名配置下发,2026-11-01)
+
+补齐�?§6.2 �?pull 式控制面�?*仍保持客户端纯出�?*:服务端从不主�?连接客户端�?
+### 21.1 协议
+
+| 方法 | 路径 | 用�?|
+|---|---|---|
+| POST | `/client/v1/heartbeat` | 30s 一�?上报版本�?config_version,取回 `server_version` �?`need_config` |
+| GET | `/client/v1/config` | 取签名配置包(HMAC-SHA256) |
+
+两个端点�?usage 共用 `edge_clients` �?Bearer token 鉴权�?
+### 21.2 三个安全决定
+
+1. **配置包按客户端签�?*。HMAC key 就是该客户端自己�?token,所以从
+   A 客户端抓到的配置包无法在 B 客户端验证通过——这挡住了跨边缘的重放�?2. **验证失败即丢�?*。客户端只在签名通过后才应用;失败时上一份配置继�?   生效,错误记录�?`/healthz` �?`control_last_error`。绝不应用未验证的远端配置�?3. **拒绝版本回退**。低于当前已应用版本�?bundle 一律拒绝。这既挡住重�?
+   也避免运维误操作把某台边缘的路由悄悄降级�?
+服务端侧的对称决�?**推包时忽�?body 里的 `version` �?`issued_at`**,
+版本号由服务端自增——否则一个手滑的脚本就能把版本钉�?让所有客户端�?pull 逻辑失效�?
+### 21.3 配置包内�?
+只下发客户端需要的东西,不含任何上游密钥:
+
+```json
+{
+  "version": 2,
+  "issued_at": "...",
+  "servers": ["https://a", "https://b"],
+  "cache":    {"enabled": true, "ttl_sec": 3600, "max_items": 2000},
+  "fallback": {"mode": "cache_then_fail"},
+  "limits":   {"max_inflight": 64},
+  "min_client_version": ""
+}
+```
+
+客户端应用时**只覆盖这些字�?*;`token`、`client_token`、`listen` 是本�?专属,永远不从网络接受�?
+### 21.4 落地清单
+
+| 位置 | 产出 |
+|---|---|
+| `clientapi/control.go` | `ControlState`(版本/�?最后心�?、`signBundle`/`VerifyBundle`、heartbeat/config 处理、admin 适配方法 |
+| `clientapi/ingest.go` | `authenticateFull`(返回 token 供签名用)、两个新路由 |
+| `client/control.go` | `Control`(轮询循环、心跳、拉取、验签、拒绝降�?、`Bundle` 类型、`ApplyBundle` |
+| `client/client.go` | `Config` �?`mu` + `ApplyBundle`/`ServersSnapshot`/`FallbackModeOrDefault`;新增 `fallback_mode`/`max_inflight` 本地默认 |
+| `client/proxy.go` | 服务端列表改�?`ServersSnapshot()`(避免与配置应用的数据竞争);`/healthz` 报告 `config_version` / `control_last_error` / `control_last_ok` |
+| `admin/edge.go` | `GET /admin/api/v1/edge-clients`、`PUT /admin/api/v1/edge-clients/config` |
+| `server.go` | 构�?ingestor 后注�?admin handler |
+
+### 21.5 验证
+
+- `clientapi`:16 个控制面用例——心跳三种状�?需配置/已最�?推包�?�?  鉴权、方法校验、签名可验证�?*跨客户端签名不可重用**、篡改包被拒�?  推包内容往返、默认值归整、未�?fallback 模式归整、客户端状态与在线判定�?  admin 状态含版本、无客户端时控制面不存在;
+- `client`:15 个用例——签名验�?有效/�?key/篡改)、拉取并应用�?  need_config �?false 时不拉取�?*坏签名被丢弃**�?*拒绝版本回退**�?  拒绝未知算法、心跳失败记录、`ApplyBundle` 覆盖与空包无操作�?  `/healthz` 暴露控制面状�?
+- `admin`:5 个端点用例——未配置 503、列出并推包(版本 1�?)�?  客户端版本被忽略、非�?JSON 400、会话守�?
+- `go test -race`(client/clientapi/alert/admin)全绿;
+- �?CGO 交叉编译四目�?linux amd64/arm64、darwin arm64、windows amd64)
+  全部通过�?
+### 21.6 仍未做的
+
+- `enroll`(一次性接入码换取 client_secret):当前 token 由运维手工配�?
+  够用且更简�?接入码适合"给同事发一个口�?的场�?独立成期�?- 桌面 GUI(§12)�?- 管理�?HTML 页面(目前�?JSON API;页面可复用同一份数�?�?

@@ -49,7 +49,10 @@ type Handler struct {
 	alertMgr        AlertReloader
 	// balanceMon serves the upstream balance endpoints (P14). nil
 	// returns 503 so a partially-wired server never panics.
-	balanceMon      BalanceRefresher
+	balanceMon BalanceRefresher
+	// edgeIngestor exposes edge-client status and config push (P15
+	// phase 2). nil hides those endpoints.
+	edgeIngestor    EdgeControl
 	responseCache   cache.Cache
 	mcpClientMgr    *mcp.ClientManager
 	guardrailEngine *guardrail.GuardrailEngine
@@ -115,6 +118,10 @@ func (h *Handler) SetAlertManager(m AlertReloader) { h.alertMgr = m }
 // on internal/balance.
 func (h *Handler) SetBalanceMonitor(m BalanceRefresher) { h.balanceMon = m }
 
+// SetEdgeIngestor injects the edge-client control plane (P15 phase 2)
+// so the admin API can list clients and push config bundles.
+func (h *Handler) SetEdgeIngestor(e EdgeControl) { h.edgeIngestor = e }
+
 // SetCache wires the response cache for stats and purge endpoints.
 func (h *Handler) SetCache(c cache.Cache) { h.responseCache = c }
 
@@ -172,6 +179,9 @@ func (h *Handler) Routes() http.Handler {
 		// synchronous refresh that hits the upstream.
 		r.Get("/balances", h.ListBalances)
 		r.Post("/channels/{id}/balance", h.RefreshChannelBalance)
+		// P15 phase 2: edge clients and their pushed config.
+		r.Get("/edge-clients", h.EdgeClients)
+		r.Put("/edge-clients/config", h.PushEdgeConfig)
 		r.Get("/providers", h.ListProviders)
 		r.Post("/providers", h.CreateProvider)
 		r.Delete("/providers/{id}", h.DeleteProvider)

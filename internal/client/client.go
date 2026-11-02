@@ -300,6 +300,15 @@ type Config struct {
 	CacheMaxItems int `yaml:"cache_max_items"`
 	// UsageFile persists usage records across restarts (JSONL).
 	UsageFile string `yaml:"usage_file"`
+	// FallbackMode / MaxInflight are locally configurable defaults that
+	// a server-pushed bundle may override ("cache_then_fail" or
+	// "local").
+	FallbackMode string `yaml:"fallback_mode"`
+	MaxInflight  int    `yaml:"max_inflight"`
+
+	// mu guards the fields a verified bundle may rewrite while
+	// requests are in flight.
+	mu sync.RWMutex
 }
 
 // Normalize fills defaults and validates. It returns an error listing
@@ -340,4 +349,54 @@ func (c *Config) usageURL() string {
 		return ""
 	}
 	return strings.TrimRight(c.Servers[0], "/") + "/client/v1/usage"
+}
+
+// ApplyBundle folds a verified server-pushed bundle into the live
+// config. Guarded by a mutex because the proxy reads Servers on every
+// request while the control loop writes them.
+//
+// Only fields the server is allowed to steer are touched: the token,
+// the client token and the listen address are local-only and never
+// come from the network.
+func (c *Config) ApplyBundle(b Bundle) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(b.Servers) > 0 {
+		c.Servers = append([]string(nil), b.Servers...)
+	}
+	c.CacheEnabled = b.Cache.Enabled
+	if b.Cache.TTLSec > 0 {
+		c.CacheTTLSec = b.Cache.TTLSec
+	}
+	if b.Cache.MaxItems > 0 {
+		c.CacheMaxItems = b.Cache.MaxItems
+	}
+	if b.Fallback.Mode != "" {
+		c.FallbackMode = b.Fallback.Mode
+	}
+	if b.Limits.MaxInflight > 0 {
+		c.MaxInflight = b.Limits.MaxInflight
+	}
+}
+
+// ServersSnapshot returns the current server list under the lock.
+func (c *Config) ServersSnapshot() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.Servers) == 0 {
+		return nil
+	}
+	out := make([]string, len(c.Servers))
+	copy(out, c.Servers)
+	return out
+}
+
+// FallbackModeOrDefault returns the effective fallback mode.
+func (c *Config) FallbackModeOrDefault() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.FallbackMode == "" {
+		return "cache_then_fail"
+	}
+	return c.FallbackMode
 }

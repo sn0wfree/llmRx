@@ -68,6 +68,26 @@ func main() {
 	go proxy.StartUsageRecorder(ctx, usageStore)
 	go proxy.StartUsageUploader(ctx, &http.Client{Timeout: 10 * time.Second})
 
+	// P15 phase 2: poll the server for liveness + a signed config
+	// bundle. Only started when a client token is configured, since
+	// that token is both the credential and the signature key.
+	var ctl *client.Control
+	if cfg.ClientToken != "" {
+		ctl = client.NewControl(cfg.Servers[0], cfg.ClientName, cfg.ClientToken, buildVersion())
+		// A verified bundle can point the client at different servers
+		// and cache settings. Applied live: no restart needed.
+		ctl.OnBundle(func(b client.Bundle) {
+			cfg.ApplyBundle(b)
+			fmt.Printf("config bundle v%d applied", b.Version)
+			if len(b.Servers) > 0 {
+				fmt.Printf(" (servers: %v)", b.Servers)
+			}
+			fmt.Println()
+		})
+		proxy.SetControl(ctl)
+		go ctl.Run(ctx, 30*time.Second)
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           proxy.Handler(),

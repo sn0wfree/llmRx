@@ -45,6 +45,9 @@ type Proxy struct {
 	// usageSink persists usage rows across restarts; wired by the
 	// binary after construction. nil keeps everything in memory.
 	usageSink UsagePersister
+	// control is the optional config poller (nil when no client token
+	// is configured). Only read by /healthz.
+	control *Control
 }
 
 // NewProxy wires the data plane.
@@ -81,18 +84,31 @@ func (p *Proxy) Handler() http.Handler {
 	return mux
 }
 
+// SetControl wires the control-plane poller so /healthz can report its
+// state.
+func (p *Proxy) SetControl(c *Control) { p.control = c }
+
 // handleLocalHealth is the client's own liveness endpoint, distinct
 // from the server's /health which is proxied through "/".
 func (p *Proxy) handleLocalHealth(w http.ResponseWriter, r *http.Request) {
 	open, fails := p.brk.state()
-	writeJSONObj(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"status":        "ok",
 		"server_open":   open,
 		"server_fails":  fails,
 		"pending_usage": p.buffer.len(),
 		"cache":         p.cache.stats(r.Context()),
 		"uptime_sec":    int(p.Uptime().Seconds()),
-	})
+	}
+	if p.control != nil {
+		lastErr, lastOK := p.control.LastStatus()
+		out["config_version"] = p.control.AppliedVersion()
+		out["control_last_error"] = lastErr
+		if !lastOK.IsZero() {
+			out["control_last_ok"] = lastOK.UTC().Format(time.RFC3339)
+		}
+	}
+	writeJSONObj(w, http.StatusOK, out)
 }
 
 // writeJSONObj serialises v as a JSON response.
@@ -256,7 +272,8 @@ func streamingBody(body []byte) bool {
 // start index after a full pass so a dead primary does not add latency
 // to every request forever.
 func (p *Proxy) attemptServers(r *http.Request, body []byte, raw bool) (*http.Response, int, error) {
-	n := len(p.cfg.Servers)
+	servers := p.cfg.ServersSnapshot()
+	n := len(servers)
 	if n == 0 {
 		return nil, 0, errors.New("no servers configured")
 	}
@@ -264,7 +281,7 @@ func (p *Proxy) attemptServers(r *http.Request, body []byte, raw bool) (*http.Re
 	var lastErr error
 	for i := 0; i < n; i++ {
 		idx := (start + i) % n
-		base := strings.TrimRight(p.cfg.Servers[idx], "/")
+		base := strings.TrimRight(servers[idx], "/")
 		target := base + r.URL.Path
 		if r.URL.RawQuery != "" {
 			target += "?" + r.URL.RawQuery

@@ -21,10 +21,14 @@ type EdgeClient struct {
 
 // Ingestor accepts usage batches from edge clients and folds them into
 // the server's log store, so edge traffic is visible in the same admin
-// pages as direct traffic.
+// pages as direct traffic. It also serves the control plane
+// (heartbeat + signed config) that edge clients poll.
 type Ingestor struct {
 	logStore *logstore.Manager
 	clients  []EdgeClient
+	// control holds the pull-based control plane state. nil disables
+	// /client/v1/heartbeat and /client/v1/config.
+	control *controlState
 
 	// dedup guards against retried uploads double-counting rows. An
 	// in-memory LRU of recent (client, request_id) pairs; a restart
@@ -41,12 +45,16 @@ type Ingestor struct {
 // NewIngestor wires the ingest endpoint. clients may be empty, which
 // disables the endpoint entirely (404) rather than leaving it open.
 func NewIngestor(ls *logstore.Manager, clients []EdgeClient) *Ingestor {
-	return &Ingestor{
+	ing := &Ingestor{
 		logStore:   ls,
 		clients:    clients,
 		seen:       make(map[string]time.Time),
 		evictAfter: 24 * time.Hour,
 	}
+	if len(clients) > 0 {
+		ing.control = newControlState(clients)
+	}
+	return ing
 }
 
 // edgeUsageRecord is one row of an upload batch. Field names match the
@@ -80,25 +88,64 @@ func (ing *Ingestor) Handler() http.Handler {
 	r := http.NewServeMux()
 	r.HandleFunc("/client/v1/usage", ing.handleUsage)
 	r.HandleFunc("/client/v1/healthz", ing.handleHealth)
+	r.HandleFunc("/client/v1/heartbeat", ing.handleHeartbeat)
+	r.HandleFunc("/client/v1/config", ing.handleConfig)
 	return r
+}
+
+// handleHeartbeat records liveness and tells the client whether its
+// config is stale.
+func (ing *Ingestor) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
+	name, token, ok := ing.authenticateFull(r)
+	if !ok {
+		writeJSONError(w, http.StatusUnauthorized, `{"error":{"code":"invalid_client","message":"unknown edge client token"}}`)
+		return
+	}
+	_ = token
+	if ing.control == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "control plane disabled")
+		return
+	}
+	ing.control.handleHeartbeat(w, r, name)
+}
+
+// handleConfig returns the signed config bundle for this client.
+func (ing *Ingestor) handleConfig(w http.ResponseWriter, r *http.Request) {
+	name, token, ok := ing.authenticateFull(r)
+	if !ok {
+		writeJSONError(w, http.StatusUnauthorized, `{"error":{"code":"invalid_client","message":"unknown edge client token"}}`)
+		return
+	}
+	if ing.control == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "control plane disabled")
+		return
+	}
+	ing.control.handleConfig(w, r, name, token)
 }
 
 // authenticate checks the bearer token against the configured edge
 // clients, returning the client's name.
 func (ing *Ingestor) authenticate(r *http.Request) (string, bool) {
+	name, _, ok := ing.authenticateFull(r)
+	return name, ok
+}
+
+// authenticateFull also returns the matched token, which the control
+// plane needs as the HMAC key for the client's config signature.
+func (ing *Ingestor) authenticateFull(r *http.Request) (name, token string, ok bool) {
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
-		return "", false
+		return "", "", false
 	}
-	token := strings.TrimPrefix(auth, "Bearer ")
+	got := strings.TrimPrefix(auth, "Bearer ")
 	for _, c := range ing.clients {
 		// Constant-time comparison: these tokens authenticate writes
 		// from semi-trusted edge machines.
-		if equalFoldConstantTime(token, c.Token) && c.Token != "" {
-			return c.Name, true
+		if c.Token != "" && equalFoldConstantTime(got, c.Token) {
+			return c.Name, c.Token, true
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 func equalFoldConstantTime(a, b string) bool {

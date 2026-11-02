@@ -92,6 +92,9 @@ type Server struct {
 	// balanceMon refreshes upstream account balances (P14). nil leaves
 	// the balance endpoints returning 503.
 	balanceMon *balance.Monitor
+	// edgeIngestor owns the /client/v1 surface and the control-plane
+	// state (P15 phase 2). nil when no edge clients are configured.
+	edgeIngestor *clientapi.Ingestor
 }
 
 // SetBuildVersion records the build identity so /health and the
@@ -411,6 +414,11 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 			s.engine.Mount("/", ing.Handler())
 			logging.Info("edge client ingest enabled",
 				logging.F("clients", len(edgeClients)))
+			s.edgeIngestor = ing
+			// Admin-visible client status + config push live on the
+			// admin handler (session-guarded), never on the public
+			// /client surface.
+			s.admin.SetEdgeIngestor(ing)
 		}
 	}
 }

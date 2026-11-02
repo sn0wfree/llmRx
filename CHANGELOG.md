@@ -115,6 +115,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   anyone imports `internal/store`/`internal/router` into the client,
   which would silently reintroduce the CGO sqlite dependency.
 
+#### Edge client control plane (P15 phase 2)
+- **Pull-based control plane**: clients poll `POST /client/v1/heartbeat`
+  every 30s and fetch `GET /client/v1/config` only when the server
+  reports a newer version. The server never dials out.
+- **Per-client signed bundles** (HMAC-SHA256 keyed on that client's own
+  token), so a bundle captured from one edge cannot be replayed at
+  another. The client verifies before applying; a bad signature is
+  discarded and the previous config stays in force, with the error
+  surfaced on `/healthz`.
+- **Downgrade refused**: a bundle older than the version in force is
+  rejected — that blocks replays and prevents an operator mistake from
+  silently downgrading an edge's routing.
+- Bundles carry only routing knobs (servers, cache, fallback mode,
+  inflight limit). Credentials and the listen address are local-only
+  and never accepted over the network. The server also ignores a
+  client-supplied `version` so versioning stays authoritative.
+- Admin API: `GET /admin/api/v1/edge-clients` (status + active bundle)
+  and `PUT /admin/api/v1/edge-clients/config` (push, returns the new
+  version).
+
 #### Balance alerting (P14 phase 2)
 - New **`balance_low`** alert type. Thresholds live per channel
   (`channels.balance_threshold`, in that channel's own currency — 110
