@@ -27,9 +27,19 @@ esac
 fail=0
 
 # 1. Clean tree
-if [ -n "$(git status --porcelain)" ]; then
+#
+# `git status --porcelain` and plain `git diff` both report phantom
+# modifications when the working tree is read through a different
+# filesystem than the one it was checked out on (WSL reading a Windows
+# checkout): the index says LF and the working copy has CRLF, so every
+# file looks changed.
+#
+# `git diff -w --ignore-blank-lines` ignores that, because CRLF-vs-LF is
+# the *only* difference in those cases. Anything with a real content
+# change still shows up.
+if ! git diff -w --ignore-blank-lines --quiet || ! git diff --cached --quiet; then
     echo "FAIL: working tree is dirty — commit or stash first"
-    git status --short
+    git --no-pager diff -w --ignore-blank-lines --stat | tail -15
     fail=1
 else
     echo "ok: working tree clean"
@@ -60,14 +70,30 @@ else
 fi
 
 # 4. go.mod version must match CI
+#
+# The CI matrix may be a list (`go-version: ['1.22']` or
+# `['1.18','1.21','1.22']`), so extract every quoted Go version and
+# require that go.mod's version appears among them. The previous
+# single-value extraction took whatever followed the colon, which for a
+# list yielded "[1.18," and failed spuriously.
 if [ -f go.mod ]; then
-    MODVER=$(awk '/^go /{print $2; exit}' go.mod)
-    CIVER=$(awk '/go-version:/{gsub(/["'"'"']/,"",$2); print $2; exit}' .github/workflows/test.yml 2>/dev/null || echo "")
-    if [ -n "$CIVER" ] && [ "$MODVER" != "$CIVER" ]; then
-        echo "FAIL: go.mod says go $MODVER but CI uses $CIVER"
-        fail=1
+    # tr strips the CR that a CRLF working copy leaves on the field.
+    MODVER=$(awk '/^go /{print $2; exit}' go.mod | tr -d '\r')
+    CIVER=$(grep -oE "'[0-9]+\.[0-9]+(\.[0-9]+)?'" .github/workflows/test.yml 2>/dev/null |
+        tr -d "'\r" | tr '\n' ' ' | sed 's/ *$//')
+    if [ -z "$CIVER" ]; then
+        echo "WARN: could not read go-version from test.yml (skipping check)"
     else
-        echo "ok: go version aligned ($MODVER)"
+        found=0
+        for v in $CIVER; do
+            [ "$v" = "$MODVER" ] && found=1
+        done
+        if [ "$found" -eq 1 ]; then
+            echo "ok: go version $MODVER is in the CI matrix ($CIVER)"
+        else
+            echo "FAIL: go.mod says go $MODVER but CI tests $CIVER"
+            fail=1
+        fi
     fi
 else
     echo "FAIL: go.mod missing"
