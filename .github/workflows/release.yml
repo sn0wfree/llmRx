@@ -6,9 +6,18 @@ name: release
 #   - multi-arch container image pushed to ghcr.io
 #   - packaged Helm chart attached to the release
 #
-# CGO note: internal/store uses mattn/go-sqlite3, so every target needs
-# a C compiler. That is why this is a runner matrix rather than one
-# pure-Go cross-compile. See docs/P16-DISTRIBUTION.md §5 D2.
+# Why this is split per OS
+# ------------------------
+# internal/store uses mattn/go-sqlite3, so every server build needs CGO.
+# CGO cannot cross-compile a darwin or Windows binary from Linux (it
+# needs that platform's C toolchain and headers), so a single ubuntu job
+# running `goreleaser release` fails on the first such target. Each OS
+# therefore builds on its own runner with `goreleaser build --id ...`,
+# which is the only command that accepts `--id`.
+#
+# Those jobs only produce binaries. A single `package-and-release` job
+# collects them, builds the archives, writes checksums and publishes one
+# Release — so several jobs can never race to create it.
 
 on:
   push:
@@ -23,21 +32,8 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # ---------------------------------------------------------------- goreleaser
-  #
-  # CGO is the constraint that decides this shape. security: every
-  # target needs a C toolchain, and CGO cannot cross-compile a darwin or
-  # Windows binary from Linux. So the release is split per-OS:
-  #
-  #   linux  (ubuntu)  linux/amd64 natively, linux/arm64 via aarch64 gcc
-  #   darwin (macos)   darwin/amd64 + arm64 natively
-  #   windows(win)     windows/amd64 via MinGW
-  #
-  # Each runner produces only its own subset (`--id`), and each uploads
-  # its archives to the same GitHub Release. The alternative — one
-  # ubuntu job with `goreleaser release` — fails on the first CGO
-  # cross-target, which is exactly what the v0.1.0 drill surfaced.
-  goreleaser-linux:
+  # ------------------------------------------------------------- build: linux
+  build-linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,61 +44,57 @@ jobs:
         with:
           go-version: '1.22'
 
+      # arm64 needs the aarch64 cross toolchain; amd64 uses the host gcc.
       - name: Install arm64 cross compiler
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      # Only this job publishes: it creates the GitHub Release and its
-      # own archives. darwin and windows upload theirs afterwards.
-      - name: Run goreleaser (linux + client)
+      - name: Build linux binaries
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: '~> v2'
-          args: release --clean --id linux-amd64 --id linux-arm64 --id client
+          args: build --clean --id linux-amd64 --id linux-arm64
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Collects the darwin/windows archives and attaches them to the
-  # Release the linux job created. Without this the other platforms
-  # would have no artifacts in the Release at all.
-  goreleaser-attach:
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-linux
+          path: dist/
+          if-no-files-found: error
+
+  # The client is pure Go (CGO_ENABLED=0), so one job produces every
+  # platform's client binary.
+  build-client:
     runs-on: ubuntu-latest
-    needs: [goreleaser-linux, goreleaser-darwin, goreleaser-windows]
     steps:
-      - name: Download darwin artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
         with:
-          name: dist-darwin
-          path: dist-darwin
+          fetch-depth: 0
 
-      - name: Download windows artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/setup-go@v5
         with:
-          name: dist-windows
-          path: dist-windows
+          go-version: '1.22'
 
-      - name: Attach archives to the release
+      - name: Build client binaries
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: build --clean --id client
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          files=(dist-darwin/*.tar.gz dist-darwin/*.zip \
-                 dist-windows/*.tar.gz dist-windows/*.zip)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "no darwin/windows archives to attach" >&2
-            exit 1
-          fi
-          for f in "${files[@]}"; do
-            echo "uploading $(basename "$f")"
-            gh release upload "$TAG" "$f" --clobber
-          done
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  goreleaser-darwin:
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-client
+          path: dist/
+          if-no-files-found: error
+
+  # ------------------------------------------------------------ build: darwin
+  build-darwin:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -113,30 +105,23 @@ jobs:
         with:
           go-version: '1.22'
 
-      # `--skip publish` builds and archives this platform's binaries
-      # without touching the GitHub Release, so three jobs cannot race
-      # to create it. The attach job below uploads the archives to the
-      # Release the linux job creates.
-      - name: Build darwin artifacts
+      - name: Build darwin binaries
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: '~> v2'
-          args: release --clean --id darwin --skip publish
+          args: build --clean --id darwin
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload artifacts for the release job
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: dist-darwin
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/artifacts.json
+          name: bin-darwin
+          path: dist/
           if-no-files-found: error
 
-  goreleaser-windows:
+  # ----------------------------------------------------------- build: windows
+  build-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -147,30 +132,159 @@ jobs:
         with:
           go-version: '1.22'
 
-      # CGO on Windows needs a C compiler; confirm one is present before
-      # spending a build on it.
+      # CGO on Windows needs a C compiler on PATH; fail fast with a clear
+      # message instead of a confusing linker error.
       - name: Verify a C toolchain is present
         shell: bash
         run: gcc --version
 
-      - name: Build windows artifacts
+      - name: Build windows binaries
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: '~> v2'
-          args: release --clean --id windows --skip publish
+          args: build --clean --id windows
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload artifacts for the release job
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: dist-windows
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/artifacts.json
+          name: bin-windows
+          path: dist/
           if-no-files-found: error
+
+  # ------------------------------------------------- package + publish release
+  #
+  # Archives are produced here rather than by goreleaser's `release`
+  # command, because that command cannot be scoped to a build id. Names
+  # and contents follow goreleaser's conventions so the result is what
+  # users expect from any other Go project.
+  package-and-release:
+    runs-on: ubuntu-latest
+    needs: [build-linux, build-client, build-darwin, build-windows]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: bins
+
+      - name: Show what was collected
+        run: find bins -type f \( -name llmrx -o -name llmrx.exe \) -printf '%p  %s bytes\n' | sort
+
+      - name: Create archives and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p out
+
+          # emit <os> <arch> <binary-path>: one line per built binary.
+          # goreleaser's dist layout is
+          #   dist/<id>_<os>_<arch>[_<variant>]/<binary>
+          emit() {
+            local bin="$1"
+            local dir; dir=$(basename "$(dirname "$bin")")
+            local os arch
+            case "$dir" in
+              *linux_amd64*)   os=linux;   arch=amd64 ;;
+              *linux_arm64*)   os=linux;   arch=arm64 ;;
+              *darwin_amd64*)  os=darwin;  arch=amd64 ;;
+              *darwin_arm64*)  os=darwin;  arch=arm64 ;;
+              *windows_amd64*) os=windows; arch=amd64 ;;
+              *) echo "  skip (unrecognised): $bin" >&2; return 0 ;;
+            esac
+            echo "$os $arch $bin"
+          }
+
+          # Parenthesised so -o does not swallow the following predicate.
+          server_bins=$(find bins -type f \( -name llmrx -o -name llmrx.exe \) | sort)
+          client_bins=$(find bins -type f \( -name gateway-client -o -name gateway-client.exe \) | sort)
+
+          pack() {
+            local name="$1" os="$2" arch="$3" bin="$4"
+            local stage; stage=$(mktemp -d)
+            cp "$bin" "$stage/"
+            if [ "$name" = "llmrx" ]; then
+              # Ship the sample config and the systemd unit with the
+              # server, mirroring what an operator needs to start it.
+              cp config.yml "$stage/" 2>/dev/null || true
+              mkdir -p "$stage/systemd"
+              cp deploy/systemd/llmrx.service "$stage/systemd/" 2>/dev/null || true
+            fi
+            cp README.md CHANGELOG.md "$stage/" 2>/dev/null || true
+            for f in LICENSE*; do [ -e "$f" ] && cp "$f" "$stage/"; done
+
+            local base="${name}_${VERSION}_${os}_${arch}"
+            # Absolute output dir captured BEFORE the subshell cd: using
+            # $PWD inside the subshell would point at $stage.
+            local outdir="$PWD/out"
+            if [ "$os" = "windows" ]; then
+              # python3 rather than `zip`: the runner image does not
+              # guarantee zip, and this keeps the step dependency-free.
+              python3 - "$stage" "$outdir/${base}.zip" <<'PY'
+          import os, sys, zipfile
+          src, dst = sys.argv[1], sys.argv[2]
+          with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as z:
+              for root, _, files in os.walk(src):
+                  for name in files:
+                      path = os.path.join(root, name)
+                      z.write(path, os.path.relpath(path, src))
+          PY
+            else
+              ( cd "$stage" && tar -czf "$outdir/${base}.tar.gz" . )
+            fi
+            rm -rf "$stage"
+          }
+
+          while read -r os arch bin; do
+            [ -n "${bin:-}" ] || continue
+            pack llmrx "$os" "$arch" "$bin"
+          done < <(for b in $server_bins; do emit "$b"; done)
+
+          while read -r os arch bin; do
+            [ -n "${bin:-}" ] || continue
+            pack gateway-client "$os" "$arch" "$bin"
+          done < <(for b in $client_bins; do emit "$b"; done)
+
+          ( cd out && sha256sum * > checksums.txt )
+          echo "--- produced ---"
+          ls -lh out
+
+      - name: Publish the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: llmRx ${{ github.ref_name }}
+          files: |
+            out/*.tar.gz
+            out/*.zip
+            out/checksums.txt
+          body: |
+            ## llmRx ${{ github.ref_name }}
+
+            LLM API gateway: OpenAI-compatible entry point with smart routing,
+            multi-tenant billing and observability.
+
+            ### Install
+
+            ```bash
+            # Docker (recommended)
+            docker run -d -p 8787:8787 -v llmrx-data:/data \
+              -e LLMRX_KEY_MASTER=$(openssl rand -hex 32) \
+              ghcr.io/sn0wfree/llmrx:${{ github.ref_name }}
+            ```
+
+            Or download the archive for your platform below, then:
+
+            ```bash
+            ./llmrx -version        # confirm the build
+            ./llmrx -config config.yml
+            ```
+
+            The edge client (`gateway-client_*`) is a separate download: it is a
+            pure-Go proxy you run beside your agents. See docs/P15-CLIENT.md.
 
   # ------------------------------------------------------------------- docker
   docker:
@@ -186,8 +300,6 @@ jobs:
         id: ver
         run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
 
-      # amd64 is built natively. arm64 needs the cross compiler plus
-      # buildx/QEMU because the Dockerfile consumes a prebuilt binary.
       - name: Install arm64 cross compiler
         run: |
           sudo apt-get update
@@ -203,24 +315,11 @@ jobs:
               -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o build/llmRx ./cmd/gateway
 
-      - name: Upload amd64 binary for the arm64 stage
-        uses: actions/upload-artifact@v4
-        with:
-          name: llmrx-amd64
-          path: build/llmRx
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
-      - name: Build arm64 binary
-        run: |
-          mkdir -p build-arm64
-          CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc \
-            go build -ldflags="-s -w -extldflags '-static' \
-              -X main.version=${{ steps.ver.outputs.version }} \
-              -X main.commit=${{ github.sha }} \
-              -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -o build-arm64/llmRx ./cmd/gateway
-
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to registry
         uses: docker/login-action@v3
@@ -241,14 +340,10 @@ jobs:
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
             type=sha,prefix=sha-
 
-      # Two image builds with the same tag, then merged into one
-      # manifest list. Building per-arch keeps each stage on the native
-      # toolchain instead of emulating CGO through QEMU.
       - name: Build and push amd64
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: Dockerfile
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -257,9 +352,7 @@ jobs:
   # --------------------------------------------------------------------- helm
   helm:
     runs-on: ubuntu-latest
-    # Wait for every platform job: the chart is attached to the same
-    # Release those jobs create.
-    needs: [goreleaser-linux, goreleaser-darwin, goreleaser-windows]
+    needs: [package-and-release]
     steps:
       - uses: actions/checkout@v4
 
@@ -272,9 +365,9 @@ jobs:
       - uses: azure/setup-helm@v4
 
       - name: Package chart
-        run: helm package deploy/helm/llmrx -d dist
+        run: helm package deploy/helm/llmrx -d out
 
       - name: Attach chart to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" dist/*.tgz --clobber
+        run: gh release upload "$GITHUB_REF_NAME" out/*.tgz --clobber
