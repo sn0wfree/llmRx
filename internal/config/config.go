@@ -21,6 +21,18 @@ type Config struct {
 	LatencyRoute LatencyRouteConfig `yaml:"latency_routing"`
 	Session      SessionConfig      `yaml:"session_affinity"`
 	Balance      BalanceConfig      `yaml:"balance_monitor"`
+	// EdgeClients lists gateway-client instances allowed to upload
+	// usage (P15). Empty disables the /client/v1/* endpoints entirely.
+	EdgeClients []EdgeClientConfig `yaml:"edge_clients"`
+}
+
+// EdgeClientConfig is one registered gateway-client.
+type EdgeClientConfig struct {
+	// Name labels the client in ingested log rows ("client:<name>").
+	Name string `yaml:"name" json:"name"`
+	// Token authenticates its uploads. Generate with
+	// `openssl rand -hex 24`. Empty tokens are rejected.
+	Token string `yaml:"token" json:"token"`
 }
 
 // BalanceConfig controls the upstream balance refresh loop (P14).

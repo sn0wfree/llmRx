@@ -1,0 +1,30 @@
+# gateway-client — the llmRx edge client.
+#
+# Unlike the server image, this one is pure Go (CGO_ENABLED=0): the
+# client deliberately avoids internal/store and internal/router, so it
+# cross-compiles without a C toolchain and needs no ca-certificates
+# copy beyond the standard trust anchors for outbound TLS.
+#
+# Build:  docker build -f Dockerfile.client -t llmrx-client:local .
+# Run:    see docs/P15-CLIENT.md
+#
+# Final image: ~13 MB, no shell, no busybox.
+
+FROM scratch
+
+# --- TLS trust anchors (outbound HTTPS to the llmRx server) ---
+COPY --from=alpine:3.20 /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
+# --- the client (statically linked, CGO disabled) ---
+COPY build/gateway-client /usr/local/bin/gateway-client
+
+WORKDIR /data
+VOLUME ["/data"]
+
+ENV TZ=UTC
+# The client needs no master key, no privilege drop and no healthcheck
+# helper: it holds no secrets beyond its own config file, and its
+# liveness endpoint is /healthz on the listen port.
+
+ENTRYPOINT ["/usr/local/bin/gateway-client"]
+CMD ["-config", "/data/client.yml"]

@@ -54,6 +54,16 @@ balance_monitor:
   interval_sec: 3600   # 刷新周期；0 = 关闭自动刷新
   timeout_sec: 10      # 单次查询超时
 
+# edge_clients: 允许上传用量的 gateway-client 边缘实例（P15）。
+# token 用 `openssl rand -hex 24` 生成。列表为空时 /client/v1/* 完全不挂载。
+# 客户端侧的用量记录按名称出现在日志里（RouterPath = client:<name>），
+# 其中 source=local 的行是服务端从未见过的兜底直连消耗，是唯一计费依据。
+# edge_clients:
+#   - name: laptop-alice
+#     token: 5f8a...c2
+#   - name: edge-bj-01
+#     token: 9c1d...7e
+
 # session_affinity: 可选会话亲和（默认关闭）。开启后 mode:auto 的
 # 多轮对话会钉在同一 model/channel（保上游 prompt cache 与一致性）。
 # session 来源优先级：X-Session-ID 请求头 > body user 字段 > system+首条 user 哈希。

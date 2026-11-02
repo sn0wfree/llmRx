@@ -85,6 +85,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+#### Edge client gateway (P15)
+- **`gateway-client`**: a second binary (pure Go, `CGO_ENABLED=0`,
+  cross-compiles to linux/darwin/windows from one toolchain) that
+  serves an OpenAI-compatible endpoint on localhost and forwards to a
+  remote llmRx server. Agents point at `127.0.0.1:3425`; the client
+  injects its configured token only when the agent sent none, stamps
+  `X-Forwarded-For`/`X-Llmrx-Client`, and streams SSE unbuffered.
+- **Local response cache** for deterministic requests (temperature 0,
+  non-streaming), keyed identically to the server's cache. On server
+  unreachability the fallback chain serves the cached response, else a
+  structured `503 client_upstream_unreachable`. Business errors (401/
+  429/upstream failures) always pass through untouched. A breaker
+  (3 failures → open 30s → half-open probe) keeps offline requests
+  from waiting on timeouts.
+- **Usage accounting with three sources**: `proxy` (forwarded; the
+  server already billed it — observability only), `cache` (served
+  locally, no tokens) and `local` (served by an edge-side fallback
+  upstream — the only server-visible record of that spend). Rows
+  persist to a local JSONL file and batch-upload every minute; a
+  failed upload requeues the batch in order.
+- **Server ingest endpoint** `POST /client/v1/usage`: static-token
+  auth against config `edge_clients` (an empty list mounts nothing),
+  `(client, request_id)` idempotency, rows folded into the shared log
+  store (`RouterPath = client:<name>`) so edge traffic appears in the
+  existing Logs and Analytics pages. Attributed by credential, not by
+  the client's self-reported name.
+- A static test (`TestClientPackageStaysCGOFree`) fails the build if
+  anyone imports `internal/store`/`internal/router` into the client,
+  which would silently reintroduce the CGO sqlite dependency.
+
 #### Upstream balance monitoring (P14)
 - **Channel balance queries** for providers that expose a public
   endpoint: DeepSeek, Moonshot (Kimi), Zhipu and SiliconFlow, plus the

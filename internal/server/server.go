@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"os"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/balance"
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/cache"
+	"github.com/sn0wfree/llmRx/internal/clientapi"
 	"github.com/sn0wfree/llmRx/internal/cluster"
 	"github.com/sn0wfree/llmRx/internal/config"
 	"github.com/sn0wfree/llmRx/internal/dialect"
@@ -391,6 +393,26 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	s.engine.Mount("/account", webUI.UserRoutes())
 	s.engine.Mount("/admin", webUI.Routes())
 	s.engine.Mount("/admin/api/v1", adminHandler.Routes())
+
+	// P15: edge-client usage ingest. Mounted only when edge clients are
+	// configured — an empty list leaves no /client/v1 surface at all.
+	if len(s.cfg.EdgeClients) > 0 {
+		edgeClients := make([]clientapi.EdgeClient, 0, len(s.cfg.EdgeClients))
+		for _, c := range s.cfg.EdgeClients {
+			if strings.TrimSpace(c.Token) == "" {
+				logging.Warn("edge client with empty token skipped",
+					logging.F("name", c.Name))
+				continue
+			}
+			edgeClients = append(edgeClients, clientapi.EdgeClient{Name: c.Name, Token: c.Token})
+		}
+		if len(edgeClients) > 0 {
+			ing := clientapi.NewIngestor(s.logStore, edgeClients)
+			s.engine.Mount("/", ing.Handler())
+			logging.Info("edge client ingest enabled",
+				logging.F("clients", len(edgeClients)))
+		}
+	}
 }
 
 // initResponseCache creates the cache backend based on the server

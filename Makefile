@@ -17,7 +17,7 @@ LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(BU
 # no JavaScript build step: just `go build`. The Makefile has no
 # web-sync / web-build / npm targets.
 
-.PHONY: all build test test-race cover cover-check run clean build-go-only intent-rust version
+.PHONY: all build build-client build-client-all test test-race cover cover-check run clean build-go-only intent-rust version
 
 all: build
 
@@ -25,6 +25,23 @@ all: build
 
 build:
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/gateway
+
+# The edge client (P15) is pure Go: CGO is disabled so it
+# cross-compiles to every platform without a C toolchain.
+CLIENT_BIN := gateway-client
+CGO_CLIENT  := CGO_ENABLED=0
+
+build-client:
+	$(CGO_CLIENT) $(GO) build -ldflags "$(LDFLAGS)" -o $(CLIENT_BIN) ./cmd/gateway-client
+
+# Cross-compile the client for every supported target. The server
+# cannot do this (CGO sqlite), the client can — that is the whole point.
+build-client-all:
+	$(CGO_CLIENT) GOOS=linux   GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o dist/gateway-client_linux_amd64       ./cmd/gateway-client
+	$(CGO_CLIENT) GOOS=linux   GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o dist/gateway-client_linux_arm64       ./cmd/gateway-client
+	$(CGO_CLIENT) GOOS=darwin  GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o dist/gateway-client_darwin_amd64      ./cmd/gateway-client
+	$(CGO_CLIENT) GOOS=darwin  GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o dist/gateway-client_darwin_arm64      ./cmd/gateway-client
+	$(CGO_CLIENT) GOOS=windows GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o dist/gateway-client_windows_amd64.exe ./cmd/gateway-client
 
 # build-go-only is the same as build today; kept for backwards
 # compatibility with scripts that referenced the old target name.

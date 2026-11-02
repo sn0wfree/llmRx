@@ -73,20 +73,52 @@ builds:
       - -X main.commit={{.Commit}}
       - -X main.date={{.Date}}
 
+  # --- Edge client (P15): pure Go, every platform, no toolchain ---
+  - id: client
+    main: ./cmd/gateway-client
+    binary: gateway-client
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
 archives:
-  - id: default
+  - id: server
+    builds: [linux-amd64, linux-arm64, darwin, windows]
     formats: [tar.gz]
     format_overrides:
       - goos: windows
         formats: [zip]
     name_template: >-
-      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+      llmrx_{{ .Version }}_{{ .Os }}_{{ .Arch }}
     files:
       - LICENSE*
       - README.md
       - CHANGELOG.md
       - config.yml
       - deploy/systemd/*
+
+  # The client ships separately: it goes on laptops and edge boxes, so
+  # its archive carries only the binary and a config sample.
+  - id: client
+    builds: [client]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      gateway-client_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE*
+      - README.md
 
 checksum:
   name_template: checksums.txt

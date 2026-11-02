@@ -1,6 +1,6 @@
 # P15 — 客户端形态 / Client Gateway
 
-> Date: 2026-11-01 · Owner: llmRx maintainers · Status: **规划稿(未实施)**
+> Date: 2026-11-01 · Owner: llmRx maintainers · Status: **一期已实施(见 §20 实施记录)**
 > 前置:P0-P14;本文讨论"服务端 + 客户端"双形态,以及两者如何连接。
 > 关联:[P12 集群模式](P12-CLUSTER.md)(注意:客户端 ≠ 集群节点,见 §2)、[DEPLOY-FRP.md](DEPLOY-FRP.md)。
 
@@ -553,3 +553,50 @@ Agent → 本机客户端 ──出站──> https://<frp 域名> → frps → 
    二期按心跳延迟择优。
 4. **`/v1/models` 语义**:客户端返回服务端列表缓存,还是本地静态?建议
    缓存服务端上一次响应,`/models` 不是热路径。
+
+---
+
+## 20. 一期实施记�?2026-11-01)
+
+一期落地了**最小可用闭�?*:本地代理 + 本地缓存 + 断网兜底 + 用量采集回传�?范围比原设计稿收�?�?§20.3),控制�?enroll/heartbeat/config 下发)留待二期�?
+### 20.1 落地清单
+
+| 组件 | 产出 |
+|---|---|
+| 客户端数据面 | `internal/client/proxy.go`:本地 `/v1/chat/completions`,出站转发,SSE 直�?逐块 Flush),`X-Forwarded-For` / `X-Llmrx-Client` 标识 |
+| 本地缓存 | 复用 `internal/cache`(MemoryCache + `Key()` 规范�?,只缓�?temperature=0 的非流式请求,命中�?`X-Llmrx-Cache: hit` |
+| 断网兜底 | 缓存命中→兜�?无缓存→结构�?503 `client_upstream_unreachable`。熔断器(3 次失败开 30s,半开放行)避免每个请求都等超时 |
+| 用量采集 | 三源记账:`proxy`(服务端已计费,仅观�?/ `cache`(零消�?/ `local`(服务端从未见过的兜底直连,**唯一计费依据**)。JSONL 持久�?重启不丢)+ 定期上传 |
+| 服务端接收入�?| `internal/clientapi`:`POST /client/v1/usage`,静�?token 鉴权(config `edge_clients`),�?`(client, request_id)` 幂等去重,行落入共�?logstore(`RouterPath=client:<name>`),管理台直接可�?|
+| 构建 | `cmd/gateway-client` + `Dockerfile.client` + `make build-client{,-all}`;�?CGO,`CGO_ENABLED=0` 交叉编译 linux/windows/darwin 实测通过(各约 13MB) |
+
+### 20.2 关键实现决定
+
+1. **鉴权注入次序**:Agent 显式携带�?`Authorization` 永远优先于客户端配置�?   token——客户端绝不覆盖调用方的凭证�?2. **业务错误不触发兜�?*:401/429/上游 provider 错误原样透传,只有传输错误�?   408 �?5xx 进入兜底链。对活服务器上的业务错误做兜底会掩盖真实问题,还可�?   经本地直连重复扣费�?3. **5xx 计入熔断,4xx 不计**:�?`<500` 的响应调�?`success()`、`>=500` 调用
+   `failure()`。最初实现无条件 `success()`,导致 5xx 每次把失败计数清�?
+   熔断永远打不开——被 `TestProxy_BreakerTripsOn5xx` 抓住后修正�?4. **用量上传失败重新入队**:批次放回缓冲区头部并保序,服务端不可达时行
+   不丢�?本地 JSONL 与上传解�?持久�?5s 一�?上传 60s 一�?,离线数天
+   也不丢�?5. **服务端归属以凭证为准**:ingest 忽略 body 里自报的 `client_name`,�?   edge_clients �?token 对应的名称记账�?6. **`/client/v1/*` 空列表不挂载**:服务端没�?edge_clients 时不存在这个
+   surface,而不是留一个开放的端点�?
+### 20.3 与设计稿的范围差�?收敛)
+
+| 原设�?§4-§10) | 一期实�?| 原因 |
+|---|---|---|
+| 控制�?enroll / heartbeat / config 下发(bundle 签名) | 未实�?客户端配置为本地 client.yml | 本地客户端的核心价值是代理+兜底;enroll/签名体系独立成期更稳。客户端上报版本依赖�?`-version` 已随 P16 落地 |
+| 桌面 GUI(本地 WebUI + 浏览�? | 未实�?提供 `/healthz` 本地状�?JSON | GUI 依赖模板与渲染栈,独立成期 |
+| 双二进制 + per-key 余额�?| `cmd/gateway-client` 独立二进�?�?per-key 余额未动 | 双二进制是零 CGO 的前�?已实�?|
+| 服务端三张表(clients / enroll_tokens / client_usage) | 未建�?用量行直接进共享 logstore | 复用现有 Logs/Analytics 页面,零迁�?独立 clients 表等 enroll 一起做 |
+
+### 20.4 验证
+
+- `internal/client`:20 个用例——转发与 token 注入、显�?token 优先、缓存命�?  (上游只调一次、缓存行�?token �?、非确定性请求不缓存、流式直通不缓存�?  离线回缓存、离线无缓存 503、业务错误透传且不触发熔断�?xx 熔断�?  双服务器 failover、breaker 状态机、fallible 判定表、config 校验、JSONL 往返�?  缓冲区逐出、上传成�?失败重排/禁用;
+- `internal/clientapi`:8 个用例——接受并持久�?归属用配置名)、鉴权三态�?  三源记账、request_id 幂等去重、输入校验、未配置时无 surface、去重表清理;
+- `TestClientPackageStaysCGOFree`:静态守�?任何�?`internal/store` /
+  `internal/router` / `mattn/go-sqlite3` 的引用立即失败构�?
+- `CGO_ENABLED=0 GOOS={linux,windows,darwin}` 三平台交叉编译实测通过�?
+### 20.5 二期待办
+
+- 控制�?enroll / heartbeat / 签名 bundle 下发,�?§6.2/§8);
+- 桌面 GUI(§12);
+- 管理�?Clients 注册�?生成接入码、在线状�?;
+- per-key 余额、订阅配额窗口型渠道(�?P14 §16)�?
