@@ -25,6 +25,21 @@ type BalanceHistoryRepository interface {
 	PruneBalanceHistory(cutoff time.Time) (int64, error)
 }
 
+// KeyBalanceRepository records per-key balances (P14 phase 4). Balance
+// is account-level, and a channel can hold several keys, each its own
+// account — so the accurate place for it is the key row.
+type KeyBalanceRepository interface {
+	// UpdateKeyBalance stores one key's snapshot. A non-empty
+	// balanceErr records a failed query and leaves the previous value;
+	// an empty one stores the value and clears the error.
+	UpdateKeyBalance(keyID int64, balance, currency string, checkedAt time.Time, balanceErr string) error
+
+	// ClearKeyBalance resets a key's balance columns. Used when a key
+	// becomes inactive: a stale value on a disabled key reads as if that
+	// account were still in play.
+	ClearKeyBalance(keyID int64) error
+}
+
 // BalancePoint is one observation of an upstream account balance.
 //
 // Balance stays a string to match channels.balance exactly, so a value

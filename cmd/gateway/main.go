@@ -460,6 +460,8 @@ func main() {
 	}, cp, cp, st)
 	// P14 phase 3: record a time series alongside the live snapshot.
 	balanceMon.SetHistoryStore(st)
+	// P14 phase 4: query every key, not just the pool's round-robin pick.
+	balanceMon.SetKeyLister(st)
 	balanceMon.SetRetentionDays(cfg.Balance.BalanceRetentionDays)
 	srv.SetBalanceMonitor(balanceMon)
 	if cfg.Balance.BalanceEnabled() {

@@ -1,7 +1,19 @@
 {{define "key_row"}}<div id="key-row-{{.ID}}" class="flex items-center justify-between p-4 border-b last:border-b-0">
-  <div>
+  <div class="flex items-center gap-3 flex-wrap">
     <code class="text-sm bg-gray-50 px-2 py-1 rounded font-mono">{{.KeyMasked}}</code>
-    <span class="ml-3 text-xs text-gray-500">创建于 {{formatTime .CreatedAt}}</span>
+    <span class="text-xs text-gray-500">创建于 {{formatTime .CreatedAt}}</span>
+    {{if .BalanceError}}
+      <span class="text-xs text-red-600" title="{{.BalanceError}}">余额查询失败</span>
+    {{else if .Balance}}
+      <span class="text-sm text-gray-700" title="按此 key 单独查询">
+        {{.Balance}}{{if .BalanceCurrency}} {{.BalanceCurrency}}{{end}}
+      </span>
+      <span class="text-xs text-gray-400">{{if .BalanceUpdatedAt}}{{formatTime .BalanceUpdatedAt}}{{end}}</span>
+    {{else if eq .Status 0}}
+      <span class="text-xs text-gray-400">余额未查询</span>
+    {{else}}
+      <span class="text-xs text-gray-400">已禁用</span>
+    {{end}}
   </div>
   <button hx-delete="/admin/channels/{{.ChannelID}}/keys/{{.ID}}"
           hx-target="#key-row-{{.ID}}"

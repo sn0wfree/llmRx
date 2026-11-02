@@ -180,6 +180,7 @@ func (h *Handler) Routes() http.Handler {
 		r.Get("/balances", h.ListBalances)
 		r.Post("/channels/{id}/balance", h.RefreshChannelBalance)
 		r.Get("/channels/{id}/balance-history", h.BalanceHistory)
+		r.Get("/channels/{id}/balances", h.ChannelKeyBalances)
 		// P15 phase 2: edge clients and their pushed config.
 		r.Get("/edge-clients", h.EdgeClients)
 		r.Put("/edge-clients/config", h.PushEdgeConfig)

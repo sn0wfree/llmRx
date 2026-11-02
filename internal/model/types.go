@@ -170,6 +170,18 @@ type Key struct {
 	Status        KeyStatus `json:"status"`
 	LastUsedAt    time.Time `json:"last_used_at"`
 	CreatedAt     time.Time `json:"created_at"`
+
+	// Per-key upstream balance (P14 phase 4). Balance is account-level,
+	// and one channel can hold several keys, each a separate account —
+	// so the accurate place to record it is here, not only on the
+	// channel row.
+	//
+	// Balance is a string to preserve the upstream's precision, matching
+	// channels.balance.
+	Balance          string     `json:"balance,omitempty"`
+	BalanceCurrency  string     `json:"balance_currency,omitempty"`
+	BalanceUpdatedAt *time.Time `json:"balance_updated_at,omitempty"`
+	BalanceError     string     `json:"balance_error,omitempty"`
 }
 
 type Plan struct {

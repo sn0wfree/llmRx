@@ -58,8 +58,7 @@
   </td>
   <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{{.Priority}}</td>
   <td class="px-6 py-4 whitespace-nowrap">
-    {{balanceCell .}}
-    {{if providerSupportsBalance .Provider}}
+    {{balanceCell .}}    {{if providerSupportsBalance .Provider}}
     <button hx-post="/admin/channels/{{.ID}}/balance-refresh"
             hx-target="#channel-row-{{.ID}}"
             hx-swap="outerHTML"

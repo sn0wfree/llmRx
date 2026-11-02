@@ -189,6 +189,60 @@ func (h *Handler) BalanceHistory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ChannelKeyBalances returns the per-key balance breakdown for one
+// channel (P14 phase 4). Balance is account-level, so a multi-key
+// channel has several.
+func (h *Handler) ChannelKeyBalances(w http.ResponseWriter, r *http.Request) {
+	id, err := pathInt(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	if _, err := h.store.GetChannel(id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "channel not found")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	keys, err := h.store.GetKeys(id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	type keyView struct {
+		KeyID     int64  `json:"key_id"`
+		Masked    string `json:"masked"`
+		Status    int    `json:"status"`
+		Balance   string `json:"balance,omitempty"`
+		Currency  string `json:"currency,omitempty"`
+		UpdatedAt string `json:"updated_at,omitempty"`
+		Error     string `json:"error,omitempty"`
+	}
+	out := make([]keyView, 0, len(keys))
+	for i := range keys {
+		k := &keys[i]
+		v := keyView{
+			KeyID:    k.ID,
+			Masked:   k.KeyMasked,
+			Status:   int(k.Status),
+			Balance:  k.Balance,
+			Currency: k.BalanceCurrency,
+			Error:    k.BalanceError,
+		}
+		if k.BalanceUpdatedAt != nil {
+			v.UpdatedAt = k.BalanceUpdatedAt.UTC().Format(time.RFC3339)
+		}
+		out = append(out, v)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"channel_id": id,
+		"keys":       out,
+	})
+}
+
 // balanceSupported reports whether a channel's provider declares a
 // balance endpoint.
 func balanceSupported(ch *model.Channel) bool {

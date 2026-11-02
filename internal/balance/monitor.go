@@ -57,6 +57,18 @@ type KeyPicker interface {
 // BalanceStore is the narrow write surface the monitor needs.
 type BalanceStore interface {
 	UpdateChannelBalance(channelID int64, balance, currency string, checkedAt time.Time, balanceErr string) error
+	// Per-key writes (P14 phase 4). A store that only implements the
+	// channel-level method still works — keysFor then reports the
+	// selected key as the only one.
+	UpdateKeyBalance(keyID int64, balance, currency string, checkedAt time.Time, balanceErr string) error
+	ClearKeyBalance(keyID int64) error
+}
+
+// KeyLister supplies a channel's keys so every account can be queried.
+// Optional: when unset the monitor falls back to the pool's round-robin
+// key, which is the pre-phase-4 behaviour.
+type KeyLister interface {
+	GetKeys(channelID int64) ([]model.Key, error)
 }
 
 // HistoryStore persists the balance time series (P14 phase 3). Kept a
@@ -79,6 +91,10 @@ type Monitor struct {
 	chans ChannelLister
 	keys  KeyPicker
 	store BalanceStore
+	// keyLister supplies every key of a channel so each account can be
+	// queried (P14 phase 4). nil falls back to the pool's round-robin
+	// pick, i.e. the pre-phase-4 behaviour.
+	keyLister KeyLister
 	// history is optional: nil means "record no time series". Set via
 	// SetHistoryStore.
 	history HistoryStore
@@ -121,6 +137,67 @@ func (m *Monitor) SetQuery(fn func(ctx context.Context, providerName, apiKey, ba
 
 // SetHistoryStore enables balance time-series recording.
 func (m *Monitor) SetHistoryStore(h HistoryStore) { m.history = h }
+
+// SetKeyLister enables per-key balance queries.
+func (m *Monitor) SetKeyLister(kl KeyLister) { m.keyLister = kl }
+
+// keysFor returns the keys to query for a channel. Without a key lister
+// it degrades to the pool's round-robin pick, which preserves the old
+// single-key behaviour.
+func (m *Monitor) keysFor(ch *model.Channel) ([]model.Key, error) {
+	if m.keyLister != nil {
+		keys, err := m.keyLister.GetKeys(ch.ID)
+		if err != nil {
+			return nil, fmt.Errorf("balance: list keys: %w", err)
+		}
+		return keys, nil
+	}
+	k, err := m.keys.NextKey(ch.ID)
+	if err != nil || k == nil {
+		return nil, errors.New("balance: no usable key for channel")
+	}
+	return []model.Key{*k}, nil
+}
+
+// queryOneKey runs one upstream query with panic recovery, so a bad
+// parser response on one key cannot take down the sweep.
+func (m *Monitor) queryOneKey(ctx context.Context, ch *model.Channel, key string) (b provider.Balance, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("balance: panic querying channel %d: %v", ch.ID, r)
+		}
+	}()
+
+	timeout := m.cfg.Timeout
+	if timeout <= 0 {
+		timeout = DefaultConfig.Timeout
+	}
+	qctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	if formatIsOneAPI(ch) {
+		return provider.QueryOneAPIBalance(qctx, key, ch.BaseURL, ch.BalanceURL,
+			time.Now().AddDate(0, 0, -90).Unix())
+	}
+	return m.query(qctx, ch.Provider, key, ch.BaseURL, ch.BalanceURL)
+}
+
+// clearKeyBalance resets a non-active key's balance columns.
+func (m *Monitor) clearKeyBalance(k *model.Key) {
+	// Only touch rows that actually carry a value: a sweep over many
+	// disabled keys should not issue an UPDATE each.
+	if k.Balance == "" && k.BalanceError == "" {
+		return
+	}
+	if err := m.store.ClearKeyBalance(k.ID); err != nil {
+		logging.Warn("balance: clear key balance failed",
+			logging.F("key_id", k.ID), logging.F("error", err.Error()))
+	}
+	k.Balance = ""
+	k.BalanceCurrency = ""
+	k.BalanceUpdatedAt = nil
+	k.BalanceError = ""
+}
 
 // SetRetentionDays installs the live history-window provider.
 func (m *Monitor) SetRetentionDays(fn func() int) { m.retentionDays = fn }
@@ -249,48 +326,92 @@ func (m *Monitor) QueryChannel(ctx context.Context, ch *model.Channel) (provider
 		return provider.Balance{}, ErrUnsupported
 	}
 
-	// Recover from a panicking parser so one bad upstream response
-	// cannot take down the sweep goroutine.
-	var (
-		b   provider.Balance
-		err error
-	)
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				err = fmt.Errorf("balance: panic querying channel %d: %v", ch.ID, r)
-			}
-		}()
-		b, err = m.queryWithKey(ctx, ch)
-	}()
-
 	now := time.Now().UTC()
-	if err != nil {
-		if rerr := m.store.UpdateChannelBalance(ch.ID, "", "", now, err.Error()); rerr != nil {
+
+	// Query every active key, not just the first. Balance is account-
+	// level, so a channel holding several keys has several balances; the
+	// channel-level number reported below is the minimum of them.
+	keys, kerr := m.keysFor(ch)
+	if kerr != nil {
+		if rerr := m.store.UpdateChannelBalance(ch.ID, "", "", now, kerr.Error()); rerr != nil {
 			logging.Warn("balance: persist error failed",
 				logging.F("channel_id", ch.ID), logging.F("error", rerr.Error()))
 		}
-		return provider.Balance{}, err
+		return provider.Balance{}, kerr
+	}
+
+	var (
+		best      provider.Balance // lowest successful balance
+		bestFound bool
+		lastErr   error
+		queried   int
+	)
+	for i := range keys {
+		k := &keys[i]
+		if k.Status != model.KeyActive || k.Key == "" {
+			// A non-active key will never be used again; keeping its old
+			// balance would read as if the account were still in play.
+			m.clearKeyBalance(k)
+			continue
+		}
+		b, err := m.queryOneKey(ctx, ch, k.Key)
+		queried++
+		if err != nil {
+			lastErr = err
+			if uerr := m.store.UpdateKeyBalance(k.ID, "", "", now, err.Error()); uerr != nil {
+				logging.Warn("balance: persist key error failed",
+					logging.F("key_id", k.ID), logging.F("error", uerr.Error()))
+			}
+			continue
+		}
+		value := formatAmount(b.Available)
+		if uerr := m.store.UpdateKeyBalance(k.ID, value, b.Currency, now, ""); uerr != nil {
+			logging.Warn("balance: persist key balance failed",
+				logging.F("key_id", k.ID), logging.F("error", uerr.Error()))
+		}
+		if !bestFound || b.Available < best.Available {
+			best = b
+			bestFound = true
+		}
+	}
+
+	if !bestFound {
+		// Every key failed (or there were no usable keys). Keep the
+		// channel's previous value: losing the last known number is worse
+		// than a stale one.
+		msg := "no usable key"
+		if lastErr != nil {
+			msg = lastErr.Error()
+		}
+		if rerr := m.store.UpdateChannelBalance(ch.ID, "", "", now, msg); rerr != nil {
+			logging.Warn("balance: persist error failed",
+				logging.F("channel_id", ch.ID), logging.F("error", rerr.Error()))
+		}
+		if lastErr != nil {
+			return provider.Balance{}, lastErr
+		}
+		return provider.Balance{}, errors.New("balance: no usable key for channel")
 	}
 
 	// Format with the upstream's own precision: money is stored and
 	// displayed as a string so 110.00 does not become 110.
-	value := formatAmount(b.Available)
-	if rerr := m.store.UpdateChannelBalance(ch.ID, value, b.Currency, now, ""); rerr != nil {
+	value := formatAmount(best.Available)
+	if rerr := m.store.UpdateChannelBalance(ch.ID, value, best.Currency, now, ""); rerr != nil {
 		return provider.Balance{}, fmt.Errorf("balance: persist: %w", rerr)
 	}
 	ch.Balance = value
-	ch.BalanceCurrency = b.Currency
+	ch.BalanceCurrency = best.Currency
 	ch.BalanceUpdatedAt = &now
 	ch.BalanceError = ""
+	_ = lastErr
 
 	// History is written only on success: a failed query records
 	// balance_error, but must not insert a row. "No data" and "balance
 	// is zero" are different facts, and conflating them draws a cliff
 	// into the trend chart that never happened.
-	m.recordHistory(ch, now, value, b.Currency)
+	m.recordHistory(ch, now, value, best.Currency)
 
-	return b, nil
+	return best, nil
 }
 
 // recordHistory appends a time-series point, honouring the dedup window.
@@ -339,17 +460,7 @@ func (m *Monitor) queryWithKey(ctx context.Context, ch *model.Channel) (provider
 	if err != nil || key == nil || key.Key == "" {
 		return provider.Balance{}, errors.New("balance: no usable key for channel")
 	}
-
-	qctx, cancel := context.WithTimeout(ctx, m.cfg.Timeout)
-	defer cancel()
-
-	// one-api/new-api relays need a two-document read, so they take a
-	// dedicated path rather than the generic single-GET dispatch.
-	if formatIsOneAPI(ch) {
-		return provider.QueryOneAPIBalance(qctx, key.Key, ch.BaseURL, ch.BalanceURL,
-			time.Now().AddDate(0, 0, -90).Unix())
-	}
-	return m.query(qctx, ch.Provider, key.Key, ch.BaseURL, ch.BalanceURL)
+	return m.queryOneKey(ctx, ch, key.Key)
 }
 
 // formatIsOneAPI reports whether this channel uses the one-api billing

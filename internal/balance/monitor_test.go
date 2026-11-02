@@ -37,9 +37,11 @@ type balanceCall struct {
 }
 
 type fakeStore struct {
-	mu    sync.Mutex
-	calls []balanceCall
-	err   error
+	mu       sync.Mutex
+	calls    []balanceCall
+	keyCalls []keyBalanceCall
+	cleared  []int64
+	err      error
 }
 
 func (f *fakeStore) UpdateChannelBalance(id int64, balance, currency string, _ time.Time, balanceErr string) error {
@@ -47,6 +49,44 @@ func (f *fakeStore) UpdateChannelBalance(id int64, balance, currency string, _ t
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, balanceCall{channelID: id, balance: balance, currency: currency, err: balanceErr})
 	return f.err
+}
+
+// Per-key writes (P14 phase 4). Recorded separately so existing
+// channel-level assertions keep working unchanged.
+func (f *fakeStore) UpdateKeyBalance(keyID int64, balance, currency string, _ time.Time, balanceErr string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.keyCalls = append(f.keyCalls, keyBalanceCall{keyID: keyID, balance: balance, currency: currency, err: balanceErr})
+	return f.err
+}
+
+func (f *fakeStore) ClearKeyBalance(keyID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cleared = append(f.cleared, keyID)
+	return f.err
+}
+
+type keyBalanceCall struct {
+	keyID    int64
+	balance  string
+	currency string
+	err      string
+}
+
+func (f *fakeStore) lastKey() (keyBalanceCall, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.keyCalls) == 0 {
+		return keyBalanceCall{}, false
+	}
+	return f.keyCalls[len(f.keyCalls)-1], true
+}
+
+func (f *fakeStore) keyCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.keyCalls)
 }
 
 func (f *fakeStore) last() (balanceCall, bool) {

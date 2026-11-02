@@ -210,6 +210,16 @@ func (s *ScriptedStore) LastBalancePoint(channelID int64) (*store.BalancePoint, 
 func (s *ScriptedStore) PruneBalanceHistory(cutoff time.Time) (int64, error) {
 	return s.underlying.PruneBalanceHistory(cutoff)
 }
+
+// --- Per-key balance (P14 phase 4) ---
+
+func (s *ScriptedStore) UpdateKeyBalance(keyID int64, balance, currency string, checkedAt time.Time, balanceErr string) error {
+	return s.underlying.UpdateKeyBalance(keyID, balance, currency, checkedAt, balanceErr)
+}
+
+func (s *ScriptedStore) ClearKeyBalance(keyID int64) error {
+	return s.underlying.ClearKeyBalance(keyID)
+}
 func (s *ScriptedStore) GetKeys(channelID int64) ([]model.Key, error) {
 	if s.GetKeysFunc != nil {
 		return s.GetKeysFunc(channelID)

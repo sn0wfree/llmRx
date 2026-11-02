@@ -75,3 +75,32 @@ func (s *dbStore) PruneBalanceHistory(cutoff time.Time) (int64, error) {
 	}
 	return res.RowsAffected()
 }
+
+// UpdateKeyBalance stores one key's balance snapshot (P14 phase 4).
+//
+// Same contract as UpdateChannelBalance: a failure records the error and
+// leaves the last known value, because a stale number is more useful to
+// an operator than none.
+func (s *dbStore) UpdateKeyBalance(keyID int64, balance, currency string, checkedAt time.Time, balanceErr string) error {
+	if len(balanceErr) > 512 {
+		balanceErr = balanceErr[:512]
+	}
+	if balanceErr != "" {
+		_, err := s.exec(
+			`UPDATE keys SET balance_error = ?, balance_updated_at = ? WHERE id = ?`,
+			balanceErr, toUnix(checkedAt.UTC()), keyID)
+		return err
+	}
+	_, err := s.exec(
+		`UPDATE keys SET balance = ?, balance_currency = ?, balance_error = '', balance_updated_at = ? WHERE id = ?`,
+		balance, currency, toUnix(checkedAt.UTC()), keyID)
+	return err
+}
+
+// ClearKeyBalance resets a key's balance columns.
+func (s *dbStore) ClearKeyBalance(keyID int64) error {
+	_, err := s.exec(
+		`UPDATE keys SET balance = '', balance_currency = '', balance_updated_at = NULL, balance_error = '' WHERE id = ?`,
+		keyID)
+	return err
+}

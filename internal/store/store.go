@@ -77,6 +77,7 @@ type Store interface {
 	EdgeClientRepository
 	// BalanceHistoryRepository backs the balance time series (P14).
 	BalanceHistoryRepository
+	KeyBalanceRepository
 
 	Ping(ctx context.Context) error
 	Close() error

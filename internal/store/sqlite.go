@@ -467,6 +467,20 @@ func (s *dbStore) migrate() error {
 	if err := s.addColumn("channels", "balance_threshold", "REAL NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	// P14 phase 4: per-key balance. Account-level data belongs on the
+	// key row, since one channel can hold several accounts.
+	if err := s.addColumn("keys", "balance", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumn("keys", "balance_currency", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumn("keys", "balance_updated_at", "INTEGER"); err != nil {
+		return err
+	}
+	if err := s.addColumn("keys", "balance_error", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	if err := s.addColumn("tokens", "used_usd", "REAL NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
@@ -849,7 +863,7 @@ func scanChannel(r interface {
 // ---------------- Keys ----------------
 
 func (s *dbStore) GetKeys(channelID int64) ([]model.Key, error) {
-	rows, err := s.query(`SELECT id, channel_id, key, key_ciphertext, key_masked, status, last_used_at, created_at FROM keys WHERE channel_id = ? ORDER BY id`, channelID)
+	rows, err := s.query(`SELECT id, channel_id, key, key_ciphertext, key_masked, status, last_used_at, created_at, balance, balance_currency, balance_updated_at, balance_error FROM keys WHERE channel_id = ? ORDER BY id`, channelID)
 	if err != nil {
 		return nil, err
 	}
@@ -862,13 +876,19 @@ func (s *dbStore) GetKeys(channelID int64) ([]model.Key, error) {
 	for rows.Next() {
 		var rr rawRow
 		var status, lastUsed, created int64
-		if err := rows.Scan(&rr.k.ID, &rr.k.ChannelID, &rr.plain, &rr.cipher, &rr.k.KeyMasked, &status, &lastUsed, &created); err != nil {
+		var balanceUpdated sql.NullInt64
+		if err := rows.Scan(&rr.k.ID, &rr.k.ChannelID, &rr.plain, &rr.cipher, &rr.k.KeyMasked, &status, &lastUsed, &created,
+			&rr.k.Balance, &rr.k.BalanceCurrency, &balanceUpdated, &rr.k.BalanceError); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		rr.k.Status = model.KeyStatus(status)
 		rr.k.LastUsedAt = fromUnix(lastUsed)
 		rr.k.CreatedAt = fromUnix(created)
+		if balanceUpdated.Valid {
+			t := fromUnix(balanceUpdated.Int64)
+			rr.k.BalanceUpdatedAt = &t
+		}
 		raws = append(raws, rr)
 	}
 	if err := rows.Err(); err != nil {
