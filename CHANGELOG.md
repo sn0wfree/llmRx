@@ -4,7 +4,10 @@ All notable changes to llmRx are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [v0.1.1] — 2026-11-02
+
+发布产物修复版。功能与 `v0.1.0` 完全相同,只修了「下载下来用不了」的
+三个问题——`v0.1.0` 的归档里二进制没有可执行位,镜像 tag 与文档不符。
 
 ### Fixed
 
