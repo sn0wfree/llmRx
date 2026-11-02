@@ -4,6 +4,9 @@
 // the gateway binary itself handles master-key resolution,
 // bind-mount chown, privilege drop, and the docker HEALTHCHECK
 // probe — no shell, no busybox, no separate init binary.
+//
+// Unix-only pieces (chown, setuid) live in bootstrap_unix.go with
+// no-op counterparts in bootstrap_windows.go.
 package main
 
 import (
@@ -13,11 +16,7 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/user"
-	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/intent"
@@ -107,96 +106,6 @@ func generateMasterKey() (string, error) {
 // the named user. This handles the bind-mount case where the
 // operator did `mkdir /data` on the host (root-owned) and then
 // `docker run -v /data:/data`. The container starts as root, fixes
-// the permissions, then dropPrivileges runs the gateway as llmrx.
-func maybeChownDataDir(dir, username string) error {
-	if os.Geteuid() != 0 {
-		return nil
-	}
-	u, err := user.Lookup(username)
-	if err != nil {
-		return fmt.Errorf("lookup user %q: %w", username, err)
-	}
-	targetUID, _ := strconv.Atoi(u.Uid)
-	targetGID, _ := strconv.Atoi(u.Gid)
-
-	info, err := os.Stat(dir)
-	if err != nil {
-		return fmt.Errorf("stat %s: %w", dir, err)
-	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return nil // not unix; nothing to do
-	}
-	if int(st.Uid) == targetUID && int(st.Gid) == targetGID {
-		return nil // already correctly owned
-	}
-	if err := chownRecursive(dir, targetUID, targetGID); err != nil {
-		return fmt.Errorf("chown %s -> %s: %w", dir, username, err)
-	}
-	logging.Info("secrets chowned bind-mount", logging.F("dir", dir), logging.F("user", username))
-	return nil
-}
-
-// chownRecursive walks dir and chowns every entry. Errors on
-// individual entries are logged and skipped (best-effort — the DB
-// and key file only need to be writable by llmrx, and the entrypoint
-// loop guarantees those are handled by other paths).
-func chownRecursive(dir string, uid, gid int) error {
-	return filepath.Walk(dir, func(path string, _ os.FileInfo, err error) error {
-		if err != nil {
-			return nil // best-effort
-		}
-		if chErr := os.Chown(path, uid, gid); chErr != nil && !errors.Is(chErr, os.ErrPermission) {
-			logging.Warn("chown failed", logging.F("path", path), logging.F("error", chErr.Error()))
-		}
-		return nil
-	})
-}
-
-func chownIfRoot(path, username string) error {
-	if os.Geteuid() != 0 {
-		return nil
-	}
-	u, err := user.Lookup(username)
-	if err != nil {
-		return err
-	}
-	uid, _ := strconv.Atoi(u.Uid)
-	gid, _ := strconv.Atoi(u.Gid)
-	return os.Chown(path, uid, gid)
-}
-
-// Drop effective UID/GID to the named user. No-op if not root.
-// Must be called AFTER bootstrapMasterKey and maybeChownDataDir.
-func dropPrivileges(username string) error {
-	if os.Geteuid() != 0 {
-		return nil
-	}
-	u, err := user.Lookup(username)
-	if err != nil {
-		return fmt.Errorf("lookup user %q: %w", username, err)
-	}
-	uid, err := strconv.Atoi(u.Uid)
-	if err != nil {
-		return fmt.Errorf("bad uid for %q: %w", username, err)
-	}
-	gid, err := strconv.Atoi(u.Gid)
-	if err != nil {
-		return fmt.Errorf("bad gid for %q: %w", username, err)
-	}
-	if err := syscall.Setgroups([]int{gid}); err != nil {
-		return fmt.Errorf("setgroups: %w", err)
-	}
-	if err := syscall.Setgid(gid); err != nil {
-		return fmt.Errorf("setgid: %w", err)
-	}
-	if err := syscall.Setuid(uid); err != nil {
-		return fmt.Errorf("setuid: %w", err)
-	}
-	logging.Info("secrets dropped privileges", logging.F("user", username), logging.F("uid", uid), logging.F("gid", gid))
-	return nil
-}
-
 // Write a starter config to configPath if one doesn't exist.
 // Used by the docker entrypoint so `docker compose up` Just Works
 // on a fresh /data volume; operators are expected to edit it
@@ -269,9 +178,9 @@ func runHealthcheck(addr string, timeout time.Duration) int {
 // loadIntentClassifier resolves the L4 intent classifier with the
 // LLMRX_INTENT_REQUIRED semantics:
 //
-//   - native Load succeeds                  → return (native, nil)
-//   - native Load fails, REQUIRED not set    → return (intent.Nop{}, nil) (dev fallback)
-//   - native Load fails, REQUIRED set        → return (nil, error)        (fail-closed)
+//   - native Load succeeds                  鈫?return (native, nil)
+//   - native Load fails, REQUIRED not set    鈫?return (intent.Nop{}, nil) (dev fallback)
+//   - native Load fails, REQUIRED set        鈫?return (nil, error)        (fail-closed)
 //
 // Production deployments should set LLMRX_INTENT_REQUIRED=1 so a
 // missing or broken Rust cdylib refuses to start the gateway

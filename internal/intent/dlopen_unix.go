@@ -1,6 +1,8 @@
-//go:build linux || darwin
+//go:build cgo && (linux || darwin)
 
-// Real dlopen implementation for Linux and macOS.
+// Real dlopen implementation for Linux and macOS. Only compiled when
+// cgo is enabled: a CGO_ENABLED=0 build has no way to call into the
+// cdylib, so dlopen_other.go provides the stubs instead.
 package intent
 
 /*
@@ -97,16 +99,21 @@ func dlclose(h unsafe.Pointer) error {
 // classifyViaC invokes the dlsym-resolved function pointer
 // through a cgo wrapper, sidestepping the Go 1.18 struct-field
 // function-pointer miscompile.
-func classifyViaC(fn unsafe.Pointer, text *C.char, out *C.char, cap int64) int32 {
-	return int32(C.call_classify(fn, text, out, C.long(cap)))
+//
+// The signature is deliberately cgo-free (unsafe.Pointer in and out) so
+// the non-cgo stub in dlopen_other.go is a true drop-in replacement:
+// both files must declare the same types or the package fails to build
+// on one platform or the other.
+func classifyViaC(fn, text, out unsafe.Pointer, cap int64) int32 {
+	return int32(C.call_classify(fn, (*C.char)(text), (*C.char)(out), C.long(cap)))
 }
 
 // backendViaC returns the C string pointer for the backend name.
-func backendViaC(fn unsafe.Pointer) *C.char {
-	return C.call_backend(fn)
+func backendViaC(fn unsafe.Pointer) unsafe.Pointer {
+	return unsafe.Pointer(C.call_backend(fn))
 }
 
 // closeViaC invokes the optional close hook.
-func closeViaC(fn unsafe.Pointer, handle unsafe.Pointer) int32 {
+func closeViaC(fn, handle unsafe.Pointer) int32 {
 	return int32(C.call_close(fn, handle))
 }

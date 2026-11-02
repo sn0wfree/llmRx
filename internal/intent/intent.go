@@ -1,5 +1,7 @@
-// Package intent wraps the L4 intent classifier implemented in
-// Rust (internal/intent/rust). The Go side loads the cdylib at
+//go:build cgo
+
+// Package intent wraps the L4 intent classifier implemented in Rust
+// (internal/intent/rust). The Go side loads the cdylib at
 // startup and calls its C ABI via cgo.
 //
 // Build:
@@ -10,6 +12,9 @@
 // The package degrades gracefully: if the .so is missing, Classify
 // returns Intent{Kind: "unknown", Score: 0} and the router skips
 // L4. A startup warning is logged once.
+//
+// The public types live in types.go (no build tag) so a CGO_ENABLED=0
+// build still exposes the full API and can use Nop.
 package intent
 
 import (
@@ -24,26 +29,6 @@ import (
 
 	"github.com/sn0wfree/llmRx/internal/logging"
 )
-
-// Intent is the parsed L4 result.
-type Intent struct {
-	Kind  string  `json:"kind"`
-	Score float64 `json:"score"`
-	Debug []Debug `json:"debug,omitempty"`
-}
-
-// Debug is one (label, weight) pair from the scorer.
-type Debug struct {
-	Label  string  `json:"label"`
-	Weight float64 `json:"weight"`
-}
-
-// Classifier is the public interface.
-type Classifier interface {
-	Classify(text string) Intent
-	Backend() string
-	Close() error
-}
 
 // native wraps the cdylib.
 //
@@ -62,9 +47,6 @@ type native struct {
 	backend  unsafe.Pointer
 	close    unsafe.Pointer
 }
-
-// DefaultLibraryPath is the conventional location of the .so.
-var DefaultLibraryPath = "internal/intent/rust/target/release/libllmrx_intent.so"
 
 // Load attempts to dlopen the cdylib. The path is searched in this
 // order:
@@ -128,17 +110,7 @@ func loadFrom(path string) (Classifier, error) {
 	return n, nil
 }
 
-// Nop is a no-op classifier used when the .so is unavailable.
-type Nop struct{}
-
-// Classify returns the "unknown" intent.
-func (Nop) Classify(_ string) Intent { return Intent{Kind: "unknown"} }
-
-// Backend reports the backend name.
-func (Nop) Backend() string { return "disabled" }
-
-// Close is a no-op.
-func (Nop) Close() error { return nil }
+// Nop lives in types.go so it is available to CGO_ENABLED=0 builds.
 
 func (n *native) Backend() string {
 	if n.backend == nil {
@@ -152,7 +124,7 @@ func (n *native) Backend() string {
 	// Rust's `*const c_char` which is *int8 (signed), so
 	// dereference as int8 and only treat the value as a byte
 	// once we've decided it's non-zero.
-	p := (*int8)(unsafe.Pointer(cp))
+	p := (*int8)(cp)
 	var buf [64]byte
 	for i := 0; i < len(buf); i++ {
 		c := *(*int8)(unsafe.Add(unsafe.Pointer(p), i))
@@ -210,7 +182,7 @@ func (n *native) Classify(text string) Intent {
 		}
 		outPool.Put(outPtr)
 	}()
-	written := classifyViaC(n.classify, (*C.char)(unsafe.Pointer(&in[0])), (*C.char)(unsafe.Pointer(&out[0])), int64(n.cap))
+		written := classifyViaC(n.classify, unsafe.Pointer(&in[0]), unsafe.Pointer(&out[0]), int64(n.cap))
 	if written < 0 {
 		return Intent{Kind: "unknown"}
 	}
