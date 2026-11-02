@@ -1,15 +1,13 @@
-//go:build !cgo || (!linux && !darwin)
+//go:build !linux && !darwin
 
-// Stub dlopen for platforms without the cdylib path: any non-Linux/
-// non-darwin OS, and every build with CGO_ENABLED=0 (the Windows and
-// macOS release binaries). The classifier always reports "unknown"; the
-// gateway runs normally with L4 intent classification disabled.
+// Stub dlopen for platforms without the cdylib path (Windows, BSD, ...).
+// The classifier always reports "unknown"; the gateway runs normally
+// with L4 intent classification disabled.
 //
-// The three *ViaC helpers exist because intent.go — which is also
-// cgo-tagged — calls them once a symbol has been loaded. Their
-// signatures must match dlopen_unix.go exactly; they take
-// unsafe.Pointer rather than *C.char because this file cannot use cgo
-// types.
+// This file is selected purely by OS, NOT by cgo: intent.go is
+// '//go:build cgo' and provides Load()/loadFrom() plus the native type.
+// Gating this file on !cgo as well made both files compile on
+// windows+cgo, which produced "Load redeclared".
 package intent
 
 import (
@@ -18,7 +16,7 @@ import (
 )
 
 func dlopen(path string) (unsafe.Pointer, error) {
-	return nil, errors.New("intent: dlopen not supported in this build")
+	return nil, errors.New("intent: dlopen not supported on this platform")
 }
 
 func loadClassify(_ unsafe.Pointer) (unsafe.Pointer, error) {
@@ -32,16 +30,17 @@ func loadClose(_ unsafe.Pointer) (unsafe.Pointer, error) {
 }
 func dlclose(_ unsafe.Pointer) error { return nil }
 
-// Load reports that no native classifier exists in this build. Callers
-// treat the error as "fall back to Nop", which is exactly right: a
-// CGO_ENABLED=0 binary has no way to dlopen a cdylib.
+// Load reports that no native classifier exists on this platform.
+// Callers treat the error as "fall back to Nop", which is exactly right.
 func Load() (Classifier, error) {
-	return nil, errors.New("intent: native classifier requires cgo")
+	return nil, errors.New("intent: native classifier unsupported on this platform")
 }
 
 // The helpers below are unreachable: every load* returns an error, so no
 // caller ever holds a resolved pointer. They exist only to satisfy the
-// shared call sites.
+// shared call sites, and their signatures must match dlopen_unix.go
+// exactly (unsafe.Pointer, not *C.char — this file cannot use cgo
+// types).
 
 func classifyViaC(_, _, _ unsafe.Pointer, _ int64) int32 { return -1 }
 

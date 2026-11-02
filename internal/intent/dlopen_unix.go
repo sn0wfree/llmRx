@@ -9,6 +9,7 @@ package intent
 #cgo LDFLAGS: -ldl
 #include <dlfcn.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 static void* llmrx_dlopen(const char* path) { return dlopen(path, RTLD_NOW | RTLD_LOCAL); }
 static void* llmrx_dlsym(void* h, const char* name) { return dlsym(h, name); }
@@ -18,9 +19,14 @@ static const char* llmrx_dlerror(void) { return dlerror(); }
 // Direct dispatchers so the Go side never has to invoke a
 // bare C function pointer (Go 1.18 miscompiles unsafe.Pointer
 // → func-value casts that come from a struct field).
+//
+// The capacity parameter is int64_t, NOT long: the Rust side declares
+// it as usize, and on macOS arm64 cgo's C.long and C.longlong are
+// distinct Go types even though both are 64-bit, which produced
+// "_Ctype_long as _Ctype_longlong" at build time.
 static int call_classify(void* fn, const char* text, char* out, int64_t cap) {
-    int (*f)(const char*, char*, long) = (int(*)(const char*, char*, long))fn;
-    return f(text, out, cap);
+    int (*f)(const char*, char*, size_t) = (int(*)(const char*, char*, size_t))fn;
+    return f(text, out, (size_t)cap);
 }
 static const char* call_backend(void* fn) {
     const char* (*f)(void) = (const char*(*)(void))fn;
@@ -105,7 +111,7 @@ func dlclose(h unsafe.Pointer) error {
 // both files must declare the same types or the package fails to build
 // on one platform or the other.
 func classifyViaC(fn, text, out unsafe.Pointer, cap int64) int32 {
-	return int32(C.call_classify(fn, (*C.char)(text), (*C.char)(out), C.long(cap)))
+	return int32(C.call_classify(fn, (*C.char)(text), (*C.char)(out), C.int64_t(cap)))
 }
 
 // backendViaC returns the C string pointer for the backend name.

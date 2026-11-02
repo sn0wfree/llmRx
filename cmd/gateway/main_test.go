@@ -184,24 +184,9 @@ func TestMaybeWriteStarterConfig_Idempotent(t *testing.T) {
 	}
 }
 
-func TestChownRecursive_NonRootNoop(t *testing.T) {
-	dir := t.TempDir()
-	if err := chownRecursive(dir, 1000, 1000); err != nil {
-		t.Errorf("chownRecursive as non-root should not error: %v", err)
-	}
-}
-
-func TestChownIfRoot_NonRootNoop(t *testing.T) {
-	if err := chownIfRoot("/tmp/test", "nobody"); err != nil {
-		t.Errorf("chownIfRoot as non-root should not error: %v", err)
-	}
-}
-
-func TestDropPrivileges_NonRootNoop(t *testing.T) {
-	if err := dropPrivileges("nobody"); err != nil {
-		t.Errorf("dropPrivileges as non-root should not error: %v", err)
-	}
-}
+// The three chown/setuid tests moved to bootstrap_unix_test.go: those
+// helpers only exist on unix, so keeping them here broke `go vet` for
+// the windows target.
 
 func contains(s, sub string) bool {
 	for i := 0; i <= len(s)-len(sub); i++ {

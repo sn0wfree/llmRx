@@ -1,3 +1,8 @@
+//go:build cgo
+
+// These tests exercise the cgo dlopen path (loadFrom), which only
+// exists in a cgo build. Without this tag, `go vet` on a no-cgo target
+// fails with "undefined: loadFrom".
 package intent
 
 import (
