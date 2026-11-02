@@ -654,3 +654,38 @@ MediaType: application/vnd.oci.image.index.v1+json
 
 `v` 前缀 tag 与 manifest index 合并两条路径都实测通过。arm64 那一半需要
 CI 的 `gcc-aarch64-linux-gnu`。
+
+### 14.7 修复后的 CI 状态
+
+`fb3a2b4` 推送后:
+
+| workflow | 结果 |
+|---|---|
+| `docker` | ✅ success |
+| `test` | ❌ failure(`Test with race detector`) |
+
+`docker` 通过是关键信号:`Dockerfile` 保持 `COPY build/llmRx` 的设计确实
+没有破坏既有构建路径。
+
+`test` 的失败**不是本次改动引入的**——`f0a3fa5`(推送前的部署提交)在
+1.21 上就已经失败,更早的 `a6ff331`、`b047551`、`46a3b21` 也连续失败。
+本地复现全绿,三种配置都试过:
+
+```
+go test -race ./...                        # 全部 ok
+go test -race -count=1 ./...               # 全部 ok
+GOMAXPROCS=2 go test -race -count=1 -p 1 ./...   # 全部 ok
+GOMAXPROCS=2 go test -race -count=1 -timeout=300s ./...  # 全部 ok
+```
+
+CI 上该步骤耗时 4m54s 后失败,而本地同一组测试约 4 分钟,说明不是超时
+被杀(Go 默认 10 分钟)。差异点是 runner 的 CPU/内存规格。**这是既有问题,
+需要单独排查**:拿不到 CI 日志正文(未登录的 `gh` 无法下载),只能在
+runner 上复跑才能定位。已知的两个可疑点:
+
+- `internal/webui` 在 race 下要 68–93s,是全仓最慢的包,可能有依赖
+  真实时钟的窗口断言;
+- `internal/router/auto/llm_test.go:67` 断言 `time.Since(start) < 200ms`,
+  在慢 runner 上会假失败。
+
+已记入遗留项,不在本次发布修复范围内。
