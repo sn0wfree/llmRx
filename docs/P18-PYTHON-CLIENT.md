@@ -1,0 +1,193 @@
+# P18 — Python 边缘客户端（llmrx-client）
+
+状态：设计定稿，实施中。
+前置：P15（Go 边缘客户端，转维护模式）、P16（发布）。
+
+## 1. 目标与边界
+
+用 Python 重新实现边缘客户端，**服务端零改动**。两者通过已发布的
+`/client/v1` 协议对话；Python 客户端对本机 agent 暴露与 Go 版相同的
+接口与文件布局。
+
+| 决策点 | 结论 |
+|---|---|
+| 分发形态 | pip 包：`pip install llmrx-client` → `gateway-client` 命令 |
+| 与 Go 客户端关系 | 并存，Python 为主；Go 转维护模式（代码与测试保留） |
+| 首版范围 | 全量对齐：数据面 + 控制面 + 接入码 + 状态页 + healthz |
+| 运行依赖 | 仅 `PyYAML`（配置格式与 Go 版相同）；其余全部标准库 |
+| Python 版本 | ≥ 3.10 |
+| 测试框架 | `unittest`（开发环节同样零第三方依赖） |
+| 发布产物 | 不进 goreleaser；后续可选把 wheel 挂到 GitHub Release |
+
+## 2. 包结构
+
+```
+clients/python/
+  pyproject.toml            # setuptools；[project.scripts] gateway-client
+  README.md
+  src/llmrx_client/
+    __init__.py
+    __main__.py             # python -m llmrx_client
+    cli.py                  # -config/-version/-enroll/-enroll-name/-server
+    config.py               # Config、YAML 读写（原子 0600）、Normalize
+    cache.py                # LRU + TTL、规范化 key
+    breaker.py              # 3 次失败 / 30s 冷却
+    proxy.py                # ThreadingHTTPServer 数据面 + healthz
+    upstream.py             # attemptServers、头复制、token 注入
+    usage.py                # 记账、缓冲、JSONL 落盘、上传
+    control.py              # 心跳、签名 bundle、拒绝降级
+    enroll.py               # 一次性接入码
+    ui.py                   # 状态页（零外部资源）
+  tests/                    # unittest；含 mock 上游与 mock clientapi
+```
+
+## 3. 协议契约（与 Go 服务端对齐的要点）
+
+服务端侧规格见 `internal/clientapi/`；此处只列 Python 实现必须逐字对齐
+的可观测行为。
+
+### 3.1 数据面（本机监听）
+
+- 路由：`POST /v1/chat/completions` 走 chat 路径；`GET /healthz` 是本地
+  健康 JSON；**其余一切路径/方法透传上游**（含 `/v1/models`、`/health`）。
+- body 上限 32 MiB；解析失败的 body 原样转发（让服务端给出权威错误）。
+- 缓存谓词：body 可解析 && 非流式 && `temperature` 缺省或 `0`。
+- 熔断 `fallible` 判定：传输错误、`408`、`>=500`。业务错误（401/429 等）
+  原样透传，不计失败、不触发兜底。
+- 兜底链：可缓存且有命中 → 用缓存（source=cache）；否则传输错误 →
+  `503 {"error":{"code":"client_upstream_unreachable",...}}`（status 记 0）；
+  服务端 5xx → 原样透传。
+- 上游头：复制入站头（跳过 Host/Content-Length/Connection），补
+  `X-Forwarded-For`（缺省时）、`X-Llmrx-Client`；仅当 agent 未带
+  Authorization 且配置了 token 时注入 `Bearer <token>`。
+- SSE：上游响应头原样复制给客户端，每 chunk flush。
+- 服务器列表：粘性故障转移（记住最后成功的下标，从头开始重试一轮）。
+
+### 3.2 `/healthz`（键按字母序输出）
+
+```json
+{"cache":{"hits":0,"hit_rate":0,"misses":0,"size":0},"pending_usage":0,
+ "server_fails":0,"server_open":false,"status":"ok","uptime_sec":12}
+```
+
+配置了 `client_token` 时追加 `config_version`、`control_last_error`（恒在，
+成功时为空串）、`control_last_ok`（仅成功过才有）。
+
+### 3.3 控制面
+
+- 心跳：`POST /client/v1/heartbeat`，30s 一轮 + 启动即发一轮；body
+  `{"client_version":...,"config_version":<applied>}`；响应
+  `{"server_version":N,"need_config":bool,"server_time":...}`。
+- 拉配置：`GET /client/v1/config`，响应
+  `{"config":{...},"signature":"<64 hex>","algorithm":"hmac-sha256"}`。
+- **签名校验必须用 `config` 成员的原始字节**：Go 端以 struct 序
+  `json.Marshal` 签名（含 omitempty 与默认 HTML 转义），Python 重新
+  序列化不可能复现这些字节。实现：`json.JSONDecoder.raw_decode` 定位
+  外层对象的 `config` 值的字节区间，`HMAC-SHA256(key=client_token)` 后与
+  `signature` 做 `hmac.compare_digest`；`algorithm` 不匹配直接拒绝。
+- 版本：`config.version < applied` 拒绝（记录错误、沿用旧配置）；**等于
+  也重新应用**。applied 先落、回调后发。
+- ApplyBundle 只动：servers（非空）、cache.enabled（无条件）、
+  cache.ttl_sec / max_items（>0）、fallback.mode（非空）、
+  limits.max_inflight（>0）。**永不触碰** token / client_token /
+  client_name / listen / usage_file / usage_endpoint / usage_upload_sec。
+
+### 3.4 用量
+
+行 JSON 字段与顺序（服务端按字段名解析，顺序仅为可读性）：
+
+```json
+{"request_id":"<name>-<n>","ts":<unix sec>,"model":"","status":200,
+ "prompt_tokens":0,"completion_tokens":0,"cost_usd":0,"source":"proxy",
+ "latency_ms":123}
+```
+
+- `request_id = <client_name>-<原子序号>`，是服务端 24h 去重键。
+- source：`proxy`（服务端已计费，token 恒 0）、`cache`（本机命中，
+  token 取自缓存的上游 usage）、`local`（本版接受但从不产生，见 §5）。
+- 缓冲 5000（满丢最旧）；落盘 tick 5s → JSONL 单行 append（0600）；
+  上传 tick 60s → 批 ≤200 → `POST /client/v1/usage`，超时 10s；失败整批
+  按原序塞回队首。无 `client_token` 或无 `usage_endpoint` 时不上传。
+- `usage_endpoint` 缺省 = `servers[0] + /client/v1/usage`。
+
+### 3.5 接入码
+
+`POST /client/v1/enroll`，body
+`{"enroll_token":"<code>","client_name":""}`（服务端忽略 name 字段），
+超时 20s，**要求恰为 201**；响应
+`{"client_id","client_secret","name"}`。成功后写
+`client_token=client_secret`、`client_name=name`，`usage_file` 缺省补为
+`<配置目录>/usage.jsonl`，原子写回 0600。
+
+### 3.6 配置文件
+
+YAML，键与 Go 版完全一致（`listen/servers/token/client_token/
+client_name/usage_endpoint/usage_upload_sec/cache_enabled/cache_ttl_sec/
+cache_max_items/usage_file/fallback_mode/max_inflight`）。默认值：listen
+`127.0.0.1:3425`、ttl 3600、max_items 2000、upload_sec 60。校验仅两条：
+servers 非空、每项以 `http://`/`https://` 开头；全部问题收集后一次报出。
+写入 = 临时文件 0600 → fsync → 原子 rename。
+
+## 4. 数值对照表
+
+| 项 | 值 |
+|---|---|
+| listen 默认 | `127.0.0.1:3425` |
+| body 上限 | 32 MiB |
+| 熔断 | 3 次失败开，30s 冷却，半开探测 |
+| 缓存 | LRU 2000 条，TTL 3600s（ttl 可热更；容量改动需重启） |
+| usage 缓冲 | 5000，满丢最旧 |
+| 落盘 / 上传 tick | 5s / 60s |
+| 上传批量 / 超时 | ≤200 / 10s |
+| 心跳周期 / 超时 | 30s / 10s（响应读上限 64 KiB；config 1 MiB） |
+| enroll 超时 | 20s（响应读上限 64 KiB） |
+| 关闭 | SIGINT/SIGTERM → 15s 排水 → usage 冲刷 → bye |
+
+## 5. 与 Go 版的差异（有意为之）
+
+Go 版有几处已确认的缺陷/死代码。Python 版按**意图**实现，以下差异全部
+记录在案：
+
+1. **流式/透传转发空 body（Go bug，修复）**。Go 的 `forwardRaw` 调
+   `attemptServers(r, nil, true)`，body 恒为空——每个流式 chat 与所有
+   透传 POST（如 embeddings）到上游都是 `Content-Length: 0`。Python 版
+   转发真实 body。
+2. **熔断计数（Go bug，修复）**。Go 对缓冲 5xx 计两次（forwardChat 与
+   handleChat 兜底各一次），2 个连续 5xx 即开；Python 每请求计 1 次，
+   3 次开（与流式/透传一致）。
+3. **`cache_enabled` 实际生效（Go 死配置）**。Go 从不读取该 flag，缓存
+   恒开；Python 版为 false 时跳过缓存读写。
+4. **`max_inflight` 实际生效（Go 死配置）**。Go 从不强制；Python 用
+   信号量，超限返回 503 `client_overloaded`。0 = 不限。
+5. **`fallback_mode=local` 行为同 `cache_then_fail`**。Go 同样从未实现
+   local 上游；接受该值、不报错，语义与默认一致。待 P15 定义"本地上游"
+   后再实现（usage source=local 同理，本版从不产生）。
+6. **缓存 key 不与 Go 字节一致**。客户端缓存纯本机，不存在跨实现共享；
+   Python 用自己的规范化（投影字段同 Go：role/content/name/tool_calls
+   （按 id,name 排序）/tool_call_id/cache_control/refusal，丢弃
+   reasoning_content；工具按 name 排序；sort_keys 紧凑序列化）。
+7. **`-version` 输出**：`<ver> (<commit>, <date>, Python <x.y.z>, edge)`，
+   运行时段标识为 `Python 3.x.y`（Go 版是 `go1.x`）。
+
+## 6. 明确不做
+
+- 不改 Go 服务端与 Go 客户端代码。
+- 不进 goreleaser/release.yml 产物；不引入 pytest/PyInstaller/ricathon
+  等工具链。
+- 不实现 `fallback_mode=local` 的本地上游（等 P15 后续）。
+
+## 7. 验收标准
+
+1. `python -m unittest discover` 全绿（单测 + mock 集成）。
+2. 对照 Go 版测试集逐条移植的行为用例全部通过（token 注入、temperature
+   缓存、流式不缓存、离线兜底、503 形状、401 不触发熔断、故障转移、
+   降级拒绝、签名篡改、设置部分更新、0600、凭据不被表单覆盖）。
+3. **真实服务端 E2E**：WSL 构建 Go 服务端，Python 客户端完成
+   enroll → 心跳 → 拉 bundle → 转发请求 → 用量上传全链路；服务端
+   管理台能看到该客户端在线、收到 usage 行。
+4. `pip install -e clients/python` 后 `gateway-client -version` 可用。
+5. 状态页零外部资源（正则断言无 `http(s)://` 资产引用）。
+
+## 8. 实施记录
+
+（实施过程中回填。）
