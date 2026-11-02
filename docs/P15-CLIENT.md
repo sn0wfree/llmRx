@@ -855,3 +855,64 @@ POST /ui/cache/purge  �?303
 **一个实现细节值得�?*:`parseInt` 初版在溢�?*�?*判断,导致 `999999999999`
 返回 9999999999 而不是钳制值。改成先累加再钳制后被测试抓到并修正——表单输�?这类外部数据必须假设任意值�?
 **仍未�?*:`-enroll` 之外的凭证轮�?UI、桌面托盘图标、图表化的用量趋势�?
+
+---
+
+## 26. 二期实施:管理�?Clients 页面
+
+### 26.1 现状
+
+P15 的三个阶�?用量回传、控制面、enroll)目前只有 **JSON API**:
+
+- `GET /admin/api/v1/edge-clients`
+- `PUT /admin/api/v1/edge-clients/config`
+- `POST /admin/api/v1/edge-clients/enroll-tokens`
+- `DELETE /admin/api/v1/edge-clients/{id}`
+
+运维得用 curl 才能发接入码、看在线状态、推配置。这�?功能可用"�?"能交付给别人�?之间的差距�?
+### 26.2 页面结构
+
+`/admin/clients`,沿用现有 webui �?`html/template + HTMX + Tailwind(CDN)`
+模式(服务端管理台本来就用 CDN,与客户端 UI 的零依赖要求不同,�?§23.2)�?
+三个区块:
+
+| 区块 | 内容 |
+|---|---|
+| **客户端列�?* | 名称 / client_id / 状�?在线·离线·已吊销) / 版本 / 最近心�?/ 操作(吊销) |
+| **签发接入�?* | 输入客户端名 �?生成 �?一次性显示编�?+ 过期时间(�?只显示一�?提示) |
+| **配置下发** | 当前 bundle �?JSON 编辑�?+ 版本�?�?推�?�?提示新版�?|
+
+配置编辑器用 `<textarea>` �?JSON。理�?配置包字段少(servers/cache/
+fallback/limits),给每个字段做表单控件会让页面比配置本身复�?�?JSON
+编辑对运维来说比六个输入框更直观,也更容易复制粘贴�?
+### 26.3 接入码的显示规则
+
+签发�?*只在本次响应里显示一�?*,页面用醒目的框标出并提示"离开本页�?无法再次获取"。不提供"查看已有接入�?——服务端只存 hash,物理上做不到,
+而假装能做到会误导�?
+### 26.4 �?`internal/clientapi` 的关�?
+webui 仍然�?import `clientapi`(它会拖进 logstore �?CGO)。沿�?`admin.EdgeControl` 的做�?�?webui 里声明一个窄接口
+
+```go
+type EdgeControl interface {
+    EdgeClientsStatusJSON() any
+    CurrentBundleJSON() any
+    PushBundleJSON(raw json.RawMessage) (int, error)
+    IssueEnrollTokenJSON(name string) (any, error)
+    RevokeEdgeClientJSON(id string) error
+}
+```
+
+�?`server.go` 注入具体�?`*clientapi.Ingestor`。webui �?Handler 已经通过
+`webAPIBridge` 持有 admin handler,但那条桥是给 JSON API 用的,这里直接
+注入更清晰�?
+### 26.5 在线判定
+
+沿用 `mergedStatuses` �?90 秒窗�?心跳 30s 一�?容忍丢两�?�?吊销的客户端永远显示"已吊销",即使它最近还发过心跳�?
+### 26.6 验证计划
+
+- 未配�?edge clients 时页面显示引导文案而不是报�?
+- 列表渲染:在线/离线/已吊销三�?
+- 签发:成功显示编码、缺失名字报�?
+- 推�?合法 JSON 版本 +1、非�?JSON 报错;
+- 吊销:行变为已吊销;
+- 会话守卫(未登录不能访�?�?
