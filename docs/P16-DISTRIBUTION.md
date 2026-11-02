@@ -657,15 +657,20 @@ CI 的 `gcc-aarch64-linux-gnu`。
 
 ### 14.7 修复后的 CI 状态
 
-`fb3a2b4` 推送后:
+| commit | `test` | `docker` |
+|---|---|---|
+| `fb3a2b4` | ❌ | ✅ |
+| `4bde99b`(v0.1.1 发布点) | ✅ | ✅ |
+| `1c951ea` | ❌ | ✅ |
+| `1afbf0c` | ✅ | ✅ |
 
-| workflow | 结果 |
-|---|---|
-| `docker` | ✅ success |
-| `test` | ❌ failure(`Test with race detector`) |
+**`test` 是 flaky,不是代码回归。** 决定性证据:`4bde99b` → `1c951ea`
+之间只改了 `.github/workflows/release.yml` 和 `docs/P16-DISTRIBUTION.md`
+(共 23 行增删,零 Go 代码),而同一组测试前者过、后者挂;再下一个提交
+`1afbf0c` 又过了。
 
-`docker` 通过是关键信号:`Dockerfile` 保持 `COPY build/llmRx` 的设计确实
-没有破坏既有构建路径。
+`docker` 在四个提交上全绿,说明 `Dockerfile` 的 `ARG BIN_PATH` 改动没有
+破坏既有构建路径。
 
 `test` 的失败**不是本次改动引入的**——`f0a3fa5`(推送前的部署提交)在
 1.21 上就已经失败,更早的 `a6ff331`、`b047551`、`46a3b21` 也连续失败。
