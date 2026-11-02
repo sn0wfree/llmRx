@@ -780,3 +780,47 @@ v0.1.1: application/vnd.oci.image.index.v1+json
 ```
 
 多架构 manifest、`v` 前缀 tag、arm64 平台三项全部达成。
+
+### 14.9 `v0.1.1` 产物实测验收
+
+下载 `llmrx_0.1.1_linux_amd64.tar.gz` 与
+`gateway-client_0.1.1_linux_amd64.tar.gz`,与发布版 `checksums.txt` 对照:
+
+```
+OK   llmrx_0.1.1_linux_amd64.tar.gz
+OK   gateway-client_0.1.1_linux_amd64.tar.gz
+```
+
+归档权限(§14.3 缺陷 1 的验收点):
+
+```
+drwxr-xr-x runner/runner        0 ./                # 755，不再是 700
+-rwxr-xr-x runner/runner 21652056 ./llmrx           # 755，不再是 644
+drwxr-xr-x runner/runner        0 ./systemd/
+-rwxr-xr-x runner/runner 11219096 ./gateway-client  # 755
+```
+
+运行:
+
+```
+$ ./llmrx -version
+0.1.1 (4bde99b, 2026-11-02T09:08:53Z, go1.22.12)
+
+$ ./gateway-client -version
+0.1.1 (4bde99b, 2026-11-02T09:08:48Z, go1.22.12, edge)
+```
+
+镜像(§14.5 缺陷 3/4 的验收点):
+
+```
+v0.1.1 / 0.1.1 / latest  →  OCI image index
+   linux/amd64   7.94 MB
+   linux/arm64   7.32 MB
+```
+
+`checksums.txt` 覆盖 12 个资产中的 11 个个二进制归档 + chart
+(共 1099 字节,含 chart 的 sha256)。
+
+**结论:`v0.1.1` 是第一个「下载即可用」的版本。** `v0.1.0` 的
+`f0a3fa5` 之前的问题(可执行位、chart 缺校验和、镜像无 `v` tag、
+无 arm64)均已修复并实测确认。
