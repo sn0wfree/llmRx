@@ -661,3 +661,73 @@ Agent → 本机客户端 ──出站──> https://<frp 域名> → frps → 
 
 - `enroll`(一次性接入码换取 client_secret):当前 token 由运维手工配�?
   够用且更简�?接入码适合"给同事发一个口�?的场�?独立成期�?- 桌面 GUI(§12)�?- 管理�?HTML 页面(目前�?JSON API;页面可复用同一份数�?�?
+
+---
+
+## 22. 二期实施:enroll(一次性接入码换取凭证)
+
+落实 §4.4 D3 的身份体�?补齐"给同事发一个接入码就能�?这条路径�?实现�?D3 的初稿简化了两处,理由�?§22.4�?
+### 22.1 流程
+
+```
+管理�?                         服务�?                         客户�?  �?                             �?                              �?  ├─ POST /admin/api/v1/         �?                              �?  �?  edge-clients/enroll-tokens �?                              �?  �?  {"name":"alice-laptop"}    �?                              �?  │─────────────────────────────>�?生成 TTL 15min 的一次性码      �?  �?─── {"token":"enr_...",      �?只存 sha256(token),不存明文    �?  �?     "expires_at":...}       �?                              �?  �?                             �?                              �?  ├─ �?enr_... 口头/IM 发给同事   �?                              �?  �?                             �?                              �?  �?                             �?  POST /client/v1/enroll       �?  �?                             �?──────────────────────────────�?  �?                             �? {enroll_token, client_name}  �?  �?                             �?                              �?  �?                             �?校验:存在/未用/未过�?          �?  �?                             �?原子标记 used_at               �?  �?                             �?生成 client_secret(仅返回一�? �?  �?                             �?�?sha256(secret)             �?  �?                             ├──────────────────────────────>�?  �?                             �?{"client_id","client_secret"} �?  �?                             �?                              ├─ �?client.yml
+  �?                             �?                              �? (mode 0600)
+```
+
+### 22.2 存储
+
+```sql
+CREATE TABLE edge_enroll_tokens (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_hash   TEXT    NOT NULL UNIQUE,  -- sha256(明文),明文不落�?    client_name  TEXT    NOT NULL,         -- 预定的客户端�?    created_at   INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL,
+    used_at      INTEGER,                  -- NULL = 未使�?    used_client  TEXT                      -- 消费它的 client_id
+);
+
+CREATE TABLE edge_clients (
+    client_id      TEXT PRIMARY KEY,        -- "ec_" + 16 hex
+    name           TEXT NOT NULL,           -- 唯一,即配置名
+    secret_hash    TEXT NOT NULL,           -- sha256(secret)
+    created_at     INTEGER NOT NULL,
+    last_seen_at   INTEGER,
+    revoked_at     INTEGER                 -- �?NULL = 已吊销
+);
+```
+
+`edge_clients` 表是运行时真�?`config.yml` �?`edge_clients` 静态列�?保留�?*引导路径**(没有数据库的管理员可以直接写配置)。两者合�?
+数据库里的行优先,配置里的条目作为补充�?
+### 22.3 凭证形�?
+| 阶段 | 凭证 | 传输 |
+|---|---|---|
+| 接入 | `enr_<32hex>` 一次性码,TLL 15min | 人工传�?|
+| 运行 | `client_id` + `client_secret`(`ecs_<48hex>`) | `Authorization: Bearer <secret>`,`X-Llmrx-Client-Id: <id>` |
+
+secret 只在 enroll 响应里出现一�?服务端只�?hash�?
+### 22.4 �?D3 初稿的两处偏�?
+**�?鉴权仍是 Bearer,不是 HMAC 签名�?* D3 写的�?`X-Client-ID` + `X-Client-Secret`(HMAC 签名)。实际用 `Bearer secret`,
+因为:
+- 已经�?TLS 保护传输,再叠一层请求签名对重放没有实质增益
+  (需�?nonce 存储才能防重�?那才是真正的成本);
+- 现有 usage/heartbeat/config 三个端点都已经用 Bearer,统一更少出错;
+- 未来要加请求签名�?`edge_clients` 表里加一列即�?不阻塞�?
+**�?secret hash �?sha256,不是 Argon2id�?* Argon2id 是为**低熵用户密码**
+设计�?慢哈希抵消字典攻�?。`ecs_` secret �?48 hex = 192 bit 随机�?
+字典攻击不成�?�?sha256 可以在每次请求上零成本校�?Argon2id 每次
+几十毫秒,放在每个 heartbeat 上不可接�?。这是有意的取舍,不是偷懒�?
+### 22.5 落地清单
+
+| 位置 | 产出 |
+|---|---|
+| `store` | 两张表的 schema + `EdgeClientRepository`(创建/�?标记使用/吊销/�? |
+| `clientapi` | `enroll` 端点、凭证校�?数据�?+ 配置双源)、`RequireEdgeClient` |
+| `admin` | `POST /edge-clients/enroll-tokens` 签发、`GET /edge-clients` 增列 id/状态、`DELETE /edge-clients/{id}` 吊销 |
+| `client` | `-enroll <token>` 一次性命�?换凭�?�?�?client.yml(mode 0600) |
+
+### 22.6 验证计划
+
+- enroll 端点:成功、重复使用被拒、过期被拒、未知码被拒、返回的
+  secret 能通过后续心跳鉴权;
+- 吊销:吊销后心�?401;
+- 配置回退:数据库无行时静态配置仍可用;
+- 客户�?`-enroll`:写盘权限 0600、重�?enroll 覆盖语义明确;
+- 全量测试 + race + �?CGO 交叉编译�?
