@@ -24,7 +24,20 @@ env:
 
 jobs:
   # ---------------------------------------------------------------- goreleaser
-  goreleaser:
+  #
+  # CGO is the constraint that decides this shape. security: every
+  # target needs a C toolchain, and CGO cannot cross-compile a darwin or
+  # Windows binary from Linux. So the release is split per-OS:
+  #
+  #   linux  (ubuntu)  linux/amd64 natively, linux/arm64 via aarch64 gcc
+  #   darwin (macos)   darwin/amd64 + arm64 natively
+  #   windows(win)     windows/amd64 via MinGW
+  #
+  # Each runner produces only its own subset (`--id`), and each uploads
+  # its archives to the same GitHub Release. The alternative — one
+  # ubuntu job with `goreleaser release` — fails on the first CGO
+  # cross-target, which is exactly what the v0.1.0 drill surfaced.
+  goreleaser-linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,22 +48,129 @@ jobs:
         with:
           go-version: '1.22'
 
-      # Cross toolchains for the CGO builds. linux/amd64 uses the host
-      # gcc; hardening is not needed here because the release binary is
-      # the same one the Docker image ships.
-      - name: Install cross compilers
+      - name: Install arm64 cross compiler
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      - name: Run goreleaser
+      # Only this job publishes: it creates the GitHub Release and its
+      # own archives. darwin and windows upload theirs afterwards.
+      - name: Run goreleaser (linux + client)
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: '~> v2'
-          args: release --clean
+          args: release --clean --id linux-amd64 --id linux-arm64 --id client
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Collects the darwin/windows archives and attaches them to the
+  # Release the linux job created. Without this the other platforms
+  # would have no artifacts in the Release at all.
+  goreleaser-attach:
+    runs-on: ubuntu-latest
+    needs: [goreleaser-linux, goreleaser-darwin, goreleaser-windows]
+    steps:
+      - name: Download darwin artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-darwin
+          path: dist-darwin
+
+      - name: Download windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-windows
+          path: dist-windows
+
+      - name: Attach archives to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(dist-darwin/*.tar.gz dist-darwin/*.zip \
+                 dist-windows/*.tar.gz dist-windows/*.zip)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no darwin/windows archives to attach" >&2
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            echo "uploading $(basename "$f")"
+            gh release upload "$TAG" "$f" --clobber
+          done
+
+  goreleaser-darwin:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      # `--skip publish` builds and archives this platform's binaries
+      # without touching the GitHub Release, so three jobs cannot race
+      # to create it. The attach job below uploads the archives to the
+      # Release the linux job creates.
+      - name: Build darwin artifacts
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean --id darwin --skip publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts for the release job
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-darwin
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/artifacts.json
+          if-no-files-found: error
+
+  goreleaser-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      # CGO on Windows needs a C compiler; confirm one is present before
+      # spending a build on it.
+      - name: Verify a C toolchain is present
+        shell: bash
+        run: gcc --version
+
+      - name: Build windows artifacts
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean --id windows --skip publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts for the release job
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/artifacts.json
+          if-no-files-found: error
 
   # ------------------------------------------------------------------- docker
   docker:
@@ -137,7 +257,9 @@ jobs:
   # --------------------------------------------------------------------- helm
   helm:
     runs-on: ubuntu-latest
-    needs: [goreleaser]
+    # Wait for every platform job: the chart is attached to the same
+    # Release those jobs create.
+    needs: [goreleaser-linux, goreleaser-darwin, goreleaser-windows]
     steps:
       - uses: actions/checkout@v4
 

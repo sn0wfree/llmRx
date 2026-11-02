@@ -60,6 +60,11 @@ builds:
       - -X main.date={{.Date}}
 
   # --- Windows: needs a MinGW toolchain on a windows runner ---
+  #
+  # Both darwin and windows build only on their own OS: CGO cannot
+  # cross-compile them from Linux. release.yml enforces that with
+  # per-job `--id` flags rather than a `skip` template — goreleaser's
+  # skip templates cannot see the runner's OS.
   - id: windows
     main: ./cmd/gateway
     binary: llmrx
