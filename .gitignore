@@ -70,3 +70,4 @@ graphify-out/
 .secrets/
 "clients/python/src/*.egg-info/"  
 "*.egg-info/"  
+"clients/python/src/*.egg-info/"  

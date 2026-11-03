@@ -115,7 +115,34 @@ def handle_count(pid: int) -> int:
         return -1
 
 
+def kill_stale(port: int) -> None:
+    """Kill anything still listening on a port from an earlier run.
+
+    A leftover client from a previous soak keeps writing to the same
+    usage.jsonl and skews every measurement (Windows keeps the handle
+    open, so the file cannot even be deleted cleanly).
+    """
+    import subprocess as sp
+
+    script = (
+        f"Get-NetTCPConnection -LocalPort {port} -State Listen "
+        f"-ErrorAction SilentlyContinue | "
+        f"Select-Object -ExpandProperty OwningProcess | "
+        f"ForEach-Object {{ Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }}"
+    )
+    try:
+        sp.run(["powershell", "-NoProfile", "-Command", script],
+               capture_output=True, timeout=30)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main() -> int:
+    # A stale process on these ports silently poisons the run.
+    kill_stale(CLI_PORT)
+    kill_stale(MOCK_PORT)
+    time.sleep(1)
+
     mock = subprocess.Popen(
         [sys.executable, str(HERE / "mock_upstream_win.py"), str(MOCK_PORT)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -190,9 +217,15 @@ def main() -> int:
         print(f"soak finished: n={n} ok={ok} fail={fail}")
         return 0
     finally:
+        # terminate() alone is not enough on Windows: the child can
+        # outlive it and keep writing to the usage file, which silently
+        # corrupts a later run's measurements. Kill by pid, then wait.
         for proc in (client, mock):
             try:
-                proc.terminate()
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
                 proc.wait(timeout=10)
             except Exception:  # noqa: BLE001
                 pass
