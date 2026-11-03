@@ -143,6 +143,22 @@ def load_config(path: str) -> Config:
     return Config.from_dict(raw)
 
 
+def _restrict_to_owner(fd: int) -> None:
+    """Best-effort 0600 on the given fd.
+
+    os.fchmod is Unix-only (AttributeError on Windows, which enforces
+    permissions via ACLs instead), so probe for it rather than calling
+    it unconditionally — a missing attribute must not break enroll.
+    """
+    fchmod = getattr(os, "fchmod", None)
+    if fchmod is None:
+        return
+    try:
+        fchmod(fd, 0o600)
+    except OSError:
+        pass
+
+
 def write_config(path: str, cfg: Config) -> None:
     """Persist atomically with mode 0600, like WriteConfigFile.
 
@@ -177,7 +193,7 @@ def write_config(path: str, cfg: Config) -> None:
 
     fd, tmp = tempfile.mkstemp(prefix=".client-", suffix=".yml", dir=directory)
     try:
-        os.fchmod(fd, 0o600)
+        _restrict_to_owner(fd)
         with os.fdopen(fd, "wb") as fh:
             fh.write(payload)
             fh.flush()

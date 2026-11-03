@@ -262,6 +262,45 @@ class TestPassthrough(unittest.TestCase):
         self.assertEqual(headers.get("Content-Type"), "text/event-stream")
         self.assertEqual(headers.get("X-Custom"), "1")
 
+    def test_passthrough_does_not_duplicate_date_or_server(self):
+        """send_response() emits the local Date/Server; copying the
+        upstream's would yield duplicate headers on the wire."""
+        with MockUpstream([(200, {"Date": "Wed, 21 Oct 2015 07:28:00 GMT",
+                                  "Server": "mock/1"},
+                            b"ok")]) as up:
+            h = ClientHarness(make_cfg([up.url]))
+            try:
+                _, headers, _ = h.request("GET", "/anything")
+            finally:
+                h.stop()
+        self.assertEqual(headers.get("Server"), "llmrx-client")
+        self.assertNotEqual(headers.get("Date"),
+                            "Wed, 21 Oct 2015 07:28:00 GMT")
+
+    def test_handler_crash_yields_500_not_connection_drop(self):
+        """The Go server recovers handler panics into a 500; a Python
+        handler exception must do the same instead of hanging the agent."""
+        with MockUpstream([(200, {}, b"{}")]) as up:
+            h = ClientHarness(make_cfg([up.url]))
+            try:
+                # healthz with a poisoned control object blows up rendering
+                class Boom:
+                    def applied_version(self):
+                        raise RuntimeError("boom")
+
+                    def last_error(self):
+                        return ""
+
+                    def last_ok(self):
+                        return ""
+
+                h.proxy.control = Boom()
+                status, _, data = h.request("GET", "/healthz")
+            finally:
+                h.stop()
+        self.assertEqual(status, 500)
+        self.assertIn("internal error", data.decode())
+
 
 class TestMaxInflight(unittest.TestCase):
     def test_limit_enforced(self):

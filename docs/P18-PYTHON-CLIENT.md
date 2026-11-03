@@ -229,6 +229,27 @@ admin login → 建渠道(指向 mock)→ /reload → 建 token
 → 管理台 edge-clients 可见该客户端
 ```
 
+**第二轮缺陷排查(同日)**:
+
+1. **Windows 平台阻断**:`os.fchmod` 是 Unix-only,Windows 上
+   `write_config` 会 AttributeError——enroll 完全不可用。改为探测
+   `getattr(os, "fchmod", None)`,缺失即跳过(Windows 用 ACL 管权限)。
+   JSONL 落盘同修。
+2. **签名提取的脆弱假设**:原实现要求 envelope 里 `config` 必须是第一
+   个成员(`{"config":` 前缀匹配)。改为 `raw_decode` 逐成员扫描取原始
+   字节——任意成员位置都正确,且切片的是原始文本,不会引入重新序列化
+   的字节漂移。无 config 成员/非对象仍拒绝。
+3. **透传响应头重复**:本地 `send_response` 已发 Date/Server,再把上游
+   的复制一遍会产生重复头。复制时跳过 `date`/`server`。顺带修掉
+   `version_string()` 因空 `sys_version` 留下的尾随空格。
+4. **handler 异常裸断连**:Go 有 Recoverer,handler panic 返回 500;
+   Python 版此前异常会直接断开连接。补上等价物——未开始写响应时返回
+   500 JSON,已开始则只能断开(记 traceback 到 stderr)。
+5. **socket 泄漏**:urllib 抛 HTTPError 时响应体未关闭(enroll、心跳、
+   用量上传三处),补 `close()`。
+
+最终 90 个单测 + E2E 16/16 全绿。
+
 E2E 顺带确认的服务端事实(非缺陷,记录备查):admin CreateChannel
 只 reload 连接池不 reload 静态路由索引,需手动 `POST /admin/api/v1/reload`;
 渠道 base_url 约定含 `/v1`(服务端拼 `/chat/completions`)。

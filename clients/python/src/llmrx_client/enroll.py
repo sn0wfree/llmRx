@@ -42,8 +42,11 @@ def enroll(base_url: str, code: str, name: str = "") -> dict:
             raw = resp.read(READ_CAP + 1)
             status = resp.status
     except urllib.error.HTTPError as exc:
-        raw = exc.read(READ_CAP + 1)
-        status = exc.code
+        try:
+            raw = exc.read(READ_CAP + 1)
+            status = exc.code
+        finally:
+            exc.close()  # else the connection leaks until GC
         try:
             doc = json.loads(raw)
             message = doc.get("error", {}).get("message", "")

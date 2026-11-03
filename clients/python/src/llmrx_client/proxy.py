@@ -28,7 +28,7 @@ MAX_BODY = 32 << 20  # 32 MiB, matching io.LimitReader in the Go client
 CHAT_PATH = "/v1/chat/completions"
 STATUS_TIMEOUT = 408
 
-# Hop-by-hop response headers must not be copied: the server de-chunks
+# Hop-by-hop framing headers must not be copied: the server de-chunks
 # before we read, so forwarding Transfer-Encoding would corrupt framing.
 RESPONSE_SKIP = {"connection", "transfer-encoding", "keep-alive"}
 
@@ -106,7 +106,12 @@ class Handler(BaseHTTPRequestHandler):
 
     protocol_version = "HTTP/1.1"
     server_version = "llmrx-client"
-    sys_version = ""
+    sys_version = ""  # BaseHTTPRequestHandler would append " " + sys_version
+
+    def version_string(self) -> str:
+        # sys_version is empty; the default join would leave a trailing
+        # space in the Server header.
+        return self.server_version
 
     # -- plumbing ---------------------------------------------------------
 
@@ -148,6 +153,7 @@ class Handler(BaseHTTPRequestHandler):
     def _write_full(self, status: int, payload: bytes,
                     extra: dict | None = None,
                     content_type: str = "application/json") -> None:
+        self._responded = True
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
@@ -178,6 +184,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._forward_raw()
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True
+        except Exception:
+            # The Go server wraps everything in chi's Recoverer so a
+            # handler bug yields a 500 instead of a bare connection
+            # close; best-effort equivalent here. Once bytes have gone
+            # out there is nothing sane to send, so only speak up when
+            # the response has not started.
+            import traceback
+            traceback.print_exc()
+            if not getattr(self, "_responded", False):
+                try:
+                    self._write_full(500, _json_bytes(
+                        {"error": {"message": "client internal error"}}))
+                except OSError:
+                    self.close_connection = True
         finally:
             self._inflight_exit()
 
@@ -343,12 +363,17 @@ class Handler(BaseHTTPRequestHandler):
         else:
             p.brk.failure()
 
+        self._responded = True
         self.send_response(status)
         has_length = False
         for name, value in resp.getheaders():
-            if name.lower() in RESPONSE_SKIP:
+            lname = name.lower()
+            # Hop-by-hop framing must not be copied (we de-chunk before
+            # reading), and date/server are emitted by send_response()
+            # itself — copying the upstream's would produce duplicates.
+            if lname in RESPONSE_SKIP or lname in ("date", "server"):
                 continue
-            if name.lower() == "content-length":
+            if lname == "content-length":
                 has_length = True
             self.send_header(name, value)
         if not has_length:

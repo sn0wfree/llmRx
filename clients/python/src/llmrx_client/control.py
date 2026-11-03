@@ -32,17 +32,57 @@ class VerifyError(Exception):
 
 def extract_raw_member(body: bytes, key: str) -> tuple[bytes, dict]:
     """Return the raw bytes of a top-level object member plus its parsed
-    value. The server emits the outer object in struct order with
-    `config` first, so the member starts at a known offset; anything else
-    is treated as an unexpected envelope and rejected by the caller.
+    value.
+
+    The Go server marshals the envelope in struct order (config first),
+    but nothing guarantees that forever, and re-serializing a parsed dict
+    can never reproduce Go's exact bytes (field order, omitempty, HTML
+    escaping). So this walks the outer object with raw_decode and slices
+    the ORIGINAL text for the wanted member — slicing valid UTF-8 text
+    and re-encoding is byte-identical to what the server HMAC'd.
     """
-    prefix = b'{"' + key.encode() + b'":'
-    if not body.startswith(prefix):
-        raise VerifyError(f"unexpected bundle envelope (wanted {key} first)")
-    start = len(prefix)
-    text = body[start:].decode("utf-8", "strict")
-    obj, end = json.JSONDecoder().raw_decode(text)
-    return body[start:start + end], obj
+    s = body.decode("utf-8", "strict")
+    dec = json.JSONDecoder()
+
+    def skip_ws(i: int) -> int:
+        while i < len(s) and s[i] in " \t\r\n":
+            i += 1
+        return i
+
+    def fail(msg: str):
+        raise VerifyError(msg)
+
+    i = skip_ws(0)
+    if i >= len(s) or s[i] != "{":
+        fail("unexpected bundle envelope (not a JSON object)")
+    i = skip_ws(i + 1)
+    if i < len(s) and s[i] == "}":
+        fail(f"bundle envelope has no {key!r} member")
+    while True:
+        key_start = i
+        member_key, i = dec.raw_decode(s, i)
+        if not isinstance(member_key, str):
+            fail("unexpected bundle envelope (non-string key)")
+        i = skip_ws(i)
+        if i >= len(s) or s[i] != ":":
+            fail("unexpected bundle envelope (missing colon)")
+        i = skip_ws(i + 1)
+        value_start = i
+        value, i = dec.raw_decode(s, i)
+        if member_key == key:
+            if not isinstance(value, dict):
+                fail(f"bundle {key!r} member is not an object")
+            return s[value_start:i].encode("utf-8"), value
+        i = skip_ws(i)
+        if i >= len(s):
+            break
+        if s[i] == ",":
+            i = skip_ws(i + 1)
+            continue
+        if s[i] == "}":
+            break
+        fail("unexpected bundle envelope (bad separator)")
+    fail(f"bundle envelope has no {key!r} member")
 
 
 def verify_bundle(body: bytes, client_token: str) -> dict:
@@ -155,6 +195,9 @@ class Control:
         try:
             self._round()
         except urllib.error.HTTPError as exc:
+            # urlopen raises HTTPError before any context manager exists,
+            # so closing it here is what releases the socket.
+            exc.close()
             self._set_err(f"heartbeat: status {exc.code}")
             raise
         except VerifyError as exc:

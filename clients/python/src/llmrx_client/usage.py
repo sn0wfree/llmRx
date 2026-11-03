@@ -107,10 +107,15 @@ class JSONLUsageStore:
         directory = os.path.dirname(os.path.abspath(path))
         os.makedirs(directory, mode=0o755, exist_ok=True)
         self._fh = open(path, "ab", buffering=0)  # noqa: SIM115 — owned for process lifetime
-        try:
-            os.fchmod(self._fh.fileno(), 0o600)
-        except OSError:
-            pass  # best-effort; some filesystems refuse fchmod
+        # 0600 where the platform supports it (os.fchmod is Unix-only;
+        # Windows enforces via ACLs). A missing fchmod must not kill the
+        # client on platforms that cannot honour it.
+        fchmod = getattr(os, "fchmod", None)
+        if fchmod is not None:
+            try:
+                fchmod(self._fh.fileno(), 0o600)
+            except OSError:
+                pass
         self._mu = threading.Lock()
 
     def append(self, records: list[UsageRecord]) -> None:
@@ -209,5 +214,8 @@ def _drain_to_server(buffer: UsageBuffer, usage_url_fn, client_token: str,
         return
     try:
         upload_batch(url, client_token, client_name, batch)
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        buffer.requeue_front(batch)
     except (urllib.error.URLError, OSError, RuntimeError):
         buffer.requeue_front(batch)

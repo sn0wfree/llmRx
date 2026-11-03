@@ -23,9 +23,22 @@ class TestRawMemberExtraction(unittest.TestCase):
 
     def test_unexpected_envelope_rejected(self):
         with self.assertRaises(VerifyError):
-            extract_raw_member(b'{"zzz":1,"config":{}}', "config")
-        with self.assertRaises(VerifyError):
             extract_raw_member(b'not json', "config")
+        # No config member at all → rejected.
+        with self.assertRaises(VerifyError):
+            extract_raw_member(b'{"zzz":1,"other":2}', "config")
+        with self.assertRaises(VerifyError):
+            extract_raw_member(b'{}', "config")
+
+    def test_config_position_independent(self):
+        """The member may appear anywhere in the envelope; the raw bytes
+        extracted for the HMAC are still exactly what was serialized."""
+        raw = json.dumps(
+            {"signature": "x", "config": {"version": 3}, "algorithm": "hmac-sha256"},
+            separators=(",", ":")).encode()
+        raw_config, config = extract_raw_member(raw, "config")
+        self.assertEqual(config["version"], 3)
+        self.assertEqual(raw_config, b'{"version":3}')
 
 
 class TestVerify(unittest.TestCase):
