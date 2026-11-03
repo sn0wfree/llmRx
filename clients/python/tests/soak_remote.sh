@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
 # Soak the Python edge client against an ALREADY RUNNING llmRx server.
 #
-# Usage: soak_remote.sh <server_url> <edge_token_file> <gateway_key_file> [hours] [workdir]
+# Usage: soak_remote.sh <server_url> <edge_token_file> <gateway_key_file> <minutes> [workdir]
 #
-# The client runs with client_token set, so the full control plane is
-# exercised: heartbeat, signed config bundle, and usage upload to
-# <server>/client/v1/usage every 60s. The gateway key is injected into
-# forwarded requests so the server reaches its upstream. Progress
-# (RSS / fds / request counters) lands in <workdir>/soak_progress.log.
+# Duration is MINUTES (integer) — bash arithmetic cannot do floats, and
+# a float like 0.033 silently breaks the $(( ... )) expansion so the
+# loop never runs at all.
 set -u
 SERVER=$1
 TOKEN_FILE=$2
 GATEWAY_FILE=$3
-HOURS=${4:-4}
+MINUTES=${4:-240}
 WORK=${5:-/opt/llmrx-test/soak}
 REPO=$(cd "$(dirname "$0")/../../.." && pwd)
 mkdir -p "$WORK"
@@ -48,11 +46,11 @@ curl -sS -o /dev/null -m 3 "http://127.0.0.1:$PORT/healthz" 2>/dev/null || {
 
 BODY='{"model":"gpt-4o-mini","temperature":0,"messages":[{"role":"user","content":"soak"}]}'
 STREAM='{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"soak"}]}'
-END=$((SECONDS + HOURS * 3600))
+END=$((SECONDS + MINUTES * 60))
 ok=0; fail=0; n=0
 PROG="$WORK/soak_progress.log"
 
-echo "soak start $(date +%H:%M:%S) duration=${HOURS}h server=$SERVER pid=$CLI_PID" >> "$PROG"
+echo "soak start $(date +%H:%M:%S) duration=${MINUTES}min server=$SERVER pid=$CLI_PID" >> "$PROG"
 while [ $SECONDS -lt $END ]; do
   n=$((n + 1))
   B="$BODY"; [ $((n % 10)) -eq 0 ] && B="$STREAM"
