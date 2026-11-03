@@ -116,16 +116,6 @@ def main(argv: list[str] | None = None) -> int:
     from .proxy import Proxy
 
     buffer = UsageBuffer(5000)
-    proxy = Proxy(cfg, build_version(), buffer=buffer)
-    proxy.cfg_path = args.config
-
-    usage_store = None
-    if cfg.usage_file:
-        try:
-            usage_store = JSONLUsageStore(cfg.usage_file)
-        except OSError as exc:
-            _fatal(f"open usage file: {exc}")
-
     stop = threading.Event()
     control = None
     if cfg.client_token:
@@ -137,6 +127,18 @@ def main(argv: list[str] | None = None) -> int:
         control = control_mod.Control(
             first_server, cfg.client_name, cfg.client_token,
             version_fn=build_version, on_bundle=on_bundle)
+
+    # The proxy holds the control handle so /healthz can report
+    # config_version and control-plane status.
+    proxy = Proxy(cfg, build_version(), buffer=buffer, control=control)
+    proxy.cfg_path = args.config
+
+    usage_store = None
+    if cfg.usage_file:
+        try:
+            usage_store = JSONLUsageStore(cfg.usage_file)
+        except OSError as exc:
+            _fatal(f"open usage file: {exc}")
 
     try:
         server = serve_proxy(cfg, proxy)

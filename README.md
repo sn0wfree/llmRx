@@ -401,6 +401,7 @@ go test -v ./internal/admin ./internal/api
 | [docs/cluster-design/](docs/cluster-design/) | 集群设计文档 |
 | [docs/P14-BALANCE-MONITOR.md](docs/P14-BALANCE-MONITOR.md) | 上游渠道余额监控(DeepSeek/智谱/Moonshot/SiliconFlow/one-api,一期已实施) |
 | [docs/P15-CLIENT.md](docs/P15-CLIENT.md) | 客户端形态(边缘代理 + 本地缓存 + 断网兜底 + 用量回传,一期已实施) |
+| [docs/P18-PYTHON-CLIENT.md](docs/P18-PYTHON-CLIENT.md) | **Python 边缘客户端(推荐)**:`pip install clients/python`;Go 版客户端转维护模式 |
 | [docs/P16-DISTRIBUTION.md](docs/P16-DISTRIBUTION.md) | 交付与发布骨架:版本化、多平台产物、Docker/Helm/二进制分发(规划稿) |
 | [docs/P17-JSONL-LOGS.md](docs/P17-JSONL-LOGS.md) | 日志存储改 JSONL + rotate:去掉写入路径的 SQLite/CGO(已实施) |
 | [CHANGELOG.md](CHANGELOG.md) | 各 Phase 变更记录 |

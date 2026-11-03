@@ -3,6 +3,11 @@
 > Date: 2026-11-01 · Owner: llmRx maintainers · Status: **一期已实施(见 §20 实施记录)**
 > 前置:P0-P14;本文讨论"服务端 + 客户端"双形态,以及两者如何连接。
 > 关联:[P12 集群模式](P12-CLUSTER.md)(注意:客户端 ≠ 集群节点,见 §2)、[DEPLOY-FRP.md](DEPLOY-FRP.md)。
+>
+> **2026-11-03 更新**:客户端的推荐实现已切换为 Python 版
+> ([P18](P18-PYTHON-CLIENT.md),`pip install llmrx-client`)。本文描述的
+> Go 客户端(`cmd/gateway-client`)转入维护模式:协议与行为保持一致,
+> 只修 bug 不加特性。服务端 `/client/v1` 协议不变,两者可混用。
 
 ## 1. 背景
 

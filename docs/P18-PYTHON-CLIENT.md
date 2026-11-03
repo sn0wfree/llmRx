@@ -188,6 +188,54 @@ Go 版有几处已确认的缺陷/死代码。Python 版按**意图**实现，�
 4. `pip install -e clients/python` 后 `gateway-client -version` 可用。
 5. 状态页零外部资源（正则断言无 `http(s)://` 资产引用）。
 
-## 8. 实施记录
+## 8. 实施记录(2026-11-03)
 
-（实施过程中回填。）
+**代码**:`clients/python/`,约 2100 行实现 + 1900 行测试。
+
+- 模块:config / cache / breaker / upstream / proxy / usage / control /
+  enroll / ui / cli,全部按 §3-§4 的契约实现。
+- 运行依赖仅 PyYAML;测试同样零第三方(unittest + 进程内 mock 上游与
+  mock `/client/v1` 服务端)。
+
+**单测**:`python3 -m unittest discover -s tests`,87 个,全绿。
+
+测试抓到并修掉的真问题:
+
+1. **in-flight 限流自死锁**:`_inflight_cv = Condition(_inflight_mu)`,
+   退出路径却写了 `with _inflight_mu, _inflight_cv` —— 对同一把
+   非重入锁连续 acquire 两次,第二个请求永远等锁。faulthandler
+   抓栈定位。教训:Condition 自带锁,with 它一个就够。
+2. **handler 类体引用闭包变量**:`class Handler: _proxy = proxy` 在类
+   体执行时按全局查找,NameError。改为把 proxy 挂在 server 对象上、
+   handler 经 `self.server` 取——顺带消除了一个测试接线与生产路径
+   漂移的隐患(harness 直接用生产的 `serve()`)。
+3. **模板转义**:`str.format` 下 CSS 的 `:root {` 必须 `{{`;前 7 行
+   漏转义导致 KeyError。
+4. **cli 忘了把 control 传给 Proxy**:bundle 正常应用
+   (control 线程在跑)但 `/healthz` 永远不报 `config_version`。
+   E2E 抓到的——单测里 control 都是自己 new 的,没有覆盖 cli 接线。
+
+**E2E**(16/16,`clients/python/tests/e2e.sh`,WSL 实跑):
+
+真实 Go 服务端 + 真实 mockupstream,全链路:
+
+```
+admin login → 建渠道(指向 mock)→ /reload → 建 token
+→ 签发一次性接入码
+→ gateway-client -enroll(配置 0600)
+→ 启动 → 心跳 → 拉取 HMAC bundle 并应用(config_version 上报)
+→ POST /v1/chat/completions 经 client→server→mock 全链 200
+→ 用量上传(服务端日志出现 router_path="client:py-edge-e2e")
+→ 管理台 edge-clients 可见该客户端
+```
+
+E2E 顺带确认的服务端事实(非缺陷,记录备查):admin CreateChannel
+只 reload 连接池不 reload 静态路由索引,需手动 `POST /admin/api/v1/reload`;
+渠道 base_url 约定含 `/v1`(服务端拼 `/chat/completions`)。
+
+**pip 安装**:`pip install clients/python` 后 `gateway-client` 命令可用
+(WSL 系统 Python 无 pip,此项在 Windows Python 下验证)。
+
+**Go 客户端转维护模式**:`cmd/gateway-client` 与 `internal/client`
+保留、测试继续跑,README 与 P15 标注指向本实现;release 不再新增
+Go 客户端特性。
