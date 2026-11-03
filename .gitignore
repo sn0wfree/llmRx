@@ -65,3 +65,6 @@ build/
 
 # graphify knowledge-graph cache
 graphify-out/
+
+# Local credentials -- never commit (P18 E2E against production)
+.secrets/
