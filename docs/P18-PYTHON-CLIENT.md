@@ -334,6 +334,41 @@ fds          : 全程 6           threads    : 全程 3
 修复:两个客户端都在 id 里混入**每进程唯一的 nonce**(时间 + pid +
 随机数),重启后不可能重复。两侧都加了"两个实例不碰撞"的回归测试。
 
+### 9.5 服务器实测：4 小时挂机 + 记账丢失缺陷（2026-11-03/04）
+
+应用户要求把测试搬到生产服务器（120.27.114.106，Debian 12）：
+
+- 代码走 GitHub：本地 push →（本机断网时 bundle 经 SSH 由服务器代推）→
+  服务器 `git clone/pull`。91 个单测在服务器上全绿（Python 3.11）。
+- **测试实例**（与生产容器完全隔离）：v0.1.1 官方 release 二进制
+  （sha256 与 checksums.txt 比对通过）以 systemd transient unit 运行，
+  127.0.0.1:18991；纯 Python mock 上游 :18992；渠道/令牌经管理 API 配置。
+- **挂机**：`soak_remote.sh`，客户端与服务端同机，4 小时 systemd 托管。
+
+**结果**：1438 请求 0 失败；RSS 24088→24044KB（-44KB，平坦无泄漏）；
+fds 全程 5、线程全程 4；`pending_usage` 峰值 1（上传完全跟得上）；
+缓存命中率 99.7%（1291 hit / 4 miss）；控制面 `config bundle v1 applied`
+且 `control_last_error` 全程为空。
+
+**挂机暴露的第二个真实缺陷：82% 的用量从未上传。** 客户端本地
+usage.jsonl 落盘 1342 行，服务端只入库 96 行。根因是 Go 设计的固有竞态：
+5s 的 JSONL 落盘线程 `take_all()` 搬空缓冲，60s 的上传线程几乎总是扑空
+（Go 源码注释自认 "in practice rows are persisted before upload"）。
+落盘了的行从缓冲移除，永远不会再上传。
+
+修复（Python 主实现）：落盘线程改为**原位标记**（`unpersisted()` +
+`mark_persisted()`）不再移除；上传线程仍是唯一消费者，成功后把尚未
+落盘的行补写进 JSONL。两种到达顺序都保证"文件恰好一次、服务端恰好
+一次"。修复后验证轮（18 请求）：本地 18 行、服务端入库 18 行，100%。
+Go 客户端同病，转维护模式故未改，在此记录。
+
+**运维注记**（部署时踩到）：
+- 网关以 root 运行会尝试降权到 `llmrx` 用户，宿主机需预先
+  `useradd -r llmrx`（生产容器内自建用户所以从未暴露）；
+- 服务端 JSONL 按 **UTC 日期**滚动，跨 UTC 日界的请求写前一天的文件，
+  按本地日期找文件会扑空；
+- `GET /admin/api/v1/tokens` 不返回明文 key，创建响应是唯一取钥时机。
+
 ### 9.5 顺带验证
 
 - **pip 安装路径**(此前标记待验证):`pip install -e clients/python`
