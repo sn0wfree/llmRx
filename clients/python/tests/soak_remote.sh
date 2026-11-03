@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
 # Soak the Python edge client against an ALREADY RUNNING llmRx server.
 #
-# Usage: soak_remote.sh <server_url> <client_token_file> [hours] [workdir]
+# Usage: soak_remote.sh <server_url> <edge_token_file> <gateway_key_file> [hours] [workdir]
 #
 # The client runs with client_token set, so the full control plane is
 # exercised: heartbeat, signed config bundle, and usage upload to
-# <server>/client/v1/usage every 60s. Progress (RSS / fds / request
-# counters) lands in <workdir>/soak_progress.log every 60s.
+# <server>/client/v1/usage every 60s. The gateway key is injected into
+# forwarded requests so the server reaches its upstream. Progress
+# (RSS / fds / request counters) lands in <workdir>/soak_progress.log.
 set -u
 SERVER=$1
 TOKEN_FILE=$2
-HOURS=${3:-4}
-WORK=${4:-/opt/llmrx-test/soak}
+GATEWAY_FILE=$3
+HOURS=${4:-4}
+WORK=${5:-/opt/llmrx-test/soak}
 REPO=$(cd "$(dirname "$0")/../../.." && pwd)
 mkdir -p "$WORK"
 TOKEN=$(cat "$TOKEN_FILE")
+GWKEY=$(cat "$GATEWAY_FILE")
 PORT=18993
 
 cat > "$WORK/client.yml" <<EOF
@@ -23,6 +26,7 @@ servers:
   - $SERVER
 client_token: "$TOKEN"
 client_name: soak-server
+token: "$GWKEY"
 cache_enabled: true
 cache_ttl_sec: 300
 fallback_mode: cache_then_fail
