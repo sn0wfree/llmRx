@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import threading
 import time
 import urllib.error
@@ -59,18 +60,27 @@ class UsageRecord:
 
 
 class UsageBuffer:
-    """In-memory queue; drops the oldest when full (never blocks)."""
+    """In-memory queue; drops the oldest when full (never blocks).
+
+    request_id must be unique across RESTARTS: the server deduplicates on
+    client_name + request_id for 24h, so a counter that restarts at 1
+    would make the server silently discard every row after a restart.
+    The per-process nonce (start time + pid) keeps ids unique.
+    """
 
     def __init__(self, max_items: int = 5000) -> None:
         self._max = max_items
         self._items: list[UsageRecord] = []
         self._mu = threading.Lock()
         self._seq = 0
+        # start time + pid + randomness: two buffers created inside the
+        # same second in the same process must still differ.
+        self._nonce = f"{int(time.time())}{os.getpid()}{secrets.token_hex(4)}"
 
     def next_request_id(self, client_name: str) -> str:
         with self._mu:
             self._seq += 1
-            return f"{client_name}-{self._seq}"
+            return f"{client_name}-{self._nonce}-{self._seq}"
 
     def add(self, rec: UsageRecord) -> None:
         with self._mu:

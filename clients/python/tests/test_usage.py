@@ -64,8 +64,26 @@ class TestBuffer(unittest.TestCase):
 
     def test_request_ids_monotonic(self):
         b = UsageBuffer()
-        self.assertEqual(b.next_request_id("edge"), "edge-1")
-        self.assertEqual(b.next_request_id("edge"), "edge-2")
+        first = b.next_request_id("edge")
+        second = b.next_request_id("edge")
+        self.assertTrue(first.startswith("edge-"))
+        self.assertTrue(second.startswith("edge-"))
+        self.assertNotEqual(first, second)
+        # the counter must still advance
+        self.assertEqual(int(second.rsplit("-", 1)[1]),
+                         int(first.rsplit("-", 1)[1]) + 1)
+
+    def test_request_ids_unique_across_restarts(self):
+        """The server dedups on client_name+request_id for 24h, so ids
+        must not repeat when the client restarts and its counter resets."""
+        a = UsageBuffer()
+        b = UsageBuffer()
+        ids_a = [a.next_request_id("edge") for _ in range(3)]
+        ids_b = [b.next_request_id("edge") for _ in range(3)]
+        self.assertEqual(len(set(ids_a) & set(ids_b)), 0,
+                         "request ids collided across two buffer instances")
+        self.assertTrue(all(i.startswith("edge-") for i in ids_a))
+        self.assertEqual(len(set(ids_a)), 3)
 
 
 class TestJSONLStore(unittest.TestCase):

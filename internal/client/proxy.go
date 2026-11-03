@@ -3,11 +3,14 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -41,7 +44,12 @@ type Proxy struct {
 
 	// requestSeq generates usage request ids.
 	requestSeq atomic.Int64
-	startedAt  time.Time
+	// requestNonce makes ids unique across restarts. The server
+	// deduplicates on clientName+requestID for 24h, so a counter that
+	// restarts at 1 would make the server silently drop every row
+	// uploaded after a restart (P18 §9).
+	requestNonce string
+	startedAt    time.Time
 	// usageSink persists usage rows across restarts; wired by the
 	// binary after construction. nil keeps everything in memory.
 	usageSink UsagePersister
@@ -53,13 +61,28 @@ type Proxy struct {
 // NewProxy wires the data plane.
 func NewProxy(cfg *Config) *Proxy {
 	return &Proxy{
-		cfg:       cfg,
-		client:    &http.Client{},
-		cache:     NewCache(cfg.CacheMaxItems),
-		brk:       newBreaker(3, 30*time.Second),
-		buffer:    newUsageBuffer(5000),
-		startedAt: time.Now(),
+		cfg:          cfg,
+		client:       &http.Client{},
+		cache:        NewCache(cfg.CacheMaxItems),
+		brk:          newBreaker(3, 30*time.Second),
+		buffer:       newUsageBuffer(5000),
+		requestNonce: newRequestNonce(),
+		startedAt:    time.Now(),
 	}
+}
+
+// newRequestNonce returns a per-process unique suffix for usage request
+// ids. Time+pid+random keeps ids unique across restarts, which the
+// server's 24h dedup window requires.
+func newRequestNonce() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand failing is fatal for uniqueness; fall back to the
+		// clock, which is still better than a bare counter.
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return strconv.FormatInt(time.Now().Unix(), 16) +
+		strconv.Itoa(os.Getpid()) + hex.EncodeToString(b[:])
 }
 
 // Cache returns the response cache (status page, purge).
@@ -375,7 +398,7 @@ func (p *Proxy) record(r *http.Request, e *cache.Entry, source string, start tim
 		source = SourceProxy
 	}
 	rec := UsageRecord{
-		RequestID:        fmt.Sprintf("%s-%d", p.cfg.ClientName, p.requestSeq.Add(1)),
+		RequestID:        fmt.Sprintf("%s-%s-%d", p.cfg.ClientName, p.requestNonce, p.requestSeq.Add(1)),
 		Timestamp:        start.Unix(),
 		Model:            model,
 		Status:           status,

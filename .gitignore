@@ -68,3 +68,5 @@ graphify-out/
 
 # Local credentials -- never commit (P18 E2E against production)
 .secrets/
+"clients/python/src/*.egg-info/"  
+"*.egg-info/"  

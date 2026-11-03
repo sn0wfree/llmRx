@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -194,6 +195,23 @@ func TestProxy_CachesDeterministicRequests(t *testing.T) {
 	}
 	if recs[1].RequestID == recs[0].RequestID {
 		t.Fatal("request ids must be unique (idempotency key)")
+	}
+}
+
+// The server deduplicates on clientName+requestID for 24h, so ids must
+// not repeat when the client restarts and its counter resets to 1.
+func TestProxy_RequestIDsUniqueAcrossRestarts(t *testing.T) {
+	cfg := &Config{Servers: []string{"http://127.0.0.1:1"}}
+	a := NewProxy(cfg)
+	b := NewProxy(cfg)
+	if a.requestNonce == b.requestNonce {
+		t.Fatalf("two proxies share nonce %q — ids would collide after a restart",
+			a.requestNonce)
+	}
+	ida := fmt.Sprintf("%s-%s-%d", cfg.ClientName, a.requestNonce, a.requestSeq.Add(1))
+	idb := fmt.Sprintf("%s-%s-%d", cfg.ClientName, b.requestNonce, b.requestSeq.Add(1))
+	if ida == idb {
+		t.Fatalf("request ids collide across restarts: %q", ida)
 	}
 }
 
