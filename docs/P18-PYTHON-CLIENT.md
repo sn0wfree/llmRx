@@ -257,6 +257,91 @@ E2E 顺带确认的服务端事实(非缺陷,记录备查):admin CreateChannel
 **pip 安装**:`pip install clients/python` 后 `gateway-client` 命令可用
 (WSL 系统 Python 无 pip,此项在 Windows Python 下验证)。
 
+## 9. 长时间稳定性与性能画像(2026-11-03)
+
+### 9.1 生产服务端取证(llmrx.tokenhub.top → 120.27.114.106)
+
+SSH 进容器宿主,直接看运行中的实例:
+
+| 证据 | 数值 | 判读 |
+|---|---|---|
+| 容器连续运行 | 7 周(2026-09-16 起),`RestartCount=0`,healthy,OOM=false | 无崩溃史 |
+| 容器日志 | 25 万行:**0 panic / 0 fatal / 0 error / 0 OOM**,3 条 warn | 纯净 |
+| 内存 | 27 MiB / 512 MiB,7 周无增长 | 无泄漏迹象 |
+| 宿主机 | 连续运行 1 年 34 周未重启 | 底座稳定 |
+| 健康检查 | 每 30s 一次,全部通过 | |
+| nginx 14 天留存 | 5.3 万请求(多服务合计),14 个 500 且集中在单日 | 低错误率 |
+
+**必须如实说明的局限**:该部署**几乎没有真实流量**。llmRx 自己的 14 天
+请求仅 108 个,其中绝大多数是互联网扫描器(`/admin/.env`、
+`/admin/config.php` 等);唯一真实请求是本次探测。所以这证明的是
+**空载长期稳定**,不是**有负载下的稳定**——后者由 §9.3 的挂机补上。
+
+另外两点观察(建议项,本次未动):
+
+- 生产跑的是**老镜像**:无 `/client/v1`、响应无 `X-Llmrx-Version`、
+  日志仍是 sqlite 时代。升级到 v0.1.1 后边缘客户端协议才可用。
+- `/admin/login` 公网可达且被扫描器持续探测;nginx 同一实例还挂着
+  JupyterLab 等其他服务。建议收敛暴露面。
+
+### 9.2 性能画像(本地真实服务端 + mock 上游)
+
+`clients/python/tests/perf_profile.sh`,脚本带**有效性门禁**(响应必须含
+`"choices"` 才继续),避免把错误响应的耗时当成性能数据——第一次跑就因为
+mock 没起来而产出过一份全部作废的数字。
+
+| 指标 | 直连服务端 | 经 Python 客户端 | 客户端开销 |
+|---|---|---|---|
+| 非流式延迟 avg / p95 | 1.0 / 1.3 ms | 2.1 / 2.4 ms | **+1.1 ms** |
+| SSE 首 token(TTFT)avg | 0.5 ms | 1.5 ms | **+1.0 ms** |
+| 并发吞吐(8×25 请求) | 723 rps | 458 rps | 63% |
+
+**判读**:边缘代理面对的是 1 s 以上的真实 LLM 延迟,+1 ms 在用户侧完全
+不可感知;吞吐损耗只在远高于边缘客户端使用形态的并发下才有意义。
+结论:**性能不是选型障碍**。
+
+### 9.3 长时间稳定性(挂机)
+
+`clients/python/tests/soak_run.sh`(Linux)与 `soak_win.py`(Windows)。
+每 10 s 一个请求(含流式),每 60 s 采样内存/句柄数。
+
+Linux(WSL)第一轮因 WSL 实例被回收而中断,但留下 2 h 43 min 的干净数据:
+
+```
+samples      : 163   (10:16:13 → 12:58:25)
+requests     : n=978 ok=978 fail=0   (0.000% 失败)
+RSS          : first=27996KB  max=28012KB  last=28012KB
+RSS drift    : +16KB / 163 min  (+5.9 KB/hour)
+first third  : avg 28006 KB      last third : avg 28012 KB   → FLAT(无泄漏)
+fds          : 全程 6           threads    : 全程 3
+```
+
+判据:RSS 曲线平坦、首尾三段均值仅差 6 KB、fd 与线程数**全程无变化**
+→ 无内存泄漏、无句柄泄漏、无线程泄漏。
+
+### 9.4 挂机期间发现的真实缺陷:用量 request_id 重启后重复
+
+采样 usage.jsonl 时看到 `request_id` 为 `-1`、`-2`……前缀为空(配置里没
+写 `client_name`,本身无害),但顺着查下去发现问题:
+
+- 服务端按 `clientName + "/" + requestID` 去重,窗口 **24 小时**
+  (`internal/client/api/ingest.go` 的 `alreadySeen`);
+- 两个客户端的 id 都来自**进程内计数器**,重启后从 1 重新开始。
+
+于是客户端重启后,前 N 条(id 与重启前重复)会被服务端**静默丢弃**。
+边缘客户端重启频繁(笔记本休眠、崩溃重启),这是真实的用量丢失。
+
+修复:两个客户端都在 id 里混入**每进程唯一的 nonce**(时间 + pid +
+随机数),重启后不可能重复。两侧都加了"两个实例不碰撞"的回归测试。
+
+### 9.5 顺带验证
+
+- **pip 安装路径**(此前标记待验证):`pip install -e clients/python`
+  后 `gateway-client` 命令可用,`python -m llmrx_client` 亦可;
+  Windows Python 3.13 下同样通过。
+- **Windows 平台**:客户端在 Windows 上可运行(挂机即在 Windows 侧跑),
+  `os.fchmod` 缺失的处理(§8 第 1 条)因此得到真实验证。
+
 **Go 客户端转维护模式**:`cmd/gateway-client` 与 `internal/client`
 保留、测试继续跑,README 与 P15 标注指向本实现;release 不再新增
 Go 客户端特性。
