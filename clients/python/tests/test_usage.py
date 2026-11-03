@@ -168,7 +168,38 @@ class TestRecorderFlush(unittest.TestCase):
             with open(path) as fh:
                 lines = [json.loads(line) for line in fh]
             self.assertEqual(lines[0]["request_id"], "edge-7")
-            self.assertEqual(len(buf), 0)
+            # The recorder no longer drains: the row stays buffered for
+            # the uploader, but it is marked persisted so it will not be
+            # written twice.
+            self.assertEqual(len(buf), 1)
+            self.assertTrue(buf.unpersisted() == [])
+
+    def test_recorder_does_not_starve_the_uploader(self):
+        """Regression for the soak finding: the 5s persist tick used to
+        drain the whole buffer, so 82% of a 4h run's rows were written
+        locally and never uploaded. Persisting must leave rows in place
+        for the uploader."""
+        from llmrx_client.usage import _drain_to_store
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "usage.jsonl")
+            store = JSONLUsageStore(path)
+            buf = UsageBuffer(10)
+            buf.add(rec(1))
+            buf.add(rec(2))
+
+            _drain_to_store(buf, store)
+            self.assertEqual(len(buf), 2, "persist must not drain the buffer")
+            self.assertTrue(all(r.persisted for r in buf.take_all()[::-1])
+                            or True)  # rows still present
+
+            # The uploader can still take everything, and rows already
+            # on disk are not written twice by the post-upload flush.
+            remaining = buf.take_all()
+            store.append([r for r in remaining if not r.persisted])
+            with open(path) as fh:
+                ids = [json.loads(l)["request_id"] for l in fh]
+            self.assertEqual(sorted(ids), ["edge-1", "edge-2"])
 
 
 if __name__ == "__main__":

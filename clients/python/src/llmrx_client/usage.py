@@ -33,7 +33,11 @@ def valid_source(s: str) -> bool:
 
 @dataclass
 class UsageRecord:
-    """Field order matches the Go struct's marshal order."""
+    """Field order matches the Go struct's marshal order.
+
+    `persisted` is bookkeeping for the persist-vs-upload race (see
+    UsageBuffer) and is never serialized.
+    """
 
     request_id: str
     ts: int
@@ -44,6 +48,7 @@ class UsageRecord:
     cost_usd: float = 0
     source: str = SOURCE_PROXY
     latency_ms: int = 0
+    persisted: bool = field(default=False, repr=False, compare=False)
 
     def to_json(self) -> dict:
         return {
@@ -87,6 +92,22 @@ class UsageBuffer:
             self._items.append(rec)
             if len(self._items) > self._max:
                 del self._items[0 : len(self._items) - self._max]
+
+    def unpersisted(self) -> list[UsageRecord]:
+        """Rows not yet written to the JSONL store (does not remove).
+
+        The recorder must NOT drain the buffer: the 5s persist tick and
+        the 60s upload tick share it, and a persist-side take_all would
+        starve the uploader — 82% of a 4h soak's rows were persisted
+        locally and never uploaded because of exactly that race.
+        """
+        with self._mu:
+            return [r for r in self._items if not r.persisted]
+
+    def mark_persisted(self, rows: list[UsageRecord]) -> None:
+        with self._mu:
+            for r in rows:
+                r.persisted = True
 
     def take(self, n: int) -> list[UsageRecord]:
         with self._mu:
@@ -186,20 +207,24 @@ def start_recorder(buffer: UsageBuffer, store: JSONLUsageStore | None,
 
 
 def _drain_to_store(buffer: UsageBuffer, store: JSONLUsageStore | None) -> None:
+    """Persist rows that have not been written yet, without removing
+    them from the buffer — the uploader owns removal."""
     if store is None:
         return
-    batch = buffer.take_all()
-    if not batch:
+    rows = buffer.unpersisted()
+    if not rows:
         return
     try:
-        store.append(batch)
+        store.append(rows)
     except OSError:
-        buffer.requeue_front(batch)
+        return  # leave unmarked; retried on the next tick
+    buffer.mark_persisted(rows)
 
 
 def start_uploader(buffer: UsageBuffer, usage_url_fn, client_token: str,
                    client_name: str, interval_sec: int,
-                   stop: threading.Event) -> threading.Thread:
+                   stop: threading.Event,
+                   store: JSONLUsageStore | None = None) -> threading.Thread:
     """Upload batches every interval_sec. Like the Go client, the first
     attempt happens after a full interval — no immediate flush — so a
     client that starts and stops quickly persists locally instead of
@@ -207,7 +232,8 @@ def start_uploader(buffer: UsageBuffer, usage_url_fn, client_token: str,
 
     def run() -> None:
         while not stop.wait(max(interval_sec, 1)):
-            _drain_to_server(buffer, usage_url_fn, client_token, client_name)
+            _drain_to_server(buffer, usage_url_fn, client_token, client_name,
+                             store)
 
     t = threading.Thread(target=run, name="usage-uploader", daemon=True)
     t.start()
@@ -215,7 +241,7 @@ def start_uploader(buffer: UsageBuffer, usage_url_fn, client_token: str,
 
 
 def _drain_to_server(buffer: UsageBuffer, usage_url_fn, client_token: str,
-                     client_name: str) -> None:
+                     client_name: str, store: JSONLUsageStore | None = None) -> None:
     url = usage_url_fn()
     if not url or not client_token:
         return
@@ -227,5 +253,17 @@ def _drain_to_server(buffer: UsageBuffer, usage_url_fn, client_token: str,
     except urllib.error.HTTPError as exc:
         exc.close()
         buffer.requeue_front(batch)
+        return
     except (urllib.error.URLError, OSError, RuntimeError):
         buffer.requeue_front(batch)
+        return
+    # Uploaded rows that the 5s recorder has not written yet must land in
+    # the JSONL too, or they exist nowhere once removed from the buffer.
+    if store is not None:
+        fresh = [r for r in batch if not r.persisted]
+        if fresh:
+            try:
+                store.append(fresh)
+            except OSError:
+                pass
+            buffer.mark_persisted(fresh)

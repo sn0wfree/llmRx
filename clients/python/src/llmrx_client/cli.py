@@ -153,7 +153,8 @@ def main(argv: list[str] | None = None) -> int:
             name="control", daemon=True)
         t.start()
     start_uploader(buffer, cfg.usage_url, cfg.client_token,
-                   cfg.client_name, cfg.usage_upload_sec, stop)
+                   cfg.client_name, cfg.usage_upload_sec, stop,
+                   store=usage_store)
 
     def request_shutdown(signum, frame) -> None:
         print("shutting down: draining in-flight requests…")
