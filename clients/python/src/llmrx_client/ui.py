@@ -346,17 +346,65 @@ def _method_not_allowed(h) -> None:
     h.wfile.write(body)
 
 
-def handle_purge(h) -> None:
+def _forbidden(h) -> None:
+    body = b"cross-origin request rejected"
+    h.send_response(403)
+    h.send_header("Content-Type", "text/plain; charset=utf-8")
+    h.send_header("Content-Length", str(len(body)))
+    h.end_headers()
+    h.wfile.write(body)
+
+
+def _same_origin(h) -> bool:
+    """Whether a browser-sourced write targets this local UI.
+
+    Browsers do not enforce same-origin for form POSTs — a malicious
+    page can silently submit to 127.0.0.1 and rewrite the client's
+    servers list. When Origin/Referer is present it must point at this
+    listener; when absent the caller is not a browser (curl, the tray
+    shell, SSH tunnels) and is allowed through.
+    """
+    host = h.headers.get("Host") or ""
+    allowed_hosts = set()
+    if host:
+        allowed_hosts.add(host.lower())
+        netloc = host.lower()
+        if netloc.startswith("localhost:"):
+            allowed_hosts.add("127.0.0.1:" + netloc.split(":", 1)[1])
+        elif netloc.startswith("127.0.0.1:"):
+            allowed_hosts.add("localhost:" + netloc.split(":", 1)[1])
+
+    origin = h.headers.get("Origin") or ""
+    if origin:
+        return origin.lower().rstrip("/") in {
+            "http://" + a for a in allowed_hosts}
+    referer = h.headers.get("Referer") or ""
+    if referer:
+        parsed = urllib.parse.urlsplit(referer)
+        return parsed.netloc.lower() in allowed_hosts
+    return True  # not a browser
+
+
+def _reject_cross_origin_write(h) -> bool:
+    """Gate for mutating endpoints. Returns True when rejected."""
     if h.command != "POST":
         _method_not_allowed(h)
+        return True
+    if not _same_origin(h):
+        _forbidden(h)
+        return True
+    return False
+
+
+def handle_purge(h) -> None:
+    if _reject_cross_origin_write(h):
         return
     h.proxy.cache.purge()
     _redirect(h, "/ui?flash=" + urllib.parse.quote("缓存已清空"))
 
 
 def handle_settings(h) -> None:
-    if h.command != "POST":
-        _method_not_allowed(h)
+    if _reject_cross_origin_write(h):
         return
     p, cfg = h.proxy, h.proxy.cfg
     form = urllib.parse.parse_qs(

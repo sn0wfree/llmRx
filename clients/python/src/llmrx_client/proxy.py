@@ -25,6 +25,7 @@ from .config import Config
 from .upstream import ServerIndex, attempt_servers, copy_request_headers
 
 MAX_BODY = 32 << 20  # 32 MiB, matching io.LimitReader in the Go client
+MAX_LINE = 64 * 1024  # chunk-size / trailer line cap
 CHAT_PATH = "/v1/chat/completions"
 STATUS_TIMEOUT = 408
 
@@ -48,6 +49,13 @@ ERR_UNREACHABLE_CACHED = _json_bytes(
 ERR_OVERLOADED = _json_bytes(
     {"error": {"code": "client_overloaded",
                "message": "client max_inflight exceeded"}})
+ERR_TOO_LARGE = _json_bytes(
+    {"error": {"code": "client_body_too_large",
+               "message": "request body exceeds 32 MiB"}})
+
+# Methods whose body is forwarded upstream. RFC 7231 allows DELETE to
+# carry a body and real APIs use it.
+BODY_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 
 
 def fallible(status: int, transport_err: bool) -> bool:
@@ -141,14 +149,59 @@ class Handler(BaseHTTPRequestHandler):
             p._inflight -= 1
             p._inflight_cv.notify()
 
-    def _read_body(self) -> bytes:
+    def _read_body(self) -> bytes | None:
+        """Read the request body, decoding chunked transfer encoding.
+
+        Returns None when the body is too large: the caller must reject
+        with 413 and close the connection, because a truncated read
+        would leave the remainder of the body on the socket and corrupt
+        the next request's framing on a keep-alive connection.
+        """
+        te = (self.headers.get("Transfer-Encoding") or "").lower()
+        if "chunked" in te:
+            return self._read_chunked()
+
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             length = 0
         if length <= 0:
             return b""
-        return self.rfile.read(min(length, MAX_BODY))
+        if length > MAX_BODY:
+            return None
+        return self.rfile.read(length)
+
+    def _read_chunked(self) -> bytes | None:
+        """Decode a chunked body: size-line CRLF data CRLF ... 0-chunk
+        trailers. Returns None on overflow (same contract as CL > MAX_BODY)."""
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            size_line = self.rfile.readline(MAX_LINE)
+            if not size_line:
+                return None  # truncated stream
+            try:
+                size = int(size_line.strip().split(b";")[0], 16)
+            except ValueError:
+                return None
+            if size == 0:
+                # Consume trailers up to the blank line.
+                while True:
+                    line = self.rfile.readline(MAX_LINE)
+                    if line in (b"\r\n", b"\n", b""):
+                        break
+                break
+            data = self.rfile.read(size)
+            if len(data) < size:
+                return None  # truncated stream
+            total += len(data)
+            if total > MAX_BODY:
+                return None
+            chunks.append(data)
+            crlf = self.rfile.read(2)
+            if crlf not in (b"\r\n", b"\n"):
+                return None
+        return b"".join(chunks)
 
     def _write_full(self, status: int, payload: bytes,
                     extra: dict | None = None,
@@ -247,6 +300,11 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as exc:
             self._write_full(400, _json_bytes(
                 {"error": {"message": f"read body: {exc}"}}))
+            return
+        if body is None:
+            # Oversized: framing requires closing, not truncating.
+            self.close_connection = True
+            self._write_full(413, ERR_TOO_LARGE)
             return
 
         try:
@@ -348,8 +406,12 @@ class Handler(BaseHTTPRequestHandler):
             self._write_full(503, ERR_UNREACHABLE)
             return
 
-        if body is None and self.command in ("POST", "PUT", "PATCH"):
+        if body is None and self.command in BODY_METHODS:
             body = self._read_body()
+            if body is None:
+                self.close_connection = True
+                self._write_full(413, ERR_TOO_LARGE)
+                return
 
         resp, conn, _transport_err = self._attempt(body)
         if resp is None:
