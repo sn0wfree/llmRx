@@ -115,6 +115,11 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "llmrx-client"
     sys_version = ""  # BaseHTTPRequestHandler would append " " + sys_version
+    # Read timeout on the inbound socket. Without it a slow-loris client
+    # that opens a connection and sends nothing pins a thread forever
+    # (the Go server's ReadHeaderTimeout exists for the same reason).
+    # 120s is generous enough for legitimate large/slow uploads.
+    timeout = 120
 
     def version_string(self) -> str:
         # sys_version is empty; the default join would leave a trailing
