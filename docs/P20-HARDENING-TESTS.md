@@ -73,6 +73,32 @@ L4 顺带修一个与 Go 的差异：Go 的 `http.Server` 有
 - 不测 SYN 黑洞超时（见 §2 说明）
 - 不在 CI 里跑 Go diff（需 Go 工具链，本地跑）
 
+### 6.1 覆盖度梳理与补充单测（2026-11-05）
+
+逐模块梳理 131 个单测未触达的路径，发现一个**真实启动缺陷**和一批
+未覆盖分支：
+
+**缺陷 6：`listen` 缺端口时启动崩溃。** `make_server` 用
+`rpartition(":")` 解析 `listen`——`listen: 127.0.0.1`（只写主机）时
+`port='127.0.0.1'`，`int()` 抛 ValueError 且无人捕获，客户端启动即
+裸 traceback。Go 版会给出 "missing port in address" 的清晰错误。
+修复：`normalize()` 校验 listen 必须是 `host:port` 且端口为数字
+（缺失冒号、端口非法都进 ConfigError，与其它校验一样一次报出）；
+`make_server` 兜底抛带说明的错误。
+
+**补测清单**（新增 5 个测试文件 + 扩充 6 个既有文件，约 40 用例）：
+
+| 模块 | 此前未覆盖 | 补测 |
+|---|---|---|
+| `upstream.py` | `remote_ip`（空值/无端口）、`copy_request_headers`（XFF 已存在不覆盖、token 让位、Host/CL/Connection 跳过、多值收敛）、`attempt_servers` 空 servers、粘性下标 | `test_upstream.py` |
+| `config.py` | `from_dict` 类型防御（bool 冒充 int、servers 非列表）、非映射 YAML、`fallback_mode_or_default`、`usage_url` 尾斜杠、**listen 校验** | `test_config.py` 扩充 |
+| `usage.py` | `valid_source`、`requeue_front` 超限截断、300–399 上传状态、cost_usd 浮点 | `test_usage.py` 扩充 |
+| `control.py` | envelope 成员间空白、心跳空 body、响应超上限 | `test_control.py` 扩充 |
+| `enroll.py` | 201 + 畸形 JSON、响应超 64KiB、401 body 不可解析 | `test_enroll.py` 扩充 |
+| `proxy.py` | `fallible` 表、`_temp_zero` 字符串温度、HEAD 无 body、listen 解析、错误常量形状 | `test_proxy.py` 扩充 |
+| `cli.py` | `build_version`、`-version` 主路径、`run_enroll` 缺 server、enroll 写配置+usage 默认、enroll 失败 exit 1 | `test_cli.py`（新） |
+| `ui.py` | `_same_origin` 纯函数矩阵、`dispatch` 路由、POST /ui 405、`_html_escape` | `test_ui.py` 扩充 |
+
 ## 6. 实施记录（2026-11-04）
 
 四个套件全部落地：`test_race.py`（R1–R5）、`test_failures.py`（F1–F9）、
