@@ -202,5 +202,73 @@ class TestRecorderFlush(unittest.TestCase):
             self.assertEqual(sorted(ids), ["edge-1", "edge-2"])
 
 
+class TestSourceValidation(unittest.TestCase):
+    """P20 6.1: the server rejects unknown sources silently, so the
+    client's own validator is the only guard."""
+
+    def test_valid_sources(self):
+        from llmrx_client.usage import valid_source
+        for s in ("proxy", "cache", "local"):
+            self.assertTrue(valid_source(s), s)
+
+    def test_invalid_sources(self):
+        from llmrx_client.usage import valid_source
+        for s in ("", "PROXY", "upstream", "proxy2"):
+            self.assertFalse(valid_source(s), s)
+
+
+class TestRequeueOverflow(unittest.TestCase):
+    def test_requeue_respects_capacity(self):
+        b = UsageBuffer(3)
+        batch = [rec(i) for i in range(5)]
+        b.requeue_front(batch)
+        self.assertEqual(len(b), 3, "requeue exceeded max_items")
+        ids = [r.request_id for r in b.take_all()]
+        self.assertEqual(ids, ["edge-0", "edge-1", "edge-2"])
+
+    def test_requeue_empty_is_noop(self):
+        b = UsageBuffer(3)
+        b.requeue_front([])
+        self.assertEqual(len(b), 0)
+
+
+class TestUploadStatusBoundaries(unittest.TestCase):
+    def _upload_with_status(self, status):
+        class Resp:
+            def __init__(self, s):
+                self.status = s
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, n=-1):
+                return b"{}"
+
+        with mock.patch("llmrx_client.usage.urllib.request.urlopen",
+                        lambda req, timeout: Resp(status)):
+            upload_batch("http://s/u", "t", "e", [rec(1)])
+
+    def test_299_is_success(self):
+        self._upload_with_status(299)  # must not raise
+
+    def test_300_raises(self):
+        with self.assertRaises(RuntimeError):
+            self._upload_with_status(300)
+
+    def test_500_raises(self):
+        with self.assertRaises(RuntimeError):
+            self._upload_with_status(500)
+
+
+class TestCostSerialisation(unittest.TestCase):
+    def test_cost_is_json_number_not_string(self):
+        doc = rec(1, cost_usd=0.000123).to_json()
+        self.assertIsInstance(doc["cost_usd"], float)
+        self.assertEqual(json.loads(json.dumps(doc))["cost_usd"], 0.000123)
+
+
 if __name__ == "__main__":
     unittest.main()

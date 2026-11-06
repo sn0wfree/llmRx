@@ -162,5 +162,85 @@ class TestControlRounds(unittest.TestCase):
         self.assertEqual(ctl.applied_version(), 7)
 
 
+class TestEnvelopeRobustness(unittest.TestCase):
+    """P20 6.1: the member scanner must handle whitespace between
+    members and odd-but-legal envelopes."""
+
+    def test_whitespace_between_members(self):
+        raw = b'{ "config" : {"version": 5} , "signature" : "x" }'
+        raw_cfg, cfg = extract_raw_member(raw, "config")
+        self.assertEqual(cfg["version"], 5)
+        self.assertEqual(raw_cfg, b'{"version": 5}')
+
+    def test_signature_covers_raw_member_under_whitespace(self):
+        """Verification must use the sliced bytes exactly, so a re-signed
+        envelope with whitespace still verifies."""
+        import hashlib
+        import hmac as hm
+
+        cfg_bytes = b'{"version": 7,"servers":["http://a"]}'
+        sig = hm.new(b"tok", cfg_bytes, hashlib.sha256).hexdigest()
+        raw = (b'{"config": ' + cfg_bytes +
+               b', "signature": "' + sig.encode() + b'",'
+               b' "algorithm": "hmac-sha256"}')
+        self.assertEqual(verify_bundle(raw, "tok")["version"], 7)
+
+    def test_missing_signature_member(self):
+        with self.assertRaises(VerifyError):
+            verify_bundle(b'{"config":{"version":1},"algorithm":"hmac-sha256"}',
+                          "tok")
+
+    def test_non_object_config(self):
+        with self.assertRaises(VerifyError):
+            verify_bundle(b'{"config":[1,2],"signature":"x",'
+                          b'"algorithm":"hmac-sha256"}', "tok")
+
+
+class TestHeartbeatEdges(unittest.TestCase):
+    def test_heartbeat_empty_body_fails_cleanly(self):
+        """A 200 with an empty body must raise, not KeyError later."""
+        from llmrx_client.control import Control
+        ctl = Control("http://127.0.0.1:9", "e", "t", version_fn=lambda: "v")
+
+        class Resp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, n=-1):
+                return b""
+
+        with mock.patch("llmrx_client.control.urllib.request.urlopen",
+                        lambda req, timeout: Resp()):
+            with self.assertRaises(RuntimeError):
+                ctl.heartbeat()
+
+    def test_config_response_over_cap_rejected(self):
+        from llmrx_client.control import CONFIG_READ_CAP, Control
+        ctl = Control("http://127.0.0.1:9", "e", "t", version_fn=lambda: "v")
+
+        class Resp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, n=-1):
+                return b"x" * (CONFIG_READ_CAP + 10)
+
+        with mock.patch("llmrx_client.control.urllib.request.urlopen",
+                        lambda req, timeout: Resp()):
+            with self.assertRaises(RuntimeError) as ctx:
+                ctl.fetch_config()
+        self.assertIn("too large", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

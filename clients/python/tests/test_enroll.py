@@ -71,5 +71,72 @@ class TestEnroll(unittest.TestCase):
             enroll("http://127.0.0.1:9", "x")
 
 
+class TestEnrollResponseEdges(unittest.TestCase):
+    """P20 6.1: response-shape defences."""
+
+    def _enroll_with(self, status, body):
+        from llmrx_client import enroll as mod
+
+        class Resp:
+            def __init__(self):
+                self.status = status
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, n=-1):
+                return body
+
+        with mock.patch.object(mod.urllib.request, "urlopen",
+                               lambda r, timeout: Resp()):
+            return mod.enroll("http://x", "code")
+
+    def test_201_with_malformed_json(self):
+        with self.assertRaises(EnrollError) as ctx:
+            self._enroll_with(201, b"<html>not json</html>")
+        self.assertIn("invalid response body", str(ctx.exception))
+
+    def test_201_without_secret(self):
+        with self.assertRaises(EnrollError) as ctx:
+            self._enroll_with(201, b'{"client_id":"ec_1","name":"n"}')
+        self.assertIn("empty secret", str(ctx.exception))
+
+    def test_response_over_cap_rejected(self):
+        from llmrx_client.enroll import READ_CAP
+        with self.assertRaises(EnrollError) as ctx:
+            self._enroll_with(201, b"x" * (READ_CAP + 1))
+        self.assertIn("too large", str(ctx.exception))
+
+    def test_200_instead_of_201_rejected(self):
+        with self.assertRaises(EnrollError) as ctx:
+            self._enroll_with(200, b'{"client_secret":"s"}')
+        self.assertIn("status 200", str(ctx.exception))
+
+    def test_unparseable_401_body(self):
+        import urllib.error
+
+        class Resp:
+            code = 401
+
+            def read(self, n=-1):
+                return b"gateway says no"
+
+            def close(self):
+                pass
+
+        def boom(req, timeout):
+            raise urllib.error.HTTPError("http://x", 401, "Unauthorized",
+                                         {}, None) from None
+
+        from llmrx_client import enroll as mod
+        with mock.patch.object(mod.urllib.request, "urlopen", boom):
+            with self.assertRaises(EnrollError) as ctx:
+                mod.enroll("http://x", "code")
+        self.assertIn("enroll rejected", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -88,6 +88,22 @@ class Config:
                     )
             if not self.listen.strip():
                 self.listen = DEFAULT_LISTEN
+            else:
+                # "127.0.0.1" (host without a port) used to reach
+                # make_server and crash on int("127.0.0.1") -- a bare
+                # traceback at startup. Validate the host:port form
+                # here, alongside every other config problem.
+                host, _, port = self.listen.strip().rpartition(":")
+                if not host:
+                    host = "127.0.0.1"
+                if not port.isdigit():
+                    problems.append(
+                        f"listen: {self.listen!r} must be host:port "
+                        f"(e.g. {DEFAULT_LISTEN})")
+                else:
+                    # Keep the normalized host in the listen string so
+                    # ":8787" resolves to 127.0.0.1 explicitly.
+                    self.listen = f"{host}:{port}"
             if self.usage_upload_sec <= 0:
                 self.usage_upload_sec = DEFAULT_UPLOAD_SEC
             if self.cache_ttl_sec <= 0:

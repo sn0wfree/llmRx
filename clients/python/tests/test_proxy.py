@@ -333,5 +333,66 @@ class TestMaxInflight(unittest.TestCase):
                 h.stop()
 
 
+class TestPureHelpers(unittest.TestCase):
+    """P20 6.1: the predicates behind the fallback chain, tested directly."""
+
+    def test_fallible_table(self):
+        from llmrx_client.proxy import fallible
+        # transport errors and 5xx and 408 are softenable
+        self.assertTrue(fallible(0, True))
+        self.assertTrue(fallible(408, False))
+        self.assertTrue(fallible(500, False))
+        self.assertTrue(fallible(503, False))
+        # business errors are authoritative
+        for code in (400, 401, 403, 404, 422, 429):
+            self.assertFalse(fallible(code, False), code)
+        self.assertFalse(fallible(200, False))
+
+    def test_temp_zero_predicate(self):
+        from llmrx_client.proxy import _temp_zero
+        self.assertTrue(_temp_zero({}))
+        self.assertTrue(_temp_zero({"temperature": 0}))
+        self.assertTrue(_temp_zero({"temperature": 0.0}))
+        self.assertTrue(_temp_zero({"temperature": None}))
+        self.assertFalse(_temp_zero({"temperature": 0.7}))
+        self.assertFalse(_temp_zero({"temperature": 1}))
+        self.assertFalse(_temp_zero({"temperature": True}))  # bool not a number
+        self.assertFalse(_temp_zero({"temperature": "0"}))   # string not a number
+
+    def test_error_body_shapes(self):
+        from llmrx_client import proxy as p
+        for blob, code in ((p.ERR_UNREACHABLE, "client_upstream_unreachable"),
+                           (p.ERR_UNREACHABLE_CACHED,
+                            "client_upstream_unreachable"),
+                           (p.ERR_OVERLOADED, "client_overloaded"),
+                           (p.ERR_TOO_LARGE, "client_body_too_large")):
+            doc = json.loads(blob)
+            self.assertEqual(doc["error"]["code"], code)
+            self.assertTrue(doc["error"]["message"])
+
+    def test_method_error_has_no_code(self):
+        from llmrx_client.proxy import ERR_METHOD
+        doc = json.loads(ERR_METHOD)
+        self.assertIn("message", doc["error"])
+        self.assertEqual(doc["error"]["message"],
+                         "chat/completions requires POST")
+
+    def test_body_methods_include_delete(self):
+        from llmrx_client.proxy import BODY_METHODS
+        for m in ("POST", "PUT", "PATCH", "DELETE"):
+            self.assertIn(m, BODY_METHODS)
+
+    def test_make_server_rejects_bad_listen(self):
+        from llmrx_client.config import ConfigError
+        from llmrx_client.proxy import Proxy, make_server
+        from llmrx_client.usage import UsageBuffer
+
+        cfg = make_cfg(["http://s1"], listen="127.0.0.1")  # no port
+        proxy = Proxy(cfg, "t", buffer=UsageBuffer(10))
+        with self.assertRaises(ConfigError) as ctx:
+            make_server(cfg, proxy)
+        self.assertIn("must be host:port", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -124,7 +124,105 @@ class TestStatusPage(unittest.TestCase):
                 h.stop()
 
 
-from tests.helpers import chat_request  # noqa: E402
+class TestSameOriginMatrix(unittest.TestCase):
+    """P20 6.1: the CSRF predicate on its own, without a socket."""
+
+    class _H:
+        def __init__(self, headers):
+            self.headers = headers
+
+    def _check(self, host, origin=None, referer=None):
+        headers = {"Host": host}
+        if origin is not None:
+            headers["Origin"] = origin
+        if referer is not None:
+            headers["Referer"] = referer
+        return ui_mod._same_origin(self._H(headers))
+
+    def test_no_origin_no_referer_allowed(self):
+        self.assertTrue(self._check("127.0.0.1:3425"))
+
+    def test_same_origin_allowed(self):
+        self.assertTrue(self._check("127.0.0.1:3425",
+                                    origin="http://127.0.0.1:3425"))
+
+    def test_localhost_alias_allowed(self):
+        self.assertTrue(self._check("127.0.0.1:3425",
+                                    origin="http://localhost:3425"))
+        self.assertTrue(self._check("localhost:3425",
+                                    origin="http://127.0.0.1:3425"))
+
+    def test_foreign_origin_rejected(self):
+        self.assertFalse(self._check("127.0.0.1:3425",
+                                     origin="http://evil.example"))
+        self.assertFalse(self._check("127.0.0.1:3425",
+                                     origin="http://127.0.0.1:9999"))
+
+    def test_null_origin_rejected(self):
+        self.assertFalse(self._check("127.0.0.1:3425", origin="null"))
+
+    def test_referer_path_ignored(self):
+        self.assertTrue(self._check(
+            "127.0.0.1:3425",
+            referer="http://127.0.0.1:3425/ui?flash=x"))
+        self.assertFalse(self._check(
+            "127.0.0.1:3425", referer="http://evil.example/ui"))
+
+    def test_origin_wins_over_referer(self):
+        self.assertFalse(self._check("127.0.0.1:3425",
+                                     origin="http://evil.example",
+                                     referer="http://127.0.0.1:3425"))
+
+
+class TestDispatchRouting(unittest.TestCase):
+    """P20 6.1: dispatch() must map the three UI paths without a server."""
+
+    def _dispatch(self, path, command="GET"):
+        from unittest import mock as m
+
+        h = m.Mock()
+        h.path = path
+        h.command = command
+        with m.patch.object(ui_mod, "handle_purge") as purge, \
+             m.patch.object(ui_mod, "handle_settings") as settings, \
+             m.patch.object(ui_mod, "handle_ui") as index:
+            ui_mod.dispatch(h)
+        return {"purge": purge.called, "settings": settings.called,
+                "index": index.called}
+
+    def test_purge_route(self):
+        self.assertEqual(self._dispatch("/ui/cache/purge", "POST"),
+                         {"purge": True, "settings": False, "index": False})
+
+    def test_settings_route(self):
+        self.assertEqual(self._dispatch("/ui/settings", "POST"),
+                         {"purge": False, "settings": True, "index": False})
+
+    def test_index_route(self):
+        for path in ("/ui", "/ui/", "/ui/anything"):
+            self.assertEqual(self._dispatch(path),
+                             {"purge": False, "settings": False, "index": True})
+
+
+class TestHtmlEscape(unittest.TestCase):
+    def test_escapes_all_five(self):
+        self.assertEqual(ui_mod._html_escape('<a href="x">&y</a>'),
+                         '&lt;a href=&quot;x&quot;&gt;&amp;y&lt;/a&gt;')
+
+    def test_plain_text_unchanged(self):
+        self.assertEqual(ui_mod._html_escape("hello"), "hello")
+
+
+class TestPostToIndexRejected(unittest.TestCase):
+    def test_post_on_plain_ui_is_405(self):
+        with MockUpstream([(200, {}, b"{}")]) as up:
+            h = ClientHarness(make_cfg([up.url]))
+            try:
+                status, _, _ = h.request("POST", "/ui", b"")
+            finally:
+                h.stop()
+        self.assertEqual(status, 405)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -58,6 +58,56 @@ class TestUsageURL(unittest.TestCase):
     def test_no_servers_no_url(self):
         self.assertEqual(Config().usage_url(), "")
 
+    def test_trailing_slash_on_explicit_endpoint_kept(self):
+        cfg = Config(servers=["http://s1"], usage_endpoint="http://x/u/")
+        self.assertEqual(cfg.usage_url(), "http://x/u/")
+
+
+class TestFromDictTypeGuards(unittest.TestCase):
+    """P20 6.1: from_dict must survive a hostile/mistyped YAML file."""
+
+    def test_bool_never_becomes_int(self):
+        cfg = Config.from_dict({"usage_upload_sec": True,
+                                "cache_ttl_sec": False,
+                                "max_inflight": True})
+        self.assertEqual(cfg.usage_upload_sec, 0)  # untouched -> defaulted
+        self.assertEqual(cfg.cache_ttl_sec, 0)
+        self.assertEqual(cfg.max_inflight, 0)
+
+    def test_non_int_numbers_ignored(self):
+        cfg = Config.from_dict({"cache_ttl_sec": "3600",
+                                "max_inflight": [1]})
+        self.assertEqual(cfg.cache_ttl_sec, 0)
+        self.assertEqual(cfg.max_inflight, 0)
+
+    def test_non_list_servers_ignored(self):
+        cfg = Config.from_dict({"servers": "http://x"})
+        self.assertEqual(cfg.servers, [])
+
+    def test_non_string_fields_ignored(self):
+        cfg = Config.from_dict({"token": 42, "listen": ["x"],
+                                "client_name": {"a": 1}})
+        self.assertEqual(cfg.token, "")
+        self.assertEqual(cfg.listen, "")
+        self.assertEqual(cfg.client_name, "")
+
+    def test_cache_enabled_non_bool_ignored(self):
+        cfg = Config.from_dict({"cache_enabled": "yes"})
+        self.assertIs(cfg.cache_enabled, False)
+
+
+class TestFallbackMode(unittest.TestCase):
+    def test_invalid_mode_falls_back(self):
+        cfg = Config(fallback_mode="bogus")
+        self.assertEqual(cfg.fallback_mode_or_default(), "cache_then_fail")
+
+    def test_local_mode_accepted(self):
+        cfg = Config(fallback_mode="local")
+        self.assertEqual(cfg.fallback_mode_or_default(), "local")
+
+    def test_empty_mode_falls_back(self):
+        self.assertEqual(Config().fallback_mode_or_default(), "cache_then_fail")
+
 
 class TestApplyBundle(unittest.TestCase):
     def _cfg(self) -> Config:
@@ -159,6 +209,42 @@ class TestConfigFile(unittest.TestCase):
             with self.assertRaises(ConfigError) as ctx:
                 load_config(path)
             self.assertIn(f"parse {path}", str(ctx.exception))
+
+    def test_non_mapping_yaml_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "list.yml")
+            with open(path, "w") as fh:
+                fh.write("- a\n- b\n")
+            with self.assertRaises(ConfigError) as ctx:
+                load_config(path)
+            self.assertIn("expected a YAML mapping", str(ctx.exception))
+
+
+class TestListenValidation(unittest.TestCase):
+    """P20 6.1: `listen: 127.0.0.1` (host without a port) used to crash
+    make_server with a bare ValueError at startup."""
+
+    def test_host_without_port_is_rejected(self):
+        cfg = Config(servers=["http://s1"], listen="127.0.0.1")
+        with self.assertRaises(ConfigError) as ctx:
+            cfg.normalize()
+        self.assertIn("listen: '127.0.0.1' must be host:port", str(ctx.exception))
+
+    def test_non_numeric_port_rejected(self):
+        cfg = Config(servers=["http://s1"], listen="127.0.0.1:https")
+        with self.assertRaises(ConfigError) as ctx:
+            cfg.normalize()
+        self.assertIn("must be host:port", str(ctx.exception))
+
+    def test_bare_colon_host_defaults(self):
+        cfg = Config(servers=["http://s1"], listen=":9999")
+        cfg.normalize()
+        self.assertEqual(cfg.listen, "127.0.0.1:9999")
+
+    def test_valid_listen_kept(self):
+        cfg = Config(servers=["http://s1"], listen="0.0.0.0:8787")
+        cfg.normalize()
+        self.assertEqual(cfg.listen, "0.0.0.0:8787")
 
 
 if __name__ == "__main__":

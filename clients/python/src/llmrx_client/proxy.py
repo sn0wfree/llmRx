@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .breaker import Breaker
 from .cache import Entry, MemoryCache, TemperaturePositive, canonical_key
-from .config import Config
+from .config import Config, ConfigError
 from .upstream import ServerIndex, attempt_servers, copy_request_headers
 
 MAX_BODY = 32 << 20  # 32 MiB, matching io.LimitReader in the Go client
@@ -523,7 +523,15 @@ def make_server(cfg: Config, proxy: Proxy, ui_dispatch=None) -> ThreadingHTTPSer
         allow_reuse_address = True
 
     host, _, port = cfg.listen.rpartition(":")
-    server = Server((host or "127.0.0.1", int(port or 3425)), Handler)
+    try:
+        port_num = int(port or 3425)
+    except ValueError:
+        # normalize() rejects this first; this is the defensive backstop
+        # for a Config that skipped normalize (the enroll path).
+        from .config import ConfigError
+        raise ConfigError(
+            f"listen: {cfg.listen!r} must be host:port (e.g. 127.0.0.1:3425)")
+    server = Server((host or "127.0.0.1", port_num), Handler)
     server.proxy = proxy  # type: ignore[attr-defined]
     server.ui_dispatch = ui_dispatch  # type: ignore[attr-defined]
     return server
