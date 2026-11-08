@@ -321,6 +321,12 @@ type ChannelConfig struct {
 	OutputPrice    float64  `yaml:"output_price_per_1m"`
 	MaxFailures    int      `yaml:"max_failures"`
 	ResetTimeoutMs int      `yaml:"reset_timeout_ms"`
+	// P21 upstream plan quota (see model.PlanQuota). All zero = untracked.
+	PlanKind   string  `yaml:"plan_kind"`              // "code" | "token" | "" (badge)
+	PlanMetric string  `yaml:"plan_quota_metric"`      // tokens | prompt_tokens | usd
+	PlanLimit  float64 `yaml:"plan_quota_limit"`       // 0 = untracked
+	PlanWindow string  `yaml:"plan_quota_window"`      // monthly | daily | rolling
+	PlanHours  int     `yaml:"plan_quota_window_hours"` // for window=rolling (e.g. 5)
 }
 
 // ProviderConfig lets operators override built-in providers or add

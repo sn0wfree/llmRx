@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"sync/atomic"
+	"time"
 
 	"github.com/sn0wfree/llmRx/internal/intent"
 	"github.com/sn0wfree/llmRx/internal/model"
@@ -29,6 +30,8 @@ type RouterEngine struct {
 	extraChannels []func() []*model.Channel // BYOK hook (Phase 1.5 reserved)
 	trafficObs    atomic.Value               // holds []TrafficObserver; immutable once stored
 	latency       *latency.Tracker           // per-channel EWMA latency tracker
+	usage         UsageProvider              // P21 plan-quota tracker; nil disables the quota guard
+	quotaGuardOn  func() bool                // live toggle for the L2.5 guard; nil = always on
 }
 
 // TrafficObserver is the pluggable hook RouterEngine invokes on
@@ -143,6 +146,35 @@ func (e *RouterEngine) IntentBackend() string {
 		return "disabled"
 	}
 	return e.intent.Backend()
+}
+
+// UsageProvider answers the consumed fraction of a channel's upstream
+// plan quota window (0 when the channel is untracked). Implemented by
+// *usage.Tracker; declared as an interface so the router package
+// stays decoupled from the tracker's internals and tests can stub it.
+type UsageProvider interface {
+	UsageRatio(ch *model.Channel, now time.Time) float64
+}
+
+// SetUsageTracker wires the P21 plan-quota tracker. nil (the zero
+// state) disables the L2.5 quota guard and the quota_aware strategy's
+// usage input.
+func (e *RouterEngine) SetUsageTracker(u UsageProvider) {
+	e.usage = u
+	e.cost.SetUsageProvider(u)
+}
+
+// SetQuotaSoftThreshold updates the consumed-ratio line above which
+// the quota_aware strategy treats a channel as running low. Picked
+// up by the next route.
+func (e *RouterEngine) SetQuotaSoftThreshold(t float64) {
+	e.cost.SetQuotaSoftThreshold(t)
+}
+
+// SetQuotaGuardEnabledFn wires the live toggle for the L2.5 quota
+// guard (runtime quota_guard_enabled). nil means always on.
+func (e *RouterEngine) SetQuotaGuardEnabledFn(fn func() bool) {
+	e.quotaGuardOn = fn
 }
 
 // ReloadChannel picks up new circuit-breaker settings after the

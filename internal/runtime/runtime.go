@@ -33,6 +33,13 @@ type Defaults struct {
 	maxRetries        int64
 	retryBaseDelayMs  int64
 
+	// quotaGuard (P21): 1 = the router's quota guard drops
+	// quota-exhausted channels from the candidate set; 0 = disabled.
+	quotaGuard int64
+	// quotaSoftBits is the usage ratio above which the quota_aware
+	// strategy penalises a channel (float64 via uint64 bits).
+	quotaSoftBits uint64
+
 	costStrategy atomic.Value // string
 	// retentionMode is the logstore retention action: "delete" or
 	// "archive". "archive" keeps old log files on disk compressed
@@ -57,7 +64,47 @@ func New() *Defaults {
 	d.SetMarkupRatio(1.0)
 	d.SetCostStrategy("cheapest")
 	d.SetLogRetentionMode("delete")
+	d.SetQuotaGuardEnabled(true)
+	d.SetQuotaSoftThreshold(0.8)
 	return d
+}
+
+// ---- Quota guard (P21) ----
+
+// QuotaGuardEnabled reports whether the router's quota guard (L2.5)
+// drops channels whose upstream plan quota window is exhausted from
+// the candidate set (unless nothing else can serve the model).
+// Default true.
+func (d *Defaults) QuotaGuardEnabled() bool {
+	return atomic.LoadInt64(&d.quotaGuard) == 1
+}
+
+// SetQuotaGuardEnabled toggles the guard.
+func (d *Defaults) SetQuotaGuardEnabled(on bool) {
+	v := int64(0)
+	if on {
+		v = 1
+	}
+	atomic.StoreInt64(&d.quotaGuard, v)
+}
+
+// QuotaSoftThreshold returns the usage ratio above which the
+// quota_aware cost strategy starts deprioritising a channel.
+// Default 0.8.
+func (d *Defaults) QuotaSoftThreshold() float64 {
+	return math.Float64frombits(atomic.LoadUint64(&d.quotaSoftBits))
+}
+
+// SetQuotaSoftThreshold updates the soft line; values <= 0 floor to
+// the 0.8 default, values >= 1 disable the soft penalty entirely.
+func (d *Defaults) SetQuotaSoftThreshold(t float64) {
+	if t <= 0 {
+		t = 0.8
+	}
+	if t >= 1 {
+		t = 1.0
+	}
+	atomic.StoreUint64(&d.quotaSoftBits, math.Float64bits(t))
 }
 
 // ---- MarkupRatio (float64, atomic via uint64 bits) ----
@@ -404,6 +451,10 @@ type Snapshot struct {
 	RequestTimeoutSec  int64   `json:"request_timeout_sec"`
 	MaxRetries         int64   `json:"max_retries"`
 	RetryBaseDelayMs   int64   `json:"retry_base_delay_ms"`
+	// P21 quota guard. QuotaGuard is a pointer so pre-P21 snapshots
+	// (field absent → nil) keep the default instead of reading as "off".
+	QuotaGuard         *int64  `json:"quota_guard,omitempty"` // 1 = on, 0 = off
+	QuotaSoftThreshold float64 `json:"quota_soft_threshold"`  // 0 = keep default
 }
 
 // Snapshot returns the current effective values. Safe to call
@@ -424,7 +475,17 @@ func (d *Defaults) Snapshot() Snapshot {
 		RequestTimeoutSec:  d.RequestTimeoutSec(),
 		MaxRetries:         d.MaxRetries(),
 		RetryBaseDelayMs:   d.RetryBaseDelayMs(),
+		QuotaGuard:         boolToInt64Ptr(d.QuotaGuardEnabled()),
+		QuotaSoftThreshold: d.QuotaSoftThreshold(),
 	}
+}
+
+func boolToInt64Ptr(b bool) *int64 {
+	v := int64(0)
+	if b {
+		v = 1
+	}
+	return &v
 }
 
 // Apply replaces every tunable with the values from s. Used at
@@ -461,6 +522,12 @@ func (d *Defaults) Apply(s Snapshot) {
 	d.SetRequestTimeoutSec(s.RequestTimeoutSec)
 	d.SetMaxRetries(s.MaxRetries)
 	d.SetRetryBaseDelayMs(s.RetryBaseDelayMs)
+	if s.QuotaGuard != nil {
+		d.SetQuotaGuardEnabled(*s.QuotaGuard == 1)
+	}
+	if s.QuotaSoftThreshold > 0 {
+		d.SetQuotaSoftThreshold(s.QuotaSoftThreshold)
+	}
 }
 
 // Marshal returns the JSON representation of the current snapshot.

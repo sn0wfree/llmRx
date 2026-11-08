@@ -270,12 +270,104 @@ func (s CostLatencyBlendStrategy) Sort(channels []*model.Channel) []*model.Chann
 	return result
 }
 
-func strategyFromName(name model.CostStrategy, lp LatencyProvider) CostStrategy {
+// QuotaAwareStrategy ranks candidates by a blend of price, EWMA
+// latency, and remaining upstream plan quota (P21). Flat-rate plan
+// channels with quota left win; channels past the soft threshold sink
+// as they burn down; exhausted ones rank last (the L2.5 guard
+// normally drops them before this point). Untracked channels carry a
+// neutral 0.5 pressure so they neither always win nor always lose.
+//
+// Weights: 0.45 price + 0.25 latency + 0.30 quota pressure — the
+// quota term dominates ties between similarly-priced channels while
+// still respecting cost.
+type QuotaAwareStrategy struct {
+	Provider UsageProvider
+	// Latency supplies per-channel EWMA latency; nil disables the
+	// latency term.
+	Latency LatencyProvider
+	// SoftThreshold is the consumed ratio above which a channel is
+	// considered "running low". 0 falls back to the 0.8 default.
+	SoftThreshold float64
+}
+
+func (QuotaAwareStrategy) Name() string { return string(model.StrategyQuotaAware) }
+
+// Sort ranks channels by blended score ascending (lower = better).
+// Stable for equal scores (preserves input order).
+func (s QuotaAwareStrategy) Sort(channels []*model.Channel) []*model.Channel {
+	if len(channels) <= 1 {
+		return channels
+	}
+	now := time.Now()
+	soft := s.SoftThreshold
+	if soft <= 0 {
+		soft = 0.8
+	}
+	maxPrice, maxLat := 0.0, 0.0
+	for _, ch := range channels {
+		if p := totalPrice(ch); p > maxPrice {
+			maxPrice = p
+		}
+		if s.Latency != nil {
+			if l := s.Latency.LatencyMS(ch.ID); l > maxLat {
+				maxLat = l
+			}
+		}
+	}
+	type scored struct {
+		ch    *model.Channel
+		score float64
+	}
+	out := make([]scored, len(channels))
+	for i, ch := range channels {
+		priceNorm := 0.0
+		if maxPrice > 0 {
+			priceNorm = totalPrice(ch) / maxPrice
+		}
+		latNorm := 0.0
+		if s.Latency != nil && maxLat > 0 {
+			latNorm = s.Latency.LatencyMS(ch.ID) / maxLat
+		}
+		// Quota pressure: consumed fraction clamped to [0,1]; a
+		// channel with no configured quota is neutral. Past the soft
+		// line the slope doubles so a low-quota channel loses to an
+		// equal-priced alternative with quota left.
+		pressure := 0.5
+		if ch.PlanQuota.Tracked() && s.Provider != nil {
+			pressure = s.Provider.UsageRatio(ch, now)
+			if pressure < 0 {
+				pressure = 0
+			}
+			if pressure > 1 {
+				pressure = 1
+			}
+			if pressure > soft {
+				pressure = soft + (pressure-soft)*2
+				if pressure > 1.5 {
+					pressure = 1.5
+				}
+			}
+		}
+		out[i] = scored{ch: ch, score: 0.45*priceNorm + 0.25*latNorm + 0.30*pressure}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].score < out[j].score
+	})
+	result := make([]*model.Channel, len(out))
+	for i, sc := range out {
+		result[i] = sc.ch
+	}
+	return result
+}
+
+func strategyFromName(name model.CostStrategy, lp LatencyProvider, up UsageProvider) CostStrategy {
 	switch name {
 	case model.StrategyLatency:
 		return LatencyStrategy{Provider: lp}
 	case model.StrategyCostLatency:
 		return CostLatencyBlendStrategy{Provider: lp}
+	case model.StrategyQuotaAware:
+		return QuotaAwareStrategy{Provider: up, Latency: lp}
 	}
 	if s, ok := strategyMap[name]; ok {
 		return s
@@ -285,9 +377,10 @@ func strategyFromName(name model.CostStrategy, lp LatencyProvider) CostStrategy 
 
 // strategyFromNameWeights is like strategyFromName but also
 // carries the configured blend weights for the
-// cost_latency_blend strategy. Used by CostRouter.SetStrategy
-// so config (latency_routing.cost_weight) reaches the strategy.
-func strategyFromNameWeights(name model.CostStrategy, lp LatencyProvider, costW, latW float64) CostStrategy {
+// cost_latency_blend strategy and the soft threshold for
+// quota_aware. Used by CostRouter.SetStrategy so runtime config
+// reaches the strategy.
+func strategyFromNameWeights(name model.CostStrategy, lp LatencyProvider, up UsageProvider, costW, latW, quotaSoft float64) CostStrategy {
 	switch name {
 	case model.StrategyCostLatency:
 		return CostLatencyBlendStrategy{
@@ -295,6 +388,8 @@ func strategyFromNameWeights(name model.CostStrategy, lp LatencyProvider, costW,
 			CostWeight:    costW,
 			LatencyWeight: latW,
 		}
+	case model.StrategyQuotaAware:
+		return QuotaAwareStrategy{Provider: up, SoftThreshold: quotaSoft}
 	}
-	return strategyFromName(name, lp)
+	return strategyFromName(name, lp, up)
 }

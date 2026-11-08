@@ -624,6 +624,73 @@ func (d *SQLiteDriver) QueryAcross(filter QueryFilter, days []string) ([]model.L
 		cap = remaining
 	}
 	out := make([]model.Log, 0, cap)
+	if err := streamLogRows(rows, func(l *model.Log) bool {
+		out = append(out, *l)
+		return true
+	}); err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
+}
+
+// ScanSince streams rows with CreatedAt >= since to fn, one day file
+// at a time in ascending (date, seq) order. Files whose date is before
+// since's date are skipped without opening. Each file is opened
+// read-only and closed before the next — no ATTACH machinery, the
+// caller stops early via fn.
+func (d *SQLiteDriver) ScanSince(since time.Time, fn func(*model.Log) bool) error {
+	days, err := d.ListFiles()
+	if err != nil {
+		return err
+	}
+	sinceDay := since.UTC().Format("2006-01-02")
+	for _, day := range sortByDateSeq(days) {
+		if extractDate(day) < sinceDay {
+			continue
+		}
+		conn, err := sql.Open("sqlite3", filepath.Join(d.dir, day+".db")+"?_busy_timeout=5000")
+		if err != nil {
+			return fmt.Errorf("logstore: scan-since open %s: %w", day, err)
+		}
+		rows, err := conn.Query(`SELECT `+logRowCols+` FROM logs WHERE created_at >= ? ORDER BY created_at ASC, id ASC`, since.Unix())
+		if err != nil {
+			_ = conn.Close()
+			return fmt.Errorf("logstore: scan-since query %s: %w", day, err)
+		}
+		stop := false
+		scanErr := streamLogRows(rows, func(e *model.Log) bool {
+			if stop || e.CreatedAt.Before(since) {
+				return false
+			}
+			if !fn(e) {
+				stop = true
+				return false
+			}
+			return true
+		})
+		_ = rows.Close()
+		_ = conn.Close()
+		if scanErr != nil {
+			return fmt.Errorf("logstore: scan-since %s: %w", day, scanErr)
+		}
+		if stop {
+			return nil
+		}
+	}
+	return nil
+}
+
+// logRowCols is the SELECT list for reading a logs row into a
+// model.Log. It must stay in lockstep with streamLogRows — a mismatch
+// is a runtime scan error, not a compile error.
+const logRowCols = "id, token_id, channel_id, key_id, model, prompt_tokens, " +
+	"completion_tokens, cached_tokens, reasoning_tokens, cache_hit, " +
+	"real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, " +
+	"request_ip, endpoint, units, created_at"
+
+// streamLogRows scans *sql.Rows shaped like logRowCols into fn.
+// fn returns false to stop.
+func streamLogRows(rows *sql.Rows, fn func(*model.Log) bool) error {
 	for rows.Next() {
 		var l model.Log
 		var created int64
@@ -633,13 +700,15 @@ func (d *SQLiteDriver) QueryAcross(filter QueryFilter, days []string) ([]model.L
 			&l.ReasoningTokens, &cacheHit,
 			&l.RealCostUSD, &l.BilledCostUSD, &l.DurationMs, &l.StatusCode,
 			&l.RouterPath, &l.RequestIP, &l.Endpoint, &l.Units, &created); err != nil {
-			return nil, 0, err
+			return err
 		}
 		l.CacheHit = cacheHit != 0
 		l.CreatedAt = time.Unix(created, 0).UTC()
-		out = append(out, l)
+		if !fn(&l) {
+			return nil
+		}
 	}
-	return out, total, rows.Err()
+	return rows.Err()
 }
 
 // migrateDayFileSchema opens a day file and applies ensureLogSchema

@@ -1,0 +1,261 @@
+{{define "monitoring_body"}}<div class="mb-6 flex justify-between items-end">
+  <div>
+    <h1 class="text-2xl font-bold text-gray-900">用量监控</h1>
+    <p class="mt-1 text-sm text-gray-500">各渠道 token 使用与套餐配额 · {{$qg := .QuotaGuardNote}}{{$qg}}</p>
+  </div>
+  <div class="flex gap-1 text-sm">
+    {{$r := or .Range ""}}
+    <a href="/admin/monitoring?range=24h" class="px-3 py-1.5 rounded-md {{if eq $r "24h"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">24h</a>
+    <a href="/admin/monitoring?range=7d" class="px-3 py-1.5 rounded-md {{if eq $r "7d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">7d</a>
+    <a href="/admin/monitoring?range=30d" class="px-3 py-1.5 rounded-md {{if eq $r "30d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">30d</a>
+  </div>
+</div>
+
+{{$t := .Totals}}
+<div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
+  <div class="bg-white rounded-lg shadow p-5">
+    <div class="text-sm font-medium text-gray-500">请求</div>
+    <div class="mt-2 text-3xl font-bold text-gray-900">{{$t.Requests}}</div>
+  </div>
+  <div class="bg-white rounded-lg shadow p-5">
+    <div class="text-sm font-medium text-gray-500">Prompt Tokens</div>
+    <div class="mt-2 text-3xl font-bold text-gray-900">{{$t.PromptTokens}}</div>
+    <div class="text-xs text-gray-400">cached: {{$t.CachedTokens}}</div>
+  </div>
+  <div class="bg-white rounded-lg shadow p-5">
+    <div class="text-sm font-medium text-gray-500">Completion Tokens</div>
+    <div class="mt-2 text-3xl font-bold text-gray-900">{{$t.CompletionTokens}}</div>
+  </div>
+  <div class="bg-white rounded-lg shadow p-5">
+    <div class="text-sm font-medium text-gray-500">成本 (实付/结算)</div>
+    <div class="mt-2 text-3xl font-bold text-gray-900">${{printf "%.4f" $t.RealCostUSD}}</div>
+    <div class="text-xs text-gray-400">结算: ${{printf "%.4f" $t.BilledCostUSD}}</div>
+  </div>
+  <div class="bg-white rounded-lg shadow p-5">
+    <div class="text-sm font-medium text-gray-500">错误率</div>
+    <div class="mt-2 text-3xl font-bold {{if gt $t.ErrorRate 0.05}}text-red-600{{else}}text-gray-900{{end}}">{{printf "%.1f%%" (mul100 $t.ErrorRate)}}</div>
+  </div>
+</div>
+
+<div class="bg-white rounded-lg shadow p-5 mb-6">
+  <h2 class="text-lg font-medium text-gray-900 mb-3">渠道用量明细</h2>
+  <div class="overflow-x-auto">
+  <table class="min-w-full text-sm" id="usage-table">
+    <thead>
+      <tr class="text-xs text-gray-500 text-left">
+        <th class="py-2">渠道</th>
+        <th class="text-right">请求</th>
+        <th class="text-right">Prompt</th>
+        <th class="text-right">Completion</th>
+        <th class="text-right">Cached</th>
+        <th class="text-right">Reasoning</th>
+        <th class="text-right">实付 $</th>
+        <th class="text-right">结算 $</th>
+        <th class="text-right">错误率</th>
+        <th class="text-left pl-4">套餐配额</th>
+        <th class="text-left pl-4">余额</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Rows}}
+      <tr class="border-t align-top">
+        <td class="py-2">
+          <a href="/admin/channels/{{.ID}}/keys" class="font-medium text-gray-900 hover:text-blue-700">{{.Name}}</a>
+          {{if not .Enabled}}<span class="ml-1 text-xs text-gray-400">(停用)</span>{{end}}
+          {{if eq .PlanKind "code"}}<span class="ml-1 px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 text-xs">code plan</span>{{end}}
+          {{if eq .PlanKind "token"}}<span class="ml-1 px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 text-xs">token plan</span>{{end}}
+        </td>
+        <td class="text-right">{{.Requests}}</td>
+        <td class="text-right">{{.PromptTokens}}</td>
+        <td class="text-right">{{.CompletionTokens}}</td>
+        <td class="text-right text-gray-500">{{.CachedTokens}}</td>
+        <td class="text-right text-gray-500">{{.ReasoningTokens}}</td>
+        <td class="text-right">${{printf "%.4f" .RealCostUSD}}</td>
+        <td class="text-right">${{printf "%.4f" .BilledCostUSD}}</td>
+        <td class="text-right {{if gt .ErrorRate 0.05}}text-red-600{{end}}">{{printf "%.1f%%" (mul100 .ErrorRate)}}</td>
+        <td class="pl-4 min-w-[180px]">
+          {{if .Quota}}
+          {{$q := .Quota}}{{$qc := .QuotaCfg}}
+          <div class="flex items-center gap-2">
+            <div class="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+              <div class="h-full rounded-full {{if ge $q.Ratio 1.0}}bg-red-500{{else if ge $q.Ratio 0.8}}bg-amber-500{{else}}bg-green-500{{end}}" style="width: {{min100 $q.Ratio}}%"></div>
+            </div>
+            <span class="text-xs {{if ge $q.Ratio 1.0}}text-red-600 font-semibold{{else if ge $q.Ratio 0.8}}text-amber-600{{else}}text-gray-500{{end}}">{{printf "%.0f%%" (mul100 $q.Ratio)}}</span>
+          </div>
+          <div class="text-xs text-gray-400 mt-0.5">
+            {{fmtQuotaUsed $qc.Metric $q.Used}} / {{fmtQuotaUsed $qc.Metric $q.Limit}} · {{fmtWindow $qc.Window $qc.WindowHours}}
+            {{if not $q.ResetAt.IsZero}} · 重置于 {{$q.ResetAt.Format "01-02 15:04 UTC"}}{{end}}
+          </div>
+          {{else}}<span class="text-xs text-gray-300">未配置</span>{{end}}
+        </td>
+        <td class="pl-4 text-gray-500">
+          {{if .Balance}}<span title="快照时间见通道页">{{.Balance}} {{.BalanceCurrency}}</span>
+          {{else}}<span class="text-xs text-gray-300">—</span>{{end}}
+        </td>
+      </tr>
+      {{else}}
+      <tr><td colspan="11" class="py-4 text-center text-gray-400">暂无渠道</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+  </div>
+  <p class="mt-3 text-xs text-gray-400">配额进度为进程内实时计数（滚动窗口 / 日 / 月），重启后从用量日志恢复。≥80% 转黄并在 quota_aware 策略下降权；≥100% 转红且被路由剔除（除非无其他可选渠道）。</p>
+</div>
+
+<div class="bg-white rounded-lg shadow p-5 mb-6">
+  <h2 class="text-lg font-medium text-gray-900 mb-3">{{if .Hourly}}24h 逐小时{{else}}逐日{{end}} Token 趋势（按渠道堆叠）</h2>
+  {{if gt (len .SeriesJSON) 4}}
+  <canvas id="usageChart" data-series="{{.SeriesJSON}}" class="w-full" height="260"></canvas>
+  <div id="chart-legend" class="flex flex-wrap gap-3 mt-3 text-xs text-gray-500"></div>
+  {{else}}
+  <p class="text-sm text-gray-400 py-8 text-center">当前范围暂无数据</p>
+  {{end}}
+</div>
+
+<div class="bg-white rounded-lg shadow p-5">
+  <h2 class="text-lg font-medium text-gray-900 mb-1">下游 Plan 预算</h2>
+  <p class="text-xs text-gray-400 mb-3">llmRx 面向调用方的预算套餐（终身累计，无周期重置）</p>
+  {{if .Plans}}
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+    {{range .Plans}}
+    <div class="border border-gray-100 rounded-lg p-4">
+      <div class="flex justify-between items-baseline">
+        <div class="font-medium text-gray-900">{{.Name}}</div>
+        <div class="text-xs text-gray-400">{{.Tokens}} tokens 绑定</div>
+      </div>
+      {{if gt .BudgetUSD 0.0}}
+      <div class="mt-2 h-2 bg-gray-100 rounded-full overflow-hidden">
+        <div class="h-full rounded-full {{if ge .UsageRatio 1.0}}bg-red-500{{else if ge .UsageRatio 0.8}}bg-amber-500{{else}}bg-green-500{{end}}" style="width: {{min100 .UsageRatio}}%"></div>
+      </div>
+      <div class="mt-1 text-xs text-gray-500">${{printf "%.2f" .UsedUSD}} / ${{printf "%.2f" .BudgetUSD}} · {{printf "%.0f%%" (mul100 .UsageRatio)}}</div>
+      {{else}}
+      <div class="mt-2 text-xs text-gray-400">未设预算上限 · 已用 ${{printf "%.2f" .UsedUSD}}</div>
+      {{end}}
+    </div>
+    {{end}}
+  </div>
+  {{else}}
+  <p class="text-sm text-gray-400 py-4 text-center">暂无 Plan</p>
+  {{end}}
+</div>
+
+<script>
+(function() {
+  var canvas = document.getElementById('usageChart');
+  if (!canvas) return;
+  var raw = canvas.getAttribute('data-series');
+  if (!raw || raw.length < 4) return;
+  var seriesList;
+  try { seriesList = JSON.parse(raw); } catch(e) { return; }
+  if (!seriesList || seriesList.length === 0) return;
+
+  // Collect the union of bucket labels (they are already sorted per
+  // channel; merge-preserving order across channels).
+  var buckets = [];
+  var seen = {};
+  seriesList.forEach(function(s) {
+    s.points.forEach(function(p) {
+      if (!seen[p.bucket]) { seen[p.bucket] = true; buckets.push(p.bucket); }
+    });
+  });
+  buckets.sort();
+  var tokenOf = {}, costOf = {};
+  seriesList.forEach(function(s) {
+    tokenOf[s.channel_id] = {}; costOf[s.channel_id] = {};
+    s.points.forEach(function(p) {
+      tokenOf[s.channel_id][p.bucket] = p.tokens;
+      costOf[s.channel_id][p.bucket] = p.cost;
+    });
+  });
+
+  var ctx = canvas.getContext('2d');
+  var parent = canvas.parentElement;
+  function size() { canvas.width = parent.clientWidth || 800; canvas.height = 260; }
+  size();
+
+  var COLORS = ['#3b82f6','#22c55e','#f59e0b','#8b5cf6','#ef4444','#06b6d4','#ec4899','#84cc16','#f97316','#6366f1'];
+  function color(i) { return COLORS[i % COLORS.length]; }
+
+  var pad = { top: 20, bottom: 30, left: 60, right: 70 };
+  var W, H, plotW, plotH;
+  function layout() {
+    W = canvas.width; H = canvas.height;
+    plotW = W - pad.left - pad.right;
+    plotH = H - pad.top - pad.bottom;
+  }
+  layout();
+
+  var maxTok = 1;
+  seriesList.forEach(function(s) {
+    s.points.forEach(function(p) { if (p.tokens > maxTok) maxTok = p.tokens; });
+  });
+
+  function xPos(i) { return pad.left + (i / (buckets.length - 1 || 1)) * plotW; }
+  function yTok(v) { return pad.top + plotH - (v / maxTok) * plotH; }
+
+  var legendEl = document.getElementById('chart-legend');
+  var show = {};
+  seriesList.forEach(function(s, i) {
+    show[s.channel_id] = true;
+    if (!legendEl) return;
+    var label = document.createElement('label');
+    label.className = 'flex items-center gap-1';
+    label.innerHTML = '<input type="checkbox" class="rounded" checked data-ch="' + s.channel_id + '"> ' +
+      '<span style="color:' + color(i) + '">■</span> ' + (s.name || ('#' + s.channel_id));
+    legendEl.appendChild(label);
+  });
+  if (legendEl) {
+    legendEl.querySelectorAll('input').forEach(function(cb) {
+      cb.addEventListener('change', drawChart);
+    });
+  }
+
+  function drawChart() {
+    ctx.clearRect(0, 0, W, H);
+    ctx.strokeStyle = '#e5e7eb';
+    ctx.lineWidth = 1;
+    for (var y = 0; y <= 4; y++) {
+      var yy = pad.top + (y / 4) * plotH;
+      ctx.beginPath(); ctx.moveTo(pad.left, yy); ctx.lineTo(W - pad.right, yy); ctx.stroke();
+    }
+
+    seriesList.forEach(function(s, si) {
+      if (legendEl) {
+        var cb = legendEl.querySelector('input[data-ch="' + s.channel_id + '"]');
+        if (cb && !cb.checked) return;
+      }
+      ctx.beginPath();
+      var started = false;
+      buckets.forEach(function(b, i) {
+        var v = tokenOf[s.channel_id][b];
+        if (v === undefined) return;
+        var x = xPos(i), y = yTok(v);
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else ctx.lineTo(x, y);
+      });
+      ctx.strokeStyle = color(si);
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    });
+
+    ctx.fillStyle = '#6b7280';
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'center';
+    var steps = Math.min(buckets.length, 8);
+    var step = Math.max(1, Math.floor((buckets.length - 1) / (steps - 1 || 1)));
+    for (var i = 0; i < buckets.length; i += step) {
+      var label = buckets[i];
+      if (label.length > 10) {
+        var d = new Date(label.replace('Z', ':00Z'));
+        if (!isNaN(d)) label = (d.getMonth()+1) + '/' + d.getDate() + ' ' + d.getHours() + ':00';
+      }
+      ctx.fillText(label, xPos(i), H - 5);
+    }
+    ctx.textAlign = 'right';
+    ctx.fillText('tokens', W - 5, pad.top + 14);
+  }
+
+  drawChart();
+  window.addEventListener('resize', function() { size(); layout(); drawChart(); });
+})();
+</script>{{end}}

@@ -33,6 +33,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/sse"
 	"github.com/sn0wfree/llmRx/internal/store"
 	"github.com/sn0wfree/llmRx/internal/tokencache"
+	"github.com/sn0wfree/llmRx/internal/usage"
 )
 
 type Handler struct {
@@ -70,6 +71,10 @@ type Handler struct {
 	// handler via SetModelCosts so admin edits reload the live cache.
 	// nil renders the model-costs endpoints read-only.
 	modelCosts *modelcost.Cache
+	// usageTrk is the P21 per-channel plan-quota tracker (shared with
+	// the api emitter). nil renders the usage endpoints without live
+	// quota gauges.
+	usageTrk *usage.Tracker
 }
 
 // SessionCounter is the narrow slice of the session store the admin
@@ -103,6 +108,10 @@ func (h *Handler) SetAutoStats(s *auto.Stats) { h.autoStats = s }
 // SetModelCosts wires the shared rate-card cache (owned by the api
 // handler) so admin edits can reload it.
 func (h *Handler) SetModelCosts(c *modelcost.Cache) { h.modelCosts = c }
+
+// SetUsageTracker wires the P21 plan-quota tracker (shared with the
+// api emitter) into the usage endpoints. nil hides quota gauges.
+func (h *Handler) SetUsageTracker(t *usage.Tracker) { h.usageTrk = t }
 
 // SetSessions wires the session-affinity pin store into the state
 // endpoint (session count). nil hides the block.
@@ -212,6 +221,10 @@ func (h *Handler) Routes() http.Handler {
 		r.Get("/analytics/by-model", h.AnalyticsByModel)
 		r.Get("/analytics/by-channel", h.AnalyticsByChannel)
 		r.Get("/analytics/by-token", h.AnalyticsByToken)
+		// P21 usage monitoring.
+		r.Get("/usage/overview", h.UsageOverview)
+		r.Get("/usage/timeseries", h.UsageTimeseries)
+		r.Get("/usage/plans", h.UsagePlans)
 		r.Get("/plans", h.ListPlans)
 		r.Post("/plans", h.CreatePlan)
 		r.Get("/plans/{id}", h.GetPlan)
@@ -468,6 +481,10 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 	if ch.Status == 0 {
 		ch.Status = model.ChannelEnabled
 	}
+	if err := ch.PlanQuota.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := h.store.CreateChannel(&ch); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -509,6 +526,9 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 		// balance endpoint for relays.
 		BalanceThreshold *float64 `json:"balance_threshold"`
 		BalanceURL       *string  `json:"balance_url"`
+		// P21: upstream plan quota. A full object replaces the stored
+		// one (send {} to stop tracking).
+		PlanQuota *model.PlanQuota `json:"plan_quota"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
@@ -571,6 +591,13 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	if patch.BalanceURL != nil {
 		cur.BalanceURL = strings.TrimSpace(*patch.BalanceURL)
+	}
+	if patch.PlanQuota != nil {
+		if err := patch.PlanQuota.Validate(); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		cur.PlanQuota = *patch.PlanQuota
 	}
 	if err := h.store.UpdateChannel(cur); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -1468,6 +1495,8 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 		"stream_max_body_bytes":    h.rt.StreamMaxBodyBytes(),
 		"max_log_subscribers":      h.rt.MaxLogSubscribers(),
 		"log_level":                h.rt.LogLevel(),
+		"quota_guard_enabled":      h.rt.QuotaGuardEnabled(),
+		"quota_soft_threshold":     h.rt.QuotaSoftThreshold(),
 	})
 }
 
@@ -1484,6 +1513,9 @@ func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		StreamMaxBodyBytes    *int64   `json:"stream_max_body_bytes,omitempty"`
 		MaxLogSubscribers     *int64   `json:"max_log_subscribers,omitempty"`
 		LogLevel              *int64   `json:"log_level,omitempty"`
+		// P21 quota guard.
+		QuotaGuardEnabled   *bool    `json:"quota_guard_enabled,omitempty"`
+		QuotaSoftThreshold  *float64 `json:"quota_soft_threshold,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
@@ -1491,14 +1523,14 @@ func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.CostStrategy != nil {
 		switch *body.CostStrategy {
-		case "cheapest", "fastest", "balanced":
+		case "cheapest", "fastest", "balanced", "weighted_random", "latency", "cost_latency_blend", "quota_aware":
 			h.router.SetStrategy(model.CostStrategy(*body.CostStrategy))
 			h.rt.SetCostStrategy(*body.CostStrategy)
 		case "":
 			h.router.SetStrategy(model.StrategyCheapest)
 			h.rt.SetCostStrategy("cheapest")
 		default:
-			writeErr(w, http.StatusBadRequest, "cost_strategy must be cheapest|fastest|balanced")
+			writeErr(w, http.StatusBadRequest, "cost_strategy must be cheapest|fastest|balanced|weighted_random|latency|cost_latency_blend|quota_aware")
 			return
 		}
 	}
@@ -1582,6 +1614,17 @@ func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		// (log_level runtime filter). For now the value is
 		// persisted; integration with the logger is the next
 		// step.
+	}
+	if body.QuotaGuardEnabled != nil {
+		h.rt.SetQuotaGuardEnabled(*body.QuotaGuardEnabled)
+	}
+	if body.QuotaSoftThreshold != nil {
+		if *body.QuotaSoftThreshold <= 0 || *body.QuotaSoftThreshold > 1 {
+			writeErr(w, http.StatusBadRequest, "quota_soft_threshold must be in (0..1]")
+			return
+		}
+		h.rt.SetQuotaSoftThreshold(*body.QuotaSoftThreshold)
+		h.router.SetQuotaSoftThreshold(*body.QuotaSoftThreshold)
 	}
 	// Persist the resulting snapshot to the runtime_settings table
 	// so the changes survive restarts. Failure to persist is

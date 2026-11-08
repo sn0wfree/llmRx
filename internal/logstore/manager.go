@@ -199,6 +199,31 @@ func (m *Manager) TopByField(filter QueryFilter, field string, limit int, days [
 	return m.driver.TopByField(filter, field, limit, days)
 }
 
+// ScanSince streams rows created at or after since to fn (see
+// Driver.ScanSince). The async batch queue is flushed first so a
+// recovery replay cannot miss rows still sitting in the writer.
+func (m *Manager) ScanSince(since time.Time, fn func(*model.Log) bool) error {
+	m.Flush()
+	return m.driver.ScanSince(since, fn)
+}
+
+// ErrDailyChannelStatsUnavailable is returned by DailyChannelStats on
+// backends without per-file meta rollups (SQLite legacy, Postgres).
+// Callers fall back to a ScanSince aggregation.
+var ErrDailyChannelStatsUnavailable = errors.New("logstore: daily channel stats need the JSONL backend")
+
+// DailyChannelStats returns per-(day, channel) rollups for the given
+// day keys (nil = every known file) from the meta rollups. Only the
+// JSONL backend answers; others return ErrDailyChannelStatsUnavailable.
+func (m *Manager) DailyChannelStats(days []string) ([]DailyChannelStat, error) {
+	if ds, ok := m.driver.(interface {
+		dailyChannelStats(days []string) ([]DailyChannelStat, error)
+	}); ok {
+		return ds.dailyChannelStats(days)
+	}
+	return nil, ErrDailyChannelStatsUnavailable
+}
+
 // ListFiles returns all current log file basenames.
 func (m *Manager) ListFiles() ([]string, error) {
 	return m.driver.ListFiles()

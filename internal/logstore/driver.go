@@ -59,6 +59,14 @@ type Driver interface {
 	// top `limit` groups by row count.
 	TopByField(filter QueryFilter, field string, limit int, days []string) ([]NamedMetric, error)
 
+	// ScanSince streams every row with CreatedAt >= since to fn, in
+	// ascending file order. fn returns false to stop early. Unlike
+	// QueryAcross there is no top-K window: the caller sees every
+	// matching row. Used by startup recovery replays (P21 usage
+	// tracker seeding) where aggregate primitives lose the per-row
+	// token split.
+	ScanSince(since time.Time, fn func(*model.Log) bool) error
+
 	// ListFiles returns all current log file identifiers (the
 	// "YYYY-MM-DD" or "YYYY-MM-DD-N" basename without the .db
 	// extension), sorted ascending.
@@ -131,6 +139,22 @@ type NamedMetric struct {
 	Cost        float64 `json:"cost"`
 	RealCost    float64 `json:"real_cost_usd,omitempty"`
 	ChannelName string  `json:"channel_name,omitempty"`
+}
+
+// DailyChannelStat is one (day, channel) rollup row for the P21
+// monitoring page: per-channel daily token/cost/error totals served
+// straight from the JSONL meta rollups with no row scan.
+type DailyChannelStat struct {
+	Day              string  `json:"day"`
+	ChannelID        int64   `json:"channel_id"`
+	Requests         int64   `json:"requests"`
+	PromptTokens     int64   `json:"prompt_tokens"`
+	CompletionTokens int64   `json:"completion_tokens"`
+	CachedTokens     int64   `json:"cached_tokens"`
+	ReasoningTokens  int64   `json:"reasoning_tokens"`
+	RealCostUSD      float64 `json:"real_cost_usd"`
+	BilledCostUSD    float64 `json:"billed_cost_usd"`
+	Errors           int64   `json:"errors"`
 }
 
 // MaxAttachFiles caps how many files a single QueryAcross may

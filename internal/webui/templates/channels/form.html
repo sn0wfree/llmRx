@@ -169,6 +169,55 @@
         <p class="mt-1 text-xs text-gray-500">中转站把余额接口换了位置时填这里。</p>
       </div>
     </div>
+
+    <!-- P21: upstream subscription plan quota -->
+    <div class="mt-4">
+      <h3 class="text-sm font-medium text-gray-900 mb-2">上游套餐配额（P21）</h3>
+      <div class="grid grid-cols-5 gap-3">
+        <div>
+          <label class="block text-xs font-medium text-gray-700">套餐类型</label>
+          {{$pk := or (getFormValue .FormData "PlanKind") .Channel.PlanQuota.Kind}}
+          <select name="plan_kind" class="mt-1 block w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm">
+            <option value="" {{if eq $pk ""}}selected{{end}}>按量</option>
+            <option value="code" {{if eq $pk "code"}}selected{{end}}>code plan</option>
+            <option value="token" {{if eq $pk "token"}}selected{{end}}>token plan</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-700">计量指标</label>
+          {{$pm := or (getFormValue .FormData "PlanQuotaMetric") .Channel.PlanQuota.Metric}}
+          <select name="plan_quota_metric" class="mt-1 block w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm">
+            <option value="tokens" {{if eq $pm "tokens"}}selected{{end}}>tokens</option>
+            <option value="prompt_tokens" {{if eq $pm "prompt_tokens"}}selected{{end}}>prompt tokens</option>
+            <option value="usd" {{if eq $pm "usd"}}selected{{end}}>USD</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-700">上限</label>
+          <input type="number" step="any" min="0" name="plan_quota_limit"
+                 value="{{if .Channel}}{{or (getFormValue .FormData "PlanQuotaLimit") (balanceThresholdStr .Channel.PlanQuota.Limit)}}{{else}}{{getFormValue .FormData "PlanQuotaLimit"}}{{end}}"
+                 placeholder="留空 = 不跟踪"
+                 class="mt-1 block w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-700">窗口</label>
+          {{$pw := or (getFormValue .FormData "PlanQuotaWindow") .Channel.PlanQuota.Window}}
+          <select name="plan_quota_window" class="mt-1 block w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm">
+            <option value="monthly" {{if eq $pw "monthly"}}selected{{end}}>自然月</option>
+            <option value="daily" {{if eq $pw "daily"}}selected{{end}}>每日</option>
+            <option value="rolling" {{if eq $pw "rolling"}}selected{{end}}>滚动</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-700">滚动小时数</label>
+          <input type="number" min="1" max="720" name="plan_quota_window_hours"
+                 value="{{if .Channel}}{{or (getFormValue .FormData "PlanQuotaWindowHours") (printf "%d" .Channel.PlanQuota.WindowHours)}}{{else}}{{getFormValue .FormData "PlanQuotaWindowHours"}}{{end}}"
+                 placeholder="5"
+                 class="mt-1 block w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm">
+        </div>
+      </div>
+      <p class="mt-1 text-xs text-gray-500">配置后监控页展示配额进度；耗尽的渠道被路由自动避开（L2.5 quota guard），切到 quota_aware 策略还可按剩余配额智能分配。窗口=滚动时需填小时数（如 GLM/Claude 编程套餐的 5h）。</p>
+    </div>
   </div>
 
   <div>

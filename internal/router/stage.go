@@ -61,6 +61,18 @@ func (e *RouterEngine) routeWithPipeline(ctx context.Context, modelName string, 
 		}
 	}
 
+	// L2.5: quota guard (P21). Channels whose upstream plan quota
+	// window is exhausted are dropped — unless every candidate is
+	// exhausted, where serving the request anyway beats failing it
+	// (quotaGuard returns the input unchanged in that case).
+	if e.usage != nil && (e.quotaGuardOn == nil || e.quotaGuardOn()) {
+		before := len(rctx.Candidates)
+		rctx.Candidates = quotaGuard(rctx.Candidates, e.usage, time.Now())
+		if len(rctx.Candidates) < before {
+			rctx.LogParts = append(rctx.LogParts, "L2.5(quota)")
+		}
+	}
+
 	// L3: cost
 	if opts.CostStrategy != "" {
 		rctx.Candidates = e.cost.SortWith(rctx.Candidates, opts.CostStrategy)
@@ -176,4 +188,26 @@ func containsString(xs []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// quotaGuard compacts out channels whose upstream plan quota window
+// is exhausted (usage ratio >= 1). The result is a fresh slice — the
+// input may alias the static router's internal index, which must not
+// be mutated. Order is preserved (stable compaction); L3 re-sorts
+// anyway. Untracked channels always pass.
+//
+// When every candidate is exhausted the input is returned unchanged:
+// an upstream throttle response beats a hard routing failure, and the
+// admin can see the all-exhausted state on the monitoring page.
+func quotaGuard(channels []*model.Channel, up UsageProvider, now time.Time) []*model.Channel {
+	kept := make([]*model.Channel, 0, len(channels))
+	for _, ch := range channels {
+		if !ch.PlanQuota.Tracked() || up.UsageRatio(ch, now) < 1 {
+			kept = append(kept, ch)
+		}
+	}
+	if len(kept) == 0 {
+		return channels
+	}
+	return kept
 }

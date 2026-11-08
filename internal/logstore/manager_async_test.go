@@ -122,6 +122,9 @@ func (b *blockingDriver) LogStats(days []string) (LogStatsResult, error) {
 func (b *blockingDriver) QueryAcross(filter QueryFilter, days []string) ([]model.Log, int64, error) {
 	return b.inner.QueryAcross(filter, days)
 }
+func (b *blockingDriver) ScanSince(since time.Time, fn func(*model.Log) bool) error {
+	return b.inner.ScanSince(since, fn)
+}
 
 // TestAsyncDropOnFullDefault: with the default config (DropOnFull),
 // a full queue drops entries and counts them instead of blocking.
@@ -388,4 +391,7 @@ func (p *panicDriver) LogStats(days []string) (LogStatsResult, error) {
 }
 func (p *panicDriver) QueryAcross(filter QueryFilter, days []string) ([]model.Log, int64, error) {
 	return p.inner.QueryAcross(filter, days)
+}
+func (p *panicDriver) ScanSince(since time.Time, fn func(*model.Log) bool) error {
+	return p.inner.ScanSince(since, fn)
 }

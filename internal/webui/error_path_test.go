@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sn0wfree/llmRx/internal/auth"
 	"github.com/sn0wfree/llmRx/internal/logstore"
@@ -37,6 +38,9 @@ func (d *errorLogDriver) DeleteFiles(days []string) error               { return
 func (d *errorLogDriver) ArchiveFiles(days []string) error              { return d.err }
 func (d *errorLogDriver) Close() error                                  { return nil }
 func (d *errorLogDriver) BatchInsert(entries []*model.Log) (int, error) { return 0, d.err }
+func (d *errorLogDriver) ScanSince(since time.Time, fn func(*model.Log) bool) error {
+	return d.err
+}
 
 func newErrorLogStore(t *testing.T) *logstore.Manager {
 	t.Helper()

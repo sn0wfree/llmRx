@@ -96,7 +96,7 @@ func (d *JSONLDriver) migrateOneFile(sq *SQLiteDriver, key, final string) (int, 
 	}
 	defer func() { _ = os.Remove(tmp) }()
 
-	meta := &fileMeta{}
+	meta := newFileMeta()
 	total := 0
 	for offset := 0; ; offset += migrationBatchSize {
 		rows, _, qerr := sq.QueryAcross(QueryFilter{

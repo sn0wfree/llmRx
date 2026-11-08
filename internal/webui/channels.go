@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -111,6 +112,8 @@ var channelFormFields = []string{
 	"name", "provider", "base_url", "models", "intents",
 	"priority", "input_price", "output_price", "status",
 	"balance_threshold", "balance_url",
+	"plan_kind", "plan_quota_metric", "plan_quota_limit",
+	"plan_quota_window", "plan_quota_window_hours",
 }
 
 var channelFormRenames = map[string]string{
@@ -121,6 +124,27 @@ var channelFormRenames = map[string]string{
 	"output_price":      "OutputPriceStr",
 	"base_url":          "BaseURL",
 	"balance_threshold": "BalanceThresholdStr",
+}
+
+// parsePlanQuota builds a model.PlanQuota from the channel form. An
+// empty limit field means "not tracked" and clears whatever was set.
+func parsePlanQuota(r *http.Request) (model.PlanQuota, error) {
+	limitStr := strings.TrimSpace(r.FormValue("plan_quota_limit"))
+	if limitStr == "" {
+		return model.PlanQuota{}, nil
+	}
+	limit, err := strconv.ParseFloat(limitStr, 64)
+	if err != nil {
+		return model.PlanQuota{}, errors.New("plan_quota_limit 必须是数字")
+	}
+	pq := model.PlanQuota{
+		Kind:        strings.TrimSpace(r.FormValue("plan_kind")),
+		Metric:      strings.TrimSpace(r.FormValue("plan_quota_metric")),
+		Limit:       limit,
+		Window:      strings.TrimSpace(r.FormValue("plan_quota_window")),
+		WindowHours: int(parseIntDefault(r.FormValue("plan_quota_window_hours"), 0)),
+	}
+	return pq, pq.Validate()
 }
 
 // ChannelCreate handles form POST to create a new channel.
@@ -157,6 +181,17 @@ func (h *Handler) ChannelCreate(w http.ResponseWriter, r *http.Request) {
 	if r.FormValue("status") != "1" {
 		ch.Status = model.ChannelDisabled
 	}
+	pq, err := parsePlanQuota(r)
+	if err != nil {
+		h.renderFormError(w, r, formErrorView{
+			Body: "channels_form_body", Title: "新建通道",
+			Active: "channels", Msg: err.Error(), Form: r.Form,
+			Fields: channelFormFields, FieldRenames: channelFormRenames,
+			Extras: map[string]any{"Providers": provider.AllProviders()},
+		})
+		return
+	}
+	ch.PlanQuota = pq
 
 	if err := validateChannel(ch); err != nil {
 		h.renderFormError(w, r, formErrorView{
@@ -227,6 +262,19 @@ func (h *Handler) updateChannelByID(w http.ResponseWriter, r *http.Request, id i
 		cur.BalanceThreshold = parseFloatDefault(v, cur.BalanceThreshold)
 	}
 	cur.BalanceURL = strings.TrimSpace(r.FormValue("balance_url"))
+	// Plan quota replaces unconditionally: an empty limit field means
+	// "stop tracking", matching the balance-clearing semantics.
+	pq, err := parsePlanQuota(r)
+	if err != nil {
+		h.renderFormError(w, r, formErrorView{
+			Body: "channels_form_body", Title: "编辑通道",
+			Active: "channels", Record: cur, Msg: err.Error(), Form: r.Form,
+			Fields: channelFormFields, FieldRenames: channelFormRenames,
+			Extras: map[string]any{"Providers": provider.AllProviders()},
+		})
+		return
+	}
+	cur.PlanQuota = pq
 	cur.Status = model.ChannelDisabled
 	if r.FormValue("status") == "1" {
 		cur.Status = model.ChannelEnabled

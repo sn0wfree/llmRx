@@ -789,6 +789,13 @@ func seedChannels(st store.Store, cfg *config.Config) error {
 				MaxFailures:  cc.MaxFailures,
 				ResetTimeout: time.Duration(cc.ResetTimeoutMs) * time.Millisecond,
 			},
+			PlanQuota: model.PlanQuota{
+				Kind:        cc.PlanKind,
+				Metric:      cc.PlanMetric,
+				Limit:       cc.PlanLimit,
+				Window:      cc.PlanWindow,
+				WindowHours: cc.PlanHours,
+			},
 		}
 		if err := st.CreateChannel(ch); err != nil {
 			return err

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/sn0wfree/llmRx/internal/model"
 )
@@ -289,7 +290,7 @@ func (d *JSONLDriver) acquire(date string, entries []*model.Log) (*jsonlFile, st
 		// the first aggregate read rebuilds it from the data.
 		var meta *fileMeta
 		if size == 0 {
-			meta = &fileMeta{}
+			meta = newFileMeta()
 		} else {
 			meta = loadMeta(d.dir, key)
 		}
@@ -577,6 +578,34 @@ func (d *JSONLDriver) QueryAcross(filter QueryFilter, days []string) ([]model.Lo
 		out = append(out, r.row)
 	}
 	return out, total, nil
+}
+
+// ScanSince streams rows with CreatedAt >= since to fn, ascending by
+// day file. Whole day files older than since's date are skipped
+// without opening them; within the boundary day every row is decoded
+// and fn does the final filtering. Archived (.gz) files are skipped —
+// they sit beyond the retention window recovery cares about.
+func (d *JSONLDriver) ScanSince(since time.Time, fn func(*model.Log) bool) error {
+	d.flushActive()
+	sinceDay := since.UTC().Format("2006-01-02")
+	var firstErr error
+	for _, path := range d.dayFiles(nil) {
+		base := strings.TrimSuffix(filepath.Base(path), jsonlExt)
+		if extractDate(base) < sinceDay {
+			continue
+		}
+		_, err := scanFile(path, func(e *model.Log) bool {
+			if e.CreatedAt.Before(since) {
+				return true
+			}
+			return fn(e)
+		})
+		if err != nil {
+			firstErr = err
+			break
+		}
+	}
+	return firstErr
 }
 
 // TimeSeries buckets matching rows into bucketSec-second windows.

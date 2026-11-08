@@ -43,6 +43,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/secrets"
 	"github.com/sn0wfree/llmRx/internal/store"
 	"github.com/sn0wfree/llmRx/internal/tokencache"
+	"github.com/sn0wfree/llmRx/internal/usage"
 	"github.com/sn0wfree/llmRx/internal/webui"
 )
 
@@ -268,6 +269,23 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 		handler.SetLimiter(s.limiter)
 	}
 
+	// P21: wire the per-channel plan-quota tracker into both sides —
+	// the emitter observes every request, the engine consults it in
+	// the L2.5 guard and the quota_aware strategy. Startup recovery
+	// replays the widest configured window from the logstore so the
+	// in-memory counters survive restarts (the logs are the source
+	// of truth; the tracker holds no persistence of its own).
+	usageTrk := usage.New()
+	handler.SetUsageTracker(usageTrk)
+	s.router.SetUsageTracker(usageTrk)
+	s.router.SetQuotaGuardEnabledFn(rt.QuotaGuardEnabled)
+	s.router.SetQuotaSoftThreshold(rt.QuotaSoftThreshold())
+	usage.RecoverRecent(usageTrk, s.logStore, s.store)
+	logging.Info("usage tracker wired (P21)",
+		logging.F("quota_guard", rt.QuotaGuardEnabled()),
+		logging.F("soft_threshold", rt.QuotaSoftThreshold()),
+	)
+
 	// Initialize response cache.
 	responseCache := s.initResponseCache()
 	if responseCache != nil {
@@ -319,6 +337,7 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	handler.SetMCPLoop(mcpLoop)
 
 	adminHandler := admin.New(s.store, s.logStore, s.pool, s.router, s.tokens, lb, rt, s.cfg, s.keyFile)
+	adminHandler.SetUsageTracker(usageTrk)
 	s.admin = adminHandler
 	if responseCache != nil {
 		adminHandler.SetCache(responseCache)
@@ -385,6 +404,7 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 		fatalf("webui init failed", logging.F("error", err.Error()))
 	}
 	webUI.SetProber(proberCache)
+	webUI.SetUsageTracker(usageTrk)
 	if responseCache != nil {
 		webUI.SetCache(responseCache)
 	}

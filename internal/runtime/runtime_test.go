@@ -167,6 +167,7 @@ func TestSnapshotRoundtrip(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
+	guardOn := int64(1)
 	want := Snapshot{
 		CostStrategy:       "balanced",
 		MarkupRatio:        2.5,
@@ -182,9 +183,21 @@ func TestSnapshotRoundtrip(t *testing.T) {
 		RequestTimeoutSec:  60,
 		MaxRetries:         0,
 		RetryBaseDelayMs:   500,
+		QuotaGuard:         &guardOn,
+		QuotaSoftThreshold: 0.8,
 	}
-	if snap != want {
-		t.Fatalf("snapshot roundtrip:\n got %+v\nwant %+v", snap, want)
+	// QuotaGuard is a pointer (tri-state for pre-P21 snapshots), so
+	// compare field-wise via JSON rather than struct ==.
+	gotJSON, jerr := json.Marshal(snap)
+	if jerr != nil {
+		t.Fatalf("marshal got: %v", jerr)
+	}
+	wantJSON, jerr := json.Marshal(want)
+	if jerr != nil {
+		t.Fatalf("marshal want: %v", jerr)
+	}
+	if string(gotJSON) != string(wantJSON) {
+		t.Fatalf("snapshot roundtrip:\n got %s\nwant %s", gotJSON, wantJSON)
 	}
 
 	// Apply to a fresh Defaults and confirm every field is restored.

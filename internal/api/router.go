@@ -33,6 +33,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/router/auto"
 	"github.com/sn0wfree/llmRx/internal/router/session"
+	"github.com/sn0wfree/llmRx/internal/usage"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
 
@@ -300,6 +301,12 @@ func (h *Handler) SetLimiter(lim *ratelimit.Limiter) {
 	if lim != nil {
 		h.limits = lim
 	}
+}
+
+// SetUsageTracker attaches the P21 per-channel plan-quota tracker to
+// the emitter. Called once at startup; nil disables tracking.
+func (h *Handler) SetUsageTracker(t *usage.Tracker) {
+	h.emitter.SetUsageTracker(t)
 }
 
 // SetStore wires the underlying store reference. Tests use this to

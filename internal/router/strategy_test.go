@@ -2,6 +2,7 @@ package router
 
 import (
 	"testing"
+	"time"
 
 	"github.com/sn0wfree/llmRx/internal/model"
 )
@@ -85,7 +86,7 @@ func TestStrategyRegistryIncludesWeightedRandom(t *testing.T) {
 	if _, ok := strategyMap[model.StrategyWeightedRandom]; !ok {
 		t.Fatal("weighted_random strategy not registered")
 	}
-	got := strategyFromName(model.StrategyWeightedRandom, nil)
+	got := strategyFromName(model.StrategyWeightedRandom, nil, nil)
 	if got.Name() != string(model.StrategyWeightedRandom) {
 		t.Fatalf("strategyFromName: %v", got.Name())
 	}
@@ -163,15 +164,29 @@ func TestCostLatencyBlend_DefaultWeights(t *testing.T) {
 	}
 }
 
+// fakeUsageProvider is a UsageProvider with a fixed per-channel
+// consumed-ratio map.
+type fakeUsageProvider struct {
+	ratio map[int64]float64
+}
+
+func (f *fakeUsageProvider) UsageRatio(ch *model.Channel, now time.Time) float64 {
+	return f.ratio[ch.ID]
+}
+
 func TestStrategyFromNameLatencyStrategies(t *testing.T) {
 	lp := &fakeLatencyProvider{ms: map[int64]float64{1: 50}}
-	if s := strategyFromName(model.StrategyLatency, lp); s.Name() != string(model.StrategyLatency) {
+	up := &fakeUsageProvider{ratio: map[int64]float64{1: 0.1}}
+	if s := strategyFromName(model.StrategyLatency, lp, nil); s.Name() != string(model.StrategyLatency) {
 		t.Fatalf("latency name mismatch: %v", s.Name())
 	}
-	if s := strategyFromName(model.StrategyCostLatency, lp); s.Name() != string(model.StrategyCostLatency) {
+	if s := strategyFromName(model.StrategyCostLatency, lp, nil); s.Name() != string(model.StrategyCostLatency) {
 		t.Fatalf("blend name mismatch: %v", s.Name())
 	}
-	if s := strategyFromName(model.StrategyCheapest, lp); s.Name() != string(model.StrategyCheapest) {
+	if s := strategyFromName(model.StrategyQuotaAware, lp, up); s.Name() != string(model.StrategyQuotaAware) {
+		t.Fatalf("quota_aware name mismatch: %v", s.Name())
+	}
+	if s := strategyFromName(model.StrategyCheapest, lp, nil); s.Name() != string(model.StrategyCheapest) {
 		t.Fatalf("cheapest must remain registered: %v", s.Name())
 	}
 }

@@ -22,12 +22,19 @@ type CostRouter struct {
 	// means "no latency data" - those strategies fall back to
 	// cost order.
 	latencyProvider LatencyProvider
+	// usageProvider supplies per-channel plan-quota consumption for
+	// the quota_aware strategy (P21). nil means "no usage data".
+	usageProvider UsageProvider
 	// blendWeights are the cost/latency weights for the
 	// cost_latency_blend strategy. Zero values fall back to the
 	// defaults (0.7 / 0.3) in the strategy itself.
-	blendCost     float64
-	blendLatency  float64
-	blendMu       sync.RWMutex
+	blendCost    float64
+	blendLatency float64
+	// quotaSoft is the consumed ratio above which the quota_aware
+	// strategy considers a channel "running low". 0 falls back to
+	// the strategy default (0.8). Guarded by blendMu.
+	quotaSoft float64
+	blendMu   sync.RWMutex
 }
 
 // NewCostRouter returns a router with cheapest as the default strategy.
@@ -54,10 +61,34 @@ func (r *CostRouter) blendWeightsSnapshot() (float64, float64) {
 	return r.blendCost, r.blendLatency
 }
 
+// SetQuotaSoftThreshold overrides the soft line the quota_aware
+// strategy uses. Zero values keep the strategy default.
+func (r *CostRouter) SetQuotaSoftThreshold(t float64) {
+	r.blendMu.Lock()
+	r.quotaSoft = t
+	r.blendMu.Unlock()
+	r.refreshStrategy()
+}
+
+// quotaSoftSnapshot returns the current soft threshold.
+func (r *CostRouter) quotaSoftSnapshot() float64 {
+	r.blendMu.RLock()
+	defer r.blendMu.RUnlock()
+	return r.quotaSoft
+}
+
 // SetLatencyProvider injects the source of per-channel latency.
 // Called once at startup when the latency tracker is constructed.
 func (r *CostRouter) SetLatencyProvider(p LatencyProvider) {
 	r.latencyProvider = p
+	r.refreshStrategy()
+}
+
+// SetUsageProvider injects the source of per-channel plan-quota
+// consumption (P21). Called once at startup with the shared usage
+// tracker.
+func (r *CostRouter) SetUsageProvider(p UsageProvider) {
+	r.usageProvider = p
 	r.refreshStrategy()
 }
 
@@ -71,7 +102,7 @@ func (r *CostRouter) StrategyInterface() CostStrategy {
 
 func (r *CostRouter) SetStrategy(s model.CostStrategy) {
 	cw, lw := r.blendWeightsSnapshot()
-	r.strategy.Store(&strategyHolder{s: strategyFromNameWeights(s, r.latencyProvider, cw, lw)})
+	r.strategy.Store(&strategyHolder{s: strategyFromNameWeights(s, r.latencyProvider, r.usageProvider, cw, lw, r.quotaSoftSnapshot())})
 }
 
 func (r *CostRouter) SetStrategyInterface(s CostStrategy) {
@@ -104,7 +135,7 @@ func (r *CostRouter) SortWith(channels []*model.Channel, strategy model.CostStra
 		s = r.StrategyInterface()
 	} else {
 		cw, lw := r.blendWeightsSnapshot()
-		s = strategyFromNameWeights(strategy, r.latencyProvider, cw, lw)
+		s = strategyFromNameWeights(strategy, r.latencyProvider, r.usageProvider, cw, lw, r.quotaSoftSnapshot())
 	}
 	return s.Sort(channels)
 }

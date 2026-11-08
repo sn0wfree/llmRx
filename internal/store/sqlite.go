@@ -467,6 +467,11 @@ func (s *dbStore) migrate() error {
 	if err := s.addColumn("channels", "balance_threshold", "REAL NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	// P21: upstream subscription plan quota (JSON-encoded model.PlanQuota,
+	// {} = untracked). Unlike the balance snapshot this feeds routing.
+	if err := s.addColumn("channels", "plan_quota", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
+		return err
+	}
 	// P14 phase 4: per-key balance. Account-level data belongs on the
 	// key row, since one channel can hold several accounts.
 	if err := s.addColumn("keys", "balance", "TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -680,6 +685,25 @@ func decodeCB(s string) model.CircuitBreakerConfig {
 	return cb
 }
 
+// encodePQ serialises the plan quota as JSON; the zero value collapses
+// to "{}" so untracked channels keep the column default.
+func encodePQ(pq model.PlanQuota) string {
+	if pq == (model.PlanQuota{}) {
+		return "{}"
+	}
+	b, _ := json.Marshal(pq)
+	return string(b)
+}
+
+func decodePQ(s string) model.PlanQuota {
+	if s == "" {
+		return model.PlanQuota{}
+	}
+	var pq model.PlanQuota
+	_ = json.Unmarshal([]byte(s), &pq)
+	return pq
+}
+
 func encodeTiers(t map[string]model.TierConfig) string {
 	if t == nil {
 		return ""
@@ -705,7 +729,7 @@ func decodeTiers(s string) map[string]model.TierConfig {
 const channelColumns = `id, name, provider, protocol, base_url, models, intents, priority, ` +
 	`input_price, output_price, cached_input_discount, circuit_breaker, status, total_cost_usd, ` +
 	`balance, balance_currency, balance_updated_at, balance_error, balance_url, balance_threshold, ` +
-	`created_at, updated_at`
+	`plan_quota, created_at, updated_at`
 
 func (s *dbStore) GetChannels() ([]model.Channel, error) {
 	rows, err := s.query(`SELECT ` + channelColumns + ` FROM channels ORDER BY id`)
@@ -740,13 +764,14 @@ func (s *dbStore) CreateChannel(ch *model.Channel) error {
 		ch.CachedInputDiscount = 0.1
 	}
 	id, err := dialect.InsertOne(s.d, s.db,
-		`INSERT INTO channels(name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, balance, balance_currency, balance_url, balance_threshold, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO channels(name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, balance, balance_currency, balance_url, balance_threshold, plan_quota, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ch.Name, ch.Provider, ch.Protocol, ch.BaseURL,
 		encodeStrings(ch.Models), encodeStrings(ch.Intents),
 		ch.Priority, ch.InputPrice, ch.OutputPrice, ch.CachedInputDiscount, encodeCB(ch.CircuitBreaker),
 		int(ch.Status),
 		ch.Balance, ch.BalanceCurrency, ch.BalanceURL, ch.BalanceThreshold,
+		encodePQ(ch.PlanQuota),
 		toUnix(ch.CreatedAt), toUnix(ch.UpdatedAt),
 	)
 	if err != nil {
@@ -762,11 +787,11 @@ func (s *dbStore) UpdateChannel(ch *model.Channel) error {
 		ch.Protocol = "openai"
 	}
 	_, err := s.exec(
-		`UPDATE channels SET name=?, provider=?, protocol=?, base_url=?, models=?, intents=?, priority=?, input_price=?, output_price=?, cached_input_discount=?, circuit_breaker=?, status=?, balance_url=?, balance_threshold=?, updated_at=? WHERE id=?`,
+		`UPDATE channels SET name=?, provider=?, protocol=?, base_url=?, models=?, intents=?, priority=?, input_price=?, output_price=?, cached_input_discount=?, circuit_breaker=?, status=?, balance_url=?, balance_threshold=?, plan_quota=?, updated_at=? WHERE id=?`,
 		ch.Name, ch.Provider, ch.Protocol, ch.BaseURL,
 		encodeStrings(ch.Models), encodeStrings(ch.Intents),
 		ch.Priority, ch.InputPrice, ch.OutputPrice, ch.CachedInputDiscount, encodeCB(ch.CircuitBreaker),
-		int(ch.Status), ch.BalanceURL, ch.BalanceThreshold, toUnix(ch.UpdatedAt), ch.ID,
+		int(ch.Status), ch.BalanceURL, ch.BalanceThreshold, encodePQ(ch.PlanQuota), toUnix(ch.UpdatedAt), ch.ID,
 	)
 	return err
 }
@@ -828,7 +853,7 @@ func scanChannel(r interface {
 	Scan(dest ...any) error
 }) (*model.Channel, error) {
 	var ch model.Channel
-	var modelsJSON, intentsJSON, cbJSON string
+	var modelsJSON, intentsJSON, cbJSON, pqJSON string
 	var status int
 	var created, updated int64
 	var balanceUpdated sql.NullInt64
@@ -838,7 +863,7 @@ func scanChannel(r interface {
 		&ch.TotalCostUSD,
 		&ch.Balance, &ch.BalanceCurrency, &balanceUpdated, &ch.BalanceError, &ch.BalanceURL,
 		&ch.BalanceThreshold,
-		&created, &updated); err != nil {
+		&pqJSON, &created, &updated); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
 		}
@@ -854,6 +879,7 @@ func scanChannel(r interface {
 		ch.Protocol = "openai"
 	}
 	ch.CircuitBreaker = decodeCB(cbJSON)
+	ch.PlanQuota = decodePQ(pqJSON)
 	ch.Status = model.ChannelStatus(status)
 	ch.CreatedAt = fromUnix(created)
 	ch.UpdatedAt = fromUnix(updated)

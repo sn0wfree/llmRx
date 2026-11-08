@@ -211,6 +211,35 @@ func (p *PostgresDriver) QueryAcross(filter QueryFilter, days []string) ([]model
 	return out, total, rows.Err()
 }
 
+// ScanSince streams rows with CreatedAt >= since to fn, ascending by
+// creation time. The created_at index makes this a range scan.
+func (p *PostgresDriver) ScanSince(since time.Time, fn func(*model.Log) bool) error {
+	q := "SELECT " + logCols + " FROM logs WHERE created_at >= ? ORDER BY created_at ASC, id ASC"
+	rows, err := p.db.Query(p.d.RewriteQuery(q), since.Unix())
+	if err != nil {
+		return fmt.Errorf("logstore: scan-since: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var l model.Log
+		var created int64
+		var cacheHit int
+		if err := rows.Scan(&l.ID, &l.TokenID, &l.ChannelID, &l.KeyID, &l.Model,
+			&l.PromptTokens, &l.CompletionTokens, &l.CachedTokens,
+			&l.ReasoningTokens, &cacheHit,
+			&l.RealCostUSD, &l.BilledCostUSD, &l.DurationMs, &l.StatusCode,
+			&l.RouterPath, &l.RequestIP, &l.Endpoint, &l.Units, &created); err != nil {
+			return err
+		}
+		l.CacheHit = cacheHit != 0
+		l.CreatedAt = time.Unix(created, 0).UTC()
+		if !fn(&l) {
+			return nil
+		}
+	}
+	return rows.Err()
+}
+
 // LogStats aggregates totals across all rows (days ignored — the
 // single table is always "all files").
 func (p *PostgresDriver) LogStats(days []string) (LogStatsResult, error) {

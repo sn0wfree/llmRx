@@ -16,6 +16,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/prober"
 	"github.com/sn0wfree/llmRx/internal/store"
+	"github.com/sn0wfree/llmRx/internal/usage"
 )
 
 // Handler holds dependencies for the admin web UI.
@@ -29,6 +30,9 @@ type Handler struct {
 	responseCache cache.Cache
 	mcpClientMgr  *mcp.ClientManager
 	oauth         *mcp.OAuthManager
+	// usageTrk serves the monitoring page's live quota gauges (P21).
+	// nil renders the page without them.
+	usageTrk *usage.Tracker
 	// balanceMon refreshes upstream balances (P14). nil makes the
 	// per-row refresh a no-op error rather than a panic.
 	balanceMon BalanceQuerier
@@ -59,6 +63,10 @@ func (h *Handler) SetLogStore(ls *logstore.Manager) { h.logStore = ls }
 // SetProber injects the channel health probe cache. Must be called
 // before the first health page request or the page shows no data.
 func (h *Handler) SetProber(p *prober.Cache) { h.prober = p }
+
+// SetUsageTracker injects the P21 plan-quota tracker for the
+// monitoring page's live gauges.
+func (h *Handler) SetUsageTracker(t *usage.Tracker) { h.usageTrk = t }
 
 func (h *Handler) SetCache(c cache.Cache) { h.responseCache = c }
 
@@ -209,6 +217,7 @@ func (h *Handler) Routes() http.Handler {
 		r.Post("/alerts/events/{id}/ack", h.alertAck)
 
 		r.Get("/analytics", h.AnalyticsPage)
+		r.Get("/monitoring", h.MonitoringPage)
 		r.Get("/health", h.ChannelHealthPage)
 		r.Post("/health/{id}/probe", h.ChannelProbeNow)
 

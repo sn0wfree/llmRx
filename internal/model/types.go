@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Status enum note: the legacy "active = 0" / "disabled = 1"
 // convention is preserved for Token and Key (matches the values
@@ -55,6 +58,7 @@ const (
 	StrategyWeightedRandom CostStrategy = "weighted_random"
 	StrategyLatency        CostStrategy = "latency"
 	StrategyCostLatency    CostStrategy = "cost_latency_blend"
+	StrategyQuotaAware     CostStrategy = "quota_aware"
 )
 
 // ComboMode selects the routing strategy inside a token combo model.
@@ -103,6 +107,83 @@ type CircuitBreakerConfig struct {
 	ResetTimeout time.Duration `yaml:"reset_timeout" json:"reset_timeout"`
 }
 
+// PlanQuota describes the upstream subscription plan attached to a
+// channel (P21): a coding-plan subscription ("code"), a prepaid token
+// package ("token"), or plain pay-as-you-go (""). The zero value
+// (Limit == 0) means "not tracked" — the channel routes unchanged and
+// the monitoring page shows no quota gauge.
+//
+// Metric selects what counts against Limit:
+//
+//	tokens        prompt + completion + reasoning tokens
+//	prompt_tokens prompt tokens incl. cached reads (coding-plan style)
+//	usd           real upstream cost in USD
+//
+// Window selects the reset cadence:
+//
+//	monthly calendar month (UTC)
+//	daily    UTC day
+//	rolling  trailing WindowHours hours (e.g. 5 for GLM/Claude-style
+//	         coding plans)
+type PlanQuota struct {
+	Kind        string  `yaml:"kind" json:"kind,omitempty"`
+	Metric      string  `yaml:"metric" json:"metric,omitempty"`
+	Limit       float64 `yaml:"limit" json:"limit,omitempty"`
+	Window      string  `yaml:"window" json:"window,omitempty"`
+	WindowHours int     `yaml:"window_hours" json:"window_hours,omitempty"`
+}
+
+// Quota metrics accepted in PlanQuota.Metric.
+const (
+	QuotaMetricTokens       = "tokens"
+	QuotaMetricPromptTokens = "prompt_tokens"
+	QuotaMetricUSD          = "usd"
+)
+
+// Quota windows accepted in PlanQuota.Window.
+const (
+	QuotaWindowMonthly = "monthly"
+	QuotaWindowDaily   = "daily"
+	QuotaWindowRolling = "rolling"
+)
+
+// Validate checks a PlanQuota against the accepted enums. The zero
+// value is valid ("not tracked"); a non-zero quota must set
+// Metric + Limit + Window, and rolling windows need WindowHours
+// within 1..720 (30 days).
+func (q PlanQuota) Validate() error {
+	if q == (PlanQuota{}) {
+		return nil
+	}
+	switch q.Metric {
+	case QuotaMetricTokens, QuotaMetricPromptTokens, QuotaMetricUSD:
+	default:
+		return fmt.Errorf("plan_quota.metric must be tokens|prompt_tokens|usd")
+	}
+	if q.Limit <= 0 {
+		return fmt.Errorf("plan_quota.limit must be > 0")
+	}
+	switch q.Window {
+	case QuotaWindowMonthly, QuotaWindowDaily:
+	case QuotaWindowRolling:
+		if q.WindowHours <= 0 || q.WindowHours > 24*30 {
+			return fmt.Errorf("plan_quota.window_hours must be in 1..720 for rolling windows")
+		}
+	default:
+		return fmt.Errorf("plan_quota.window must be monthly|daily|rolling")
+	}
+	switch q.Kind {
+	case "", "code", "token":
+	default:
+		return fmt.Errorf("plan_quota.kind must be code|token|empty")
+	}
+	return nil
+}
+
+// Tracked reports whether the quota is configured (used by the router
+// guard and the monitoring page to skip untracked channels).
+func (q PlanQuota) Tracked() bool { return q.Limit > 0 }
+
 type Channel struct {
 	ID          int64    `json:"id"`
 	Name        string   `json:"name"`
@@ -150,6 +231,14 @@ type Channel struct {
 	// balance_low alert. Per channel rather than per rule because each
 	// channel has its own currency and its own definition of low.
 	BalanceThreshold float64 `json:"balance_threshold,omitempty"`
+
+	// PlanQuota is the upstream subscription plan attached to this
+	// channel (P21). Unlike the P14 balance snapshot it IS used by the
+	// router: a channel whose quota window is exhausted is dropped from
+	// the candidate set (unless nothing else can serve the model), and
+	// the quota_aware cost strategy prefers channels with quota left.
+	// Zero value = untracked.
+	PlanQuota PlanQuota `json:"plan_quota"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

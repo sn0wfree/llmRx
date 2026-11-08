@@ -30,6 +30,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
 	"github.com/sn0wfree/llmRx/internal/tokencache"
+	"github.com/sn0wfree/llmRx/internal/usage"
 )
 
 type App struct {
@@ -47,6 +48,9 @@ type App struct {
 	Cfg       *config.Config
 	Limiter   *ratelimit.Limiter
 	Mux       http.Handler
+	// UsageTrk is the shared P21 plan-quota tracker (fed by the chat
+	// emitter; tests observe directly when seeding logs by hand).
+	UsageTrk *usage.Tracker
 }
 
 // New constructs an App backed by a fresh temp-dir SQLite database
@@ -99,6 +103,14 @@ func New(t *testing.T) *App {
 	mp := &MockProvider{}
 	chatH := api.New(cfg, eng, cp, st, logStore, logBroker, rt)
 	adminH.SetAutoStats(chatH.AutoStats())
+	// P21: share the plan-quota tracker across emitter + engine +
+	// admin, mirroring the production wiring. Fresh stores have no
+	// logs, so recovery is a no-op here.
+	usageTrk := usage.New()
+	adminH.SetUsageTracker(usageTrk)
+	chatH.SetUsageTracker(usageTrk)
+	eng.SetUsageTracker(usageTrk)
+	usage.RecoverRecent(usageTrk, logStore, st)
 	chatH.SetProvider(mp)
 	chatH.SetProviders(map[string]provider.Provider{
 		"":          mp,
@@ -131,6 +143,7 @@ func New(t *testing.T) *App {
 		Cfg:       cfg,
 		Limiter:   limiter,
 		Mux:       mux,
+		UsageTrk:  usageTrk,
 	}
 }
 
@@ -182,6 +195,14 @@ func NewWithStore(t *testing.T, st store.Store) *App {
 	mp := &MockProvider{}
 	chatH := api.New(cfg, eng, cp, st, logStore, logBroker, rt)
 	adminH.SetAutoStats(chatH.AutoStats())
+	// P21: share the plan-quota tracker across emitter + engine +
+	// admin, mirroring the production wiring. Fresh stores have no
+	// logs, so recovery is a no-op here.
+	usageTrk := usage.New()
+	adminH.SetUsageTracker(usageTrk)
+	chatH.SetUsageTracker(usageTrk)
+	eng.SetUsageTracker(usageTrk)
+	usage.RecoverRecent(usageTrk, logStore, st)
 	chatH.SetProvider(mp)
 	chatH.SetProviders(map[string]provider.Provider{
 		"":          mp,
@@ -214,6 +235,7 @@ func NewWithStore(t *testing.T, st store.Store) *App {
 		Cfg:       cfg,
 		Limiter:   limiter,
 		Mux:       mux,
+		UsageTrk:  usageTrk,
 	}
 }
 

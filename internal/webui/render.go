@@ -89,6 +89,41 @@ func NewRenderer() (*Renderer, error) {
 			}
 			return strconv.FormatFloat(v, 'f', -1, 64)
 		},
+		// P21 monitoring helpers.
+		"mul100": func(v float64) float64 { return v * 100 },
+		// min100 clamps a ratio to 0..100 (percent) for bar widths.
+		"min100": func(v float64) float64 {
+			p := v * 100
+			if p > 100 {
+				p = 100
+			}
+			if p < 0 {
+				p = 0
+			}
+			return p
+		},
+		// fmtQuotaUsed renders a quota quantity in its metric's unit.
+		"fmtQuotaUsed": func(metric string, v float64) string {
+			switch metric {
+			case "usd":
+				return "$" + strconv.FormatFloat(v, 'f', 4, 64)
+			default:
+				return strconv.FormatInt(int64(v), 10) + " tok"
+			}
+		},
+		// fmtWindow renders the quota window label.
+		"fmtWindow": func(window string, hours int) string {
+			switch window {
+			case "monthly":
+				return "月窗口"
+			case "daily":
+				return "日窗口"
+			case "rolling":
+				return "滚动 " + strconv.Itoa(hours) + "h"
+			default:
+				return window
+			}
+		},
 		// balanceCell renders the upstream balance column (P14).
 		// Three distinct states matter to an operator: a value, a
 		// value with a stale-warning, and "not supported".

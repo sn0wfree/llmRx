@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync/atomic"
+	"time"
 
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/logging"
@@ -17,6 +18,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/ratelimit"
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/store"
+	"github.com/sn0wfree/llmRx/internal/usage"
 )
 
 type LogEmitter struct {
@@ -26,6 +28,10 @@ type LogEmitter struct {
 	limits    *ratelimit.Limiter
 	costCalc  *CostCalculator
 	costs     *modelcost.Cache
+	// usageTrk feeds the P21 per-channel plan-quota tracker. nil means
+	// "tracking disabled" (tests, minimal deployments) — every hook
+	// must nil-check before calling.
+	usageTrk *usage.Tracker
 
 	// chatLogCount is a monotonic counter used by the chat.completed
 	// sampling hook. Accessed via sync/atomic.AddUint64; padded to
@@ -56,12 +62,25 @@ func NewLogEmitter(ls *logstore.Manager, lb *broker.Broker[*model.Log], st store
 	}
 }
 
+// SetUsageTracker attaches the P21 plan-quota tracker. Call once at
+// startup, before the emitter serves traffic; nil disables tracking.
+func (e *LogEmitter) SetUsageTracker(t *usage.Tracker) { e.usageTrk = t }
+
+// observeUsage folds one request's consumption into the quota tracker.
+// A no-op when tracking is disabled or the row carries no channel.
+func (e *LogEmitter) observeUsage(entry *model.Log) {
+	if e.usageTrk == nil || entry.ChannelID <= 0 {
+		return
+	}
+	e.usageTrk.Observe(entry.ChannelID, entry.PromptTokens, entry.CompletionTokens,
+		entry.CachedTokens, entry.ReasoningTokens, entry.RealCostUSD, time.Now())
+}
+
 // SetChatLogSampleRate atomically swaps the sampling rate. Pass 1
 // to log every request, 0 to disable, or N>=2 to log 1-in-N.
 // The change is picked up by the next Emit call. Hot path skips
 // the atomic when rate is 1 (the default).
-func (e *LogEmitter) SetChatLogSampleRate(n int) {
-	var rate uint64
+func (e *LogEmitter) SetChatLogSampleRate(n int) {	var rate uint64
 	switch {
 	case n > 1:
 		rate = uint64(n)
@@ -153,6 +172,7 @@ func (e *LogEmitter) Emit(ctx context.Context, tokenID int64, modelName string, 
 			logging.Warn("persist log failed", logging.F("error", err.Error()))
 		}
 	}
+	e.observeUsage(entry)
 	// Track per-channel cumulative spend for fast dashboard queries.
 	if e.store != nil && route.Channel.ID > 0 && real > 0 {
 		if err := e.store.RecordChannelSpend(route.Channel.ID, real); err != nil {
