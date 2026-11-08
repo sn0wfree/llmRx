@@ -61,7 +61,12 @@ P0 → P7+ 全部完成，所有 L1-L5 路由层齐全，多协议 provider，�
 - **broker subscriber cap** 防止 SSE 订阅 DoS
 
 #### 观测 / 运维
-- 用量日志：每次请求写入 `logs` 表（含 token_id / cost / duration / cached_tokens）
+- 用量日志：每次请求写入 JSONL 日志（含 token_id / cost / duration / cached_tokens）
+- **用量监控页**（P21）：`/admin/monitoring` —— 各渠道 prompt/completion/cached/reasoning
+  token 用量、双成本、错误率、**上游套餐（code plan / token plan）配额进度**、
+  按渠道堆叠的 token 趋势图、下游 Plan 预算卡
+- **配额感知路由**（P21）：渠道配额耗尽自动避开（L2.5 quota guard，运行时可关），
+  `quota_aware` 成本策略按剩余配额智能分配（默认不启用，运行时可切）
 - 日志过滤 UI + **SSE 实时尾随**（Live toggle）
 - Analytics 时序图 + Top-N
 - **告警子系统**：error_rate / p95_latency / cost_spike / key_exhausted + webhook + 站内事件 + ack
@@ -404,6 +409,7 @@ go test -v ./internal/admin ./internal/api
 | [docs/P18-PYTHON-CLIENT.md](docs/P18-PYTHON-CLIENT.md) | **Python 边缘客户端(推荐)**:`pip install clients/python`;Go 版客户端转维护模式 |
 | [docs/P16-DISTRIBUTION.md](docs/P16-DISTRIBUTION.md) | 交付与发布骨架:版本化、多平台产物、Docker/Helm/二进制分发(规划稿) |
 | [docs/P17-JSONL-LOGS.md](docs/P17-JSONL-LOGS.md) | 日志存储改 JSONL + rotate:去掉写入路径的 SQLite/CGO(已实施) |
+| [docs/P21-USAGE-MONITOR.md](docs/P21-USAGE-MONITOR.md) | **渠道用量监控 + 上游套餐配额 + 配额感知路由**(P21,已实施) |
 | [CHANGELOG.md](CHANGELOG.md) | 各 Phase 变更记录 |
 
 ## 路线图
@@ -427,4 +433,5 @@ go test -v ./internal/admin ./internal/api
 | **P10** | ✅ | OpenTelemetry + Prometheus `/metrics` |
 | **P11** | ✅ | MCP gateway（server + client 模式 + 按工具花费 + Web UI + 流式 agentic 桥接） |
 | **P13** | ✅ | 自动重试 / 100+ provider / guardrails（引擎 + 管理端）/ Prometheus / Helm chart |
+| **P21** | ✅ | 渠道用量监控页 / 上游套餐（code plan·token plan）配额跟踪 / L2.5 配额 guard / quota_aware 策略 |
 | P12+ | ⏳ | 集群模式 / 多节点同步 |

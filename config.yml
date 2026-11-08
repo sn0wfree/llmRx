@@ -94,6 +94,33 @@ channels:
     output_price_per_1m: 0.42
     max_failures: 5
     reset_timeout_ms: 60000
+    # P21 上游套餐配额（可选）。配置后 /admin/monitoring 展示配额进度，
+    # 耗尽的渠道被路由自动避开（L2.5 quota guard）；切到 cost_strategy:
+    # quota_aware 还可按剩余配额智能分配。
+    #   plan_kind: code | token | ""（展示徽章）
+    #   plan_quota_metric: tokens（prompt+completion）| prompt_tokens | usd
+    #   plan_quota_window: monthly（自然月）| daily | rolling（滚动 N 小时）
+    #   plan_quota_window_hours: 仅 rolling 需要，如编程套餐的 5
+    # 全部留空 = 不跟踪。
+    plan_kind: ""
+    plan_quota_metric: ""
+    plan_quota_limit: 0
+    plan_quota_window: ""
+    plan_quota_window_hours: 0
+
+  # 订阅制渠道示例：GLM Coding Plan 类套餐，5h 滚动窗口 12 万 prompt tokens
+  # - name: glm-coding
+  #   provider: zhipu
+  #   base_url: https://open.bigmodel.cn/api/paas/v4
+  #   keys:
+  #     - ${ZHIPU_API_KEY}
+  #   models:
+  #     - glm-4.7
+  #   plan_kind: code
+  #   plan_quota_metric: prompt_tokens
+  #   plan_quota_limit: 120000
+  #   plan_quota_window: rolling
+  #   plan_quota_window_hours: 5
 
   - name: minimax-main
     provider: minimax

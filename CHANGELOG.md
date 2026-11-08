@@ -4,6 +4,37 @@ All notable changes to llmRx are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — P21
+
+渠道用量监控 + 上游套餐配额 + 配额感知路由（详见
+[docs/P21-USAGE-MONITOR.md](docs/P21-USAGE-MONITOR.md)）。
+
+### Added
+
+- **用量监控页** `/admin/monitoring`：各渠道 prompt/completion/cached/reasoning token
+  用量（24h/7d/30d）、双成本、错误率、上游套餐配额进度条、按渠道堆叠的 token 趋势图、
+  下游 Plan 预算卡；侧边栏「监控」区新增入口。
+- **上游套餐配额**：`Channel.PlanQuota`（kind: code/token · metric: tokens/prompt_tokens/usd ·
+  window: monthly/daily/rolling N 小时），channels 迁移加 `plan_quota` JSON 列，
+  Admin channels API + 表单 + YAML seed 全链路支持。
+- **用量跟踪器** `internal/usage`：进程内 per-channel 窗口计数（日/月周期翻转 +
+  5min 桶滚动环），emitter 单点喂入，重启从日志按最宽窗口边界回放恢复。
+- **路由配额联动**：L2.5 quota guard（配额耗尽的渠道从候选剔除，全部耗尽时回退放行，
+  运行时 `quota_guard_enabled` 可关）；新 `quota_aware` 成本策略
+  （价格 0.45 + 延迟 0.25 + 配额压力 0.30，运行时 `cost_strategy` 可切）。
+- **Admin API**：`GET /usage/overview` / `GET /usage/timeseries` / `GET /usage/plans`。
+- **运行时配置**：`quota_guard_enabled`（默认 true）、`quota_soft_threshold`（默认 0.8）、
+  `cost_strategy` 白名单扩展 `quota_aware`/`weighted_random`/`latency`/`cost_latency_blend`。
+
+### Changed
+
+- **logstore meta 升级 v2**：meta 汇总增加 prompt/completion/cached/reasoning 拆分与
+  per-group 错误数；旧版 meta 首次读取时自动重扫重建。
+- **logstore 新增 `ScanSince` 原语**：无 top-K 截断的流式时间过滤扫描（JSONL / SQLite /
+  Postgres 三后端），供用量恢复与监控聚合使用。
+- Admin `/config` 的 `cost_strategy` 校验从 cheapest|fastest|balanced 扩展为全策略集合
+  （原来仅运行时白名单三个，其余只能经 YAML 启动设定）。
+
 ## [v0.1.1] — 2026-11-02
 
 发布产物修复版。功能与 `v0.1.0` 完全相同,只修了「下载下来用不了」的
