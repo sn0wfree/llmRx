@@ -72,7 +72,7 @@ footer code{background:var(--muted);padding:1px 5px;border-radius:4px;}
   <div class="arch-head">
     <div>
       <h2 class="arch-title">llmRx 架构分层</h2>
-      <p class="arch-sub">按包依赖实测（graphify AST 扫描：7758 符号 / 30778 边）· 悬停方块查看职责与依赖</p>
+      <p class="arch-sub">按包依赖实测（graphify AST 扫描：7808 符号 / 32271 边）· 悬停方块查看职责与依赖</p>
     </div>
     <div class="arch-legend" id="llmrx-legend"></div>
   </div>
@@ -98,42 +98,42 @@ footer code{background:var(--muted);padding:1px 5px;border-radius:4px;}
       { id: 'internal/clientapi', label: 'internal/clientapi', sub: 'client API', n: 70, role: '边缘客户端 HTTP 接口 /client/v1/*' }
     ]},
     { name: '接入层', note: '协议入口', pkgs: [
-      { id: 'internal/api', label: 'internal/api', sub: 'OpenAI 兼容入口', n: 133, role: 'OpenAI/Anthropic/Gemini 兼容入口、SSE 流式、计费发射器 emitter' },
+      { id: 'internal/api', label: 'internal/api', sub: 'OpenAI 兼容入口', n: 145, role: 'OpenAI/Anthropic/Gemini 兼容入口，按端点域拆分（chat / models / embeddings / images / audio / rerank）、SSE 流式、计费发射器 emitter' },
       { id: 'internal/mcp', label: 'internal/mcp', sub: 'MCP 网关', n: 96, role: 'MCP server/client 桥接、agentic 工具循环、工具定价' },
       { id: 'internal/middleware', label: 'internal/middleware', sub: '鉴权 · 限流', n: 21, role: 'Bearer 鉴权、RPM/TPM 限流、预算拦截' },
       { id: 'internal/ratelimit', label: 'internal/ratelimit', sub: '滑动窗口', n: 42, role: 'in-process 滑动窗口限速器' }
     ]},
     { name: '路由层', note: '选渠道', pkgs: [
-      { id: 'internal/router', label: 'internal/router', sub: 'L1–L5 管线', n: 271, role: 'L1 静态匹配 → L2 熔断 → L2.5 配额 → L3 成本 → L4 意图 → L5 Thompson' },
+      { id: 'internal/router', label: 'internal/router', sub: 'L1–L5 管线', n: 278, role: 'L1 静态匹配 → L2 熔断（配置推送式，请求路径零 IO）→ L2.5 配额（quotaProvider：厂商报告优先、本地计数兜底）→ L3 成本 → L4 意图 → L5 Thompson' },
       { id: 'internal/pool', label: 'internal/pool', sub: 'key 轮询', n: 11, role: '渠道池与上游 Key 轮询选择' },
-      { id: 'internal/intent', label: 'internal/intent', sub: '意图分类', n: 56, role: 'L4 意图分类器（keyword 后端 + 可选 Rust cdylib）' },
+      { id: 'internal/intent', label: 'internal/intent', sub: '意图分类', n: 46, role: 'L4 意图分类器（keyword 后端 + 可选 Rust cdylib）' },
       { id: 'internal/cluster', label: 'internal/cluster', sub: '多副本', n: 73, role: '集群模式：心跳、健康检查、PG NOTIFY 配置广播' }
     ]},
     { name: '上游适配层', note: '出站', pkgs: [
-      { id: 'internal/provider', label: 'internal/provider', sub: '多协议适配', n: 168, role: 'OpenAI / Anthropic / Gemini 协议适配、重试、余额与用量查询' },
+      { id: 'internal/provider', label: 'internal/provider', sub: '多协议适配', n: 159, role: 'OpenAI / Anthropic / Gemini 协议适配、重试、余额与用量查询' },
       { id: 'internal/cache', label: 'internal/cache', sub: '响应缓存', n: 42, role: '响应缓存（精确 + 语义），命中同样计费' },
       { id: 'internal/guardrail', label: 'internal/guardrail', sub: '内容护栏', n: 19, role: '输入输出内容护栏引擎' },
       { id: 'internal/prober', label: 'internal/prober', sub: '健康探测', n: 26, role: '渠道健康探测与真实流量观察者' }
     ]},
     { name: '计量与配额层', note: '消耗跟踪', pkgs: [
-      { id: 'internal/logstore', label: 'internal/logstore', sub: 'JSONL 日志', n: 160, role: '请求日志：JSONL 落盘 + meta 汇总 + 保留期轮转' },
-      { id: 'internal/usage', label: 'internal/usage', sub: '本地配额', n: 28, role: 'P21：本地窗口计数（日 / 月 / 滚动），路由配额的本地口径' },
-      { id: 'internal/subusage', label: 'internal/subusage', sub: '厂商配额', n: 73, role: 'P22：向厂商查询订阅用量（OpenRouter / 智谱 / 自定义探针）' },
+      { id: 'internal/logstore', label: 'internal/logstore', sub: '请求日志', n: 164, role: '请求日志：JSONL 落盘 + meta 汇总 + 保留期轮转；SQLite/Postgres 双后端共享同一 SQL 源（sql_shared.go）' },
+      { id: 'internal/usage', label: 'internal/usage', sub: '本地配额', n: 27, role: 'P21：本地窗口计数（日 / 月 / 滚动），路由配额的本地口径；与厂商口径解耦' },
+      { id: 'internal/subusage', label: 'internal/subusage', sub: '厂商配额', n: 80, role: 'P22：向厂商查询订阅用量（OpenRouter / 智谱 / 自定义探针），L2.5 的厂商口径来源' },
       { id: 'internal/balance', label: 'internal/balance', sub: '上游余额', n: 39, role: 'P14：轮询各厂商余额并做低余额告警' },
       { id: 'internal/modelcost', label: 'internal/modelcost', sub: '费率卡', n: 8, role: '模型费率卡缓存，计费基准' }
     ]},
     { name: '控制面', note: '管理与配置', pkgs: [
-      { id: 'internal/admin', label: 'internal/admin', sub: 'JSON API', n: 175, role: '管理 JSON API（/admin/api/v1/*）：渠道、Token、Plan、告警、用量' },
-      { id: 'internal/webui', label: 'internal/webui', sub: 'HTML 控制台', n: 312, role: '嵌入式管理后台（Go html/template + HTMX + Tailwind）' },
+      { id: 'internal/admin', label: 'internal/admin', sub: 'JSON API', n: 177, role: '管理 JSON API（/admin/api/v1/*）：渠道、Token、Plan、告警、用量；经 store.Reader 访问数据（不再依赖 webui）' },
+      { id: 'internal/webui', label: 'internal/webui', sub: 'HTML 控制台', n: 252, role: '嵌入式管理后台（Go html/template + HTMX + Tailwind）' },
       { id: 'internal/alert', label: 'internal/alert', sub: '告警', n: 31, role: '告警规则评估与投递（webhook / 站内事件）' },
       { id: 'internal/runtime', label: 'internal/runtime', sub: '运行时配置', n: 49, role: '热配置原子读写与快照持久化' },
       { id: 'internal/config', label: 'internal/config', sub: 'YAML 配置', n: 30, role: 'config.yml 解析与默认值' },
       { id: 'internal/modelmeta', label: 'internal/modelmeta', sub: '模型元数据', n: 21, role: '模型能力与价格元数据（每日刷新）' }
     ]},
     { name: '持久层与横切', note: '存储 · 基础设施', pkgs: [
-      { id: 'internal/store', label: 'internal/store', sub: 'SQLite / Postgres', n: 369, role: '最大包：渠道、Key、Token、Plan、账本、运行时设置的持久化' },
+      { id: 'internal/store', label: 'internal/store', sub: 'SQLite / Postgres', n: 438, role: '最大包（按实体拆分：channel / key / token / plan / user / …）：Reader 接口是 admin 与 webui 的共享读取面' },
       { id: 'internal/model', label: 'internal/model', sub: '共享类型', n: 40, role: '跨层共享数据结构（Channel / Token / Plan / Log …）' },
-      { id: 'internal/dialect', label: 'internal/dialect', sub: 'SQL 方言', n: 35, role: 'SQLite ↔ Postgres 语句改写' },
+      { id: 'internal/dialect', label: 'internal/dialect', sub: 'SQL 方言', n: 35, role: 'SQLite ↔ Postgres 语句与 DDL 改写（store 与 logstore 共用）' },
       { id: 'internal/secrets', label: 'internal/secrets', sub: '密钥加密', n: 9, role: 'AES-256-GCM 静态加密（渠道 Key、探针 Cookie）' },
       { id: 'internal/auth', label: 'internal/auth', sub: '口令哈希', n: 13, role: 'Argon2id 哈希与校验、legacy 升级' },
       { id: 'internal/logging', label: 'internal/logging', sub: '结构化日志', n: 29, role: '结构化日志字段与级别' },
@@ -159,34 +159,52 @@ footer code{background:var(--muted);padding:1px 5px;border-radius:4px;}
   FLOW.forEach(function (id) { FLOW_SET[id] = 1; });
 
   var EDGES = [
-    ['internal/client', 'internal/provider', 47],
-    ['internal/clientapi', 'internal/store', 47],
-    ['internal/api', 'internal/provider', 130], ['internal/api', 'internal/router', 97],
-    ['internal/api', 'internal/store', 136], ['internal/api', 'internal/logstore', 0],
-    ['internal/api', 'internal/middleware', 0],
-    ['internal/mcp', 'internal/store', 142], ['internal/mcp', 'internal/api', 0],
-    ['internal/router', 'internal/store', 134], ['internal/router', 'internal/model', 68],
-    ['internal/router', 'internal/pool', 0], ['internal/router', 'internal/usage', 0],
-    ['internal/cache', 'internal/provider', 51],
-    ['internal/logstore', 'internal/model', 61],
-    ['internal/usage', 'internal/subusage', 0], ['internal/usage', 'internal/model', 0],
-    ['internal/subusage', 'internal/store', 46], ['internal/subusage', 'internal/model', 0],
-    ['internal/balance', 'internal/store', 0], ['internal/balance', 'internal/provider', 0],
-    ['internal/admin', 'internal/store', 132], ['internal/admin', 'internal/model', 61],
-    ['internal/admin', 'internal/provider', 50], ['internal/admin', 'internal/webui', 65],
-    ['internal/webui', 'internal/store', 270], ['internal/webui', 'internal/model', 156],
-    ['internal/webui', 'internal/logstore', 84], ['internal/webui', 'internal/provider', 77],
-    ['internal/server', 'internal/webui', 68], ['internal/server', 'internal/store', 45],
-    ['internal/alert', 'internal/store', 92], ['internal/alert', 'internal/logstore', 46],
-    ['internal/store', 'internal/model', 192],
-    ['cmd/gateway', 'internal/store', 50], ['cmd/gateway', 'internal/logstore', 46],
-    ['cmd/gateway', 'internal/server', 0], ['cmd/gateway', 'internal/router', 0],
-    ['internal/prober', 'internal/pool', 0], ['internal/intent', 'internal/router', 0]
+    // 边缘与接入
+    ['clients', 'internal/clientapi', 0], ['internal/clientapi', 'internal/middleware', 0],
+    ['internal/client', 'internal/provider', 15],
+    ['internal/clientapi', 'internal/store', 37],
+    ['internal/api', 'internal/provider', 129], ['internal/api', 'internal/router', 60],
+    ['internal/api', 'internal/store', 139], ['internal/api', 'internal/logstore', 20],
+    ['internal/api', 'internal/middleware', 8], ['internal/api', 'internal/mcp', 17],
+    ['internal/mcp', 'internal/store', 112], ['internal/mcp', 'internal/api', 0],
+    // 路由
+    ['internal/router', 'internal/store', 70], ['internal/router', 'internal/model', 61],
+    ['internal/router', 'internal/pool', 3], ['internal/router', 'internal/intent', 14],
+    ['internal/pool', 'internal/store', 34], ['internal/pool', 'internal/provider', 0],
+    ['internal/prober', 'internal/pool', 1],
+    // 上游
+    ['internal/cache', 'internal/provider', 19],
+    // 计量（usage 与 subusage 已解耦：由 router 的 quotaProvider 在路由侧组合）
+    ['internal/logstore', 'internal/model', 66], ['internal/logstore', 'internal/dialect', 2],
+    ['internal/usage', 'internal/store', 34], ['internal/usage', 'internal/logstore', 19],
+    ['internal/usage', 'internal/model', 18],
+    ['internal/subusage', 'internal/store', 36], ['internal/subusage', 'internal/model', 24],
+    ['internal/balance', 'internal/store', 34], ['internal/balance', 'internal/provider', 15],
+    ['internal/modelcost', 'internal/model', 7],
+    // 控制面（admin→webui 依赖已反转：双方都只读 store.Reader）
+    ['internal/admin', 'internal/store', 138], ['internal/admin', 'internal/model', 62],
+    ['internal/admin', 'internal/provider', 18], ['internal/admin', 'internal/subusage', 19],
+    ['internal/admin', 'internal/usage', 13], ['internal/admin', 'internal/logstore', 11],
+    ['internal/webui', 'internal/store', 203], ['internal/webui', 'internal/model', 118],
+    ['internal/webui', 'internal/logstore', 36], ['internal/webui', 'internal/provider', 29],
+    ['internal/webui', 'internal/subusage', 18], ['internal/webui', 'internal/usage', 11],
+    ['internal/alert', 'internal/store', 72], ['internal/alert', 'internal/logstore', 22],
+    ['internal/server', 'internal/webui', 27], ['internal/server', 'internal/store', 35],
+    ['internal/server', 'internal/api', 18],
+    // 持久层
+    ['internal/store', 'internal/model', 272], ['internal/store', 'internal/dialect', 29],
+    ['internal/store', 'internal/secrets', 15],
+    ['cmd/gateway', 'internal/store', 40], ['cmd/gateway', 'internal/logstore', 22],
+    ['cmd/gateway', 'internal/server', 0], ['cmd/gateway', 'internal/router', 7],
+    ['internal/intent', 'internal/router', 0]
   ];
 
   // ---- layout: layers stack vertically, packages wrap inside a lane ----
+  // Node width scales with production symbol count (n): 140px at n=0,
+  // +90px at n=438 (internal/store, the largest package).
   var W = 1180, PADL = 108, PADR = 20, PADT = 8, PADB = 8, GAPY = 12, GAPX = 10, ROWH = 44;
-  var PER_ROW = 5, NODE_W = 196;
+  var PER_ROW = 5;
+  function nodeW(p) { return 140 + Math.round(p.n * 90 / 438); }
 
   var pos = {}, ly = PADT, laneH = [];
   LAYERS.forEach(function (L) {
@@ -194,17 +212,14 @@ footer code{background:var(--muted);padding:1px 5px;border-radius:4px;}
     var h = rows * ROWH + (rows - 1) * GAPX + 12;
     laneH.push(h);
     var avail = W - PADL - PADR - 16;
-    var nodeW = NODE_W;
-    for (var i = 0; i < L.pkgs.length; i++) {
-      var r = Math.floor(i / PER_ROW), c = i % PER_ROW;
-      var rowCount = Math.min(PER_ROW, L.pkgs.length - r * PER_ROW);
-      var rowW = rowCount * nodeW + (rowCount - 1) * GAPX;
-      var x0 = PADL + 8 + Math.max(0, (avail - rowW) / 2);
-      pos[L.pkgs[i].id] = {
-        x: x0 + c * (nodeW + GAPX),
-        y: ly + 6 + r * (ROWH + GAPX),
-        w: nodeW, h: ROWH - 8
-      };
+    for (var r = 0; r < rows; r++) {
+      var rowPkgs = L.pkgs.slice(r * PER_ROW, (r + 1) * PER_ROW);
+      var rowW = rowPkgs.reduce(function (s, p) { return s + nodeW(p); }, 0) + (rowPkgs.length - 1) * GAPX;
+      var x = PADL + 8 + Math.max(0, (avail - rowW) / 2);
+      rowPkgs.forEach(function (p) {
+        pos[p.id] = { x: x, y: ly + 6 + r * (ROWH + GAPX), w: nodeW(p), h: ROWH - 8 };
+        x += nodeW(p) + GAPX;
+      });
     }
     ly += h + GAPY;
   });
@@ -332,7 +347,7 @@ footer code{background:var(--muted);padding:1px 5px;border-radius:4px;}
 </div>
 
 <footer>
-本页由 graphify AST 扫描（<code>graphify extract . --code-only</code>：7758 符号 / 30778 边）实测包依赖生成，随仓库维护。<br>
+本页由 graphify AST 扫描（<code>graphify extract . --code-only</code>：7808 符号 / 32271 边）实测包依赖生成，随仓库维护。<br>
 交互版与本文件同源：<code>docs/architecture.html</code>；对话内可视化使用同一片段，由宿主提供主题变量。
 </footer>
 </div>
