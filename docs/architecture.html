@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llmRx 架构分层</title>
+<style>
+:root{
+  --background:#ffffff; --foreground:#0f172a; --card:#ffffff; --card-foreground:#0f172a;
+  --popover:#0f172a; --popover-foreground:#f8fafc; --primary:#0f172a; --primary-foreground:#f8fafc;
+  --secondary:#f1f5f9; --secondary-foreground:#0f172a; --muted:#f1f5f9; --muted-foreground:#64748b;
+  --accent:#e2e8f0; --accent-foreground:#0f172a; --destructive:#dc2626; --border:#e2e8f0;
+  --input:#e2e8f0; --ring:#3b82f6;
+  --viz-series-1:#3b82f6; --viz-series-2:#22c55e; --viz-series-3:#f59e0b;
+  --viz-series-4:#8b5cf6; --viz-series-5:#ef4444; --viz-series-6:#06b6d4;
+  --font-size-base:14px;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --background:#0b1220; --foreground:#e2e8f0; --card:#111827; --card-foreground:#e2e8f0;
+    --popover:#1e293b; --popover-foreground:#e2e8f0; --primary:#e2e8f0; --primary-foreground:#0b1220;
+    --secondary:#1e293b; --secondary-foreground:#e2e8f0; --muted:#1e293b; --muted-foreground:#94a3b8;
+    --accent:#334155; --accent-foreground:#e2e8f0; --border:#1f2937; --input:#334155; --ring:#60a5fa;
+    --viz-series-1:#60a5fa; --viz-series-2:#4ade80; --viz-series-3:#fbbf24;
+    --viz-series-4:#a78bfa; --viz-series-5:#f87171; --viz-series-6:#22d3ee;
+  }
+}
+body{margin:0;padding:20px;background:var(--background);color:var(--foreground);
+  font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+.wrap{max-width:1240px;margin:0 auto;}
+footer{margin-top:14px;color:var(--muted-foreground);font-size:12px;line-height:1.7;}
+footer code{background:var(--muted);padding:1px 5px;border-radius:4px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div id="llmrx-arch">
+  <style>
+    #llmrx-arch { font-size: var(--font-size-base); color: var(--foreground); }
+    #llmrx-arch .arch-head { display:flex; justify-content:space-between; align-items:flex-end; gap:1rem; flex-wrap:wrap; margin-bottom:.7rem; }
+    #llmrx-arch .arch-title { font-size:1.3rem; font-weight:500; margin:0; }
+    #llmrx-arch .arch-sub { color:var(--muted-foreground); font-size:.82rem; margin:.2rem 0 0; }
+    #llmrx-arch .arch-legend { display:flex; gap:.8rem; flex-wrap:wrap; font-size:.74rem; color:var(--muted-foreground); align-items:center; }
+    #llmrx-arch .lg { display:inline-flex; align-items:center; gap:.3rem; }
+    #llmrx-arch .sw { width:10px; height:10px; border-radius:3px; display:inline-block; }
+    #llmrx-arch .arch-stage { position:relative; width:100%; }
+    #llmrx-arch svg { width:100%; height:auto; display:block; overflow:visible; }
+    #llmrx-arch .lane { fill:var(--muted); opacity:.45; }
+    #llmrx-arch .lane-label { fill:var(--foreground); font-size:11px; font-weight:500; }
+    #llmrx-arch .lane-note { fill:var(--muted-foreground); font-size:10px; font-weight:400; }
+    #llmrx-arch .node { cursor:default; }
+    #llmrx-arch .node rect { stroke:none; }
+    #llmrx-arch .node text.n-label { fill:var(--foreground); font-size:11.5px; }
+    #llmrx-arch .node text.n-sub { fill:var(--muted-foreground); font-size:9.5px; }
+    #llmrx-arch .node.dim { opacity:.2; }
+    #llmrx-arch .node.flow rect { stroke:var(--viz-series-1); stroke-width:1.5; }
+    #llmrx-arch .edge { fill:none; stroke:var(--border); stroke-width:1.1; }
+    #llmrx-arch .edge.hot { stroke:var(--viz-series-1); stroke-width:2; }
+    #llmrx-arch .edge.flow { stroke:var(--viz-series-1); stroke-width:1.8; stroke-dasharray:5 3; }
+    #llmrx-arch .edge.faded { opacity:.1; }
+    #llmrx-arch .hint { color:var(--muted-foreground); font-size:.77rem; margin:.55rem 0 0; }
+    #llmrx-arch .tip {
+      position:absolute; pointer-events:none; background:var(--popover); color:var(--popover-foreground);
+      border:1px solid var(--border); border-radius:8px; padding:.55rem .65rem; font-size:.77rem;
+      max-width:270px; opacity:0; transition:opacity .12s; z-index:20; box-shadow:0 6px 20px rgba(0,0,0,.16);
+    }
+    #llmrx-arch .tip b { font-weight:500; }
+    #llmrx-arch .tip .r { display:flex; justify-content:space-between; gap:1rem; margin-top:.25rem; }
+    #llmrx-arch .tip .r span:last-child { color:var(--muted-foreground); font-variant-numeric:tabular-nums; }
+  </style>
+
+  <div class="arch-head">
+    <div>
+      <h2 class="arch-title">llmRx 架构分层</h2>
+      <p class="arch-sub">按包依赖实测（graphify AST 扫描：7758 符号 / 30778 边）· 悬停方块查看职责与依赖</p>
+    </div>
+    <div class="arch-legend" id="llmrx-legend"></div>
+  </div>
+
+  <div class="arch-stage" id="llmrx-stage">
+    <svg id="llmrx-svg" role="img" aria-label="llmRx 分层架构图：边缘与客户端、接入层、路由层、上游适配层、计量与配额层、控制面、持久层，虚线为主请求链路"></svg>
+    <div class="tip" id="llmrx-tip" role="tooltip"></div>
+  </div>
+  <p class="hint">方块宽度 ∝ 生产代码符号数；箭头 = 调用方 → 被调方。虚线蓝边为一次请求的主链路。</p>
+
+<script>
+(function () {
+  var root = document.getElementById('llmrx-arch');
+  var svg = document.getElementById('llmrx-svg');
+  var stage = document.getElementById('llmrx-stage');
+  var tip = document.getElementById('llmrx-tip');
+  var legend = document.getElementById('llmrx-legend');
+
+  var LAYERS = [
+    { name: '边缘与客户端', note: 'SDK · 边缘代理', pkgs: [
+      { id: 'clients', label: 'clients', sub: 'python · go SDK', n: 202, role: '边缘客户端 SDK：本地缓存、断网兜底、用量回传' },
+      { id: 'internal/client', label: 'internal/client', sub: 'edge client', n: 109, role: '边缘客户端核心：注册、用量上报、配置下发' },
+      { id: 'internal/clientapi', label: 'internal/clientapi', sub: 'client API', n: 70, role: '边缘客户端 HTTP 接口 /client/v1/*' }
+    ]},
+    { name: '接入层', note: '协议入口', pkgs: [
+      { id: 'internal/api', label: 'internal/api', sub: 'OpenAI 兼容入口', n: 133, role: 'OpenAI/Anthropic/Gemini 兼容入口、SSE 流式、计费发射器 emitter' },
+      { id: 'internal/mcp', label: 'internal/mcp', sub: 'MCP 网关', n: 96, role: 'MCP server/client 桥接、agentic 工具循环、工具定价' },
+      { id: 'internal/middleware', label: 'internal/middleware', sub: '鉴权 · 限流', n: 21, role: 'Bearer 鉴权、RPM/TPM 限流、预算拦截' },
+      { id: 'internal/ratelimit', label: 'internal/ratelimit', sub: '滑动窗口', n: 42, role: 'in-process 滑动窗口限速器' }
+    ]},
+    { name: '路由层', note: '选渠道', pkgs: [
+      { id: 'internal/router', label: 'internal/router', sub: 'L1–L5 管线', n: 271, role: 'L1 静态匹配 → L2 熔断 → L2.5 配额 → L3 成本 → L4 意图 → L5 Thompson' },
+      { id: 'internal/pool', label: 'internal/pool', sub: 'key 轮询', n: 11, role: '渠道池与上游 Key 轮询选择' },
+      { id: 'internal/intent', label: 'internal/intent', sub: '意图分类', n: 56, role: 'L4 意图分类器（keyword 后端 + 可选 Rust cdylib）' },
+      { id: 'internal/cluster', label: 'internal/cluster', sub: '多副本', n: 73, role: '集群模式：心跳、健康检查、PG NOTIFY 配置广播' }
+    ]},
+    { name: '上游适配层', note: '出站', pkgs: [
+      { id: 'internal/provider', label: 'internal/provider', sub: '多协议适配', n: 168, role: 'OpenAI / Anthropic / Gemini 协议适配、重试、余额与用量查询' },
+      { id: 'internal/cache', label: 'internal/cache', sub: '响应缓存', n: 42, role: '响应缓存（精确 + 语义），命中同样计费' },
+      { id: 'internal/guardrail', label: 'internal/guardrail', sub: '内容护栏', n: 19, role: '输入输出内容护栏引擎' },
+      { id: 'internal/prober', label: 'internal/prober', sub: '健康探测', n: 26, role: '渠道健康探测与真实流量观察者' }
+    ]},
+    { name: '计量与配额层', note: '消耗跟踪', pkgs: [
+      { id: 'internal/logstore', label: 'internal/logstore', sub: 'JSONL 日志', n: 160, role: '请求日志：JSONL 落盘 + meta 汇总 + 保留期轮转' },
+      { id: 'internal/usage', label: 'internal/usage', sub: '本地配额', n: 28, role: 'P21：本地窗口计数（日 / 月 / 滚动），路由配额的本地口径' },
+      { id: 'internal/subusage', label: 'internal/subusage', sub: '厂商配额', n: 73, role: 'P22：向厂商查询订阅用量（OpenRouter / 智谱 / 自定义探针）' },
+      { id: 'internal/balance', label: 'internal/balance', sub: '上游余额', n: 39, role: 'P14：轮询各厂商余额并做低余额告警' },
+      { id: 'internal/modelcost', label: 'internal/modelcost', sub: '费率卡', n: 8, role: '模型费率卡缓存，计费基准' }
+    ]},
+    { name: '控制面', note: '管理与配置', pkgs: [
+      { id: 'internal/admin', label: 'internal/admin', sub: 'JSON API', n: 175, role: '管理 JSON API（/admin/api/v1/*）：渠道、Token、Plan、告警、用量' },
+      { id: 'internal/webui', label: 'internal/webui', sub: 'HTML 控制台', n: 312, role: '嵌入式管理后台（Go html/template + HTMX + Tailwind）' },
+      { id: 'internal/alert', label: 'internal/alert', sub: '告警', n: 31, role: '告警规则评估与投递（webhook / 站内事件）' },
+      { id: 'internal/runtime', label: 'internal/runtime', sub: '运行时配置', n: 49, role: '热配置原子读写与快照持久化' },
+      { id: 'internal/config', label: 'internal/config', sub: 'YAML 配置', n: 30, role: 'config.yml 解析与默认值' },
+      { id: 'internal/modelmeta', label: 'internal/modelmeta', sub: '模型元数据', n: 21, role: '模型能力与价格元数据（每日刷新）' }
+    ]},
+    { name: '持久层与横切', note: '存储 · 基础设施', pkgs: [
+      { id: 'internal/store', label: 'internal/store', sub: 'SQLite / Postgres', n: 369, role: '最大包：渠道、Key、Token、Plan、账本、运行时设置的持久化' },
+      { id: 'internal/model', label: 'internal/model', sub: '共享类型', n: 40, role: '跨层共享数据结构（Channel / Token / Plan / Log …）' },
+      { id: 'internal/dialect', label: 'internal/dialect', sub: 'SQL 方言', n: 35, role: 'SQLite ↔ Postgres 语句改写' },
+      { id: 'internal/secrets', label: 'internal/secrets', sub: '密钥加密', n: 9, role: 'AES-256-GCM 静态加密（渠道 Key、探针 Cookie）' },
+      { id: 'internal/auth', label: 'internal/auth', sub: '口令哈希', n: 13, role: 'Argon2id 哈希与校验、legacy 升级' },
+      { id: 'internal/logging', label: 'internal/logging', sub: '结构化日志', n: 29, role: '结构化日志字段与级别' },
+      { id: 'internal/observability', label: 'internal/observability', sub: 'Prometheus', n: 15, role: 'OpenTelemetry / Prometheus 指标' },
+      { id: 'internal/broker', label: 'internal/broker', sub: '事件总线', n: 10, role: '日志与事件广播（SSE 订阅）' },
+      { id: 'internal/requestid', label: 'internal/requestid', sub: '请求 ID', n: 7, role: '请求 ID 生成与透传' },
+      { id: 'internal/sse', label: 'internal/sse', sub: 'SSE', n: 8, role: 'SSE 订阅端点' },
+      { id: 'internal/rbac', label: 'internal/rbac', sub: 'RBAC', n: 9, role: '基于角色的访问控制' },
+      { id: 'internal/tokencache', label: 'internal/tokencache', sub: 'token 缓存', n: 11, role: 'Bearer Token 内存缓存' },
+      { id: 'internal/notify', label: 'internal/notify', sub: '通知', n: 3, role: '集群通知（PG NOTIFY）' },
+      { id: 'internal/server', label: 'internal/server', sub: 'HTTP 装配', n: 28, role: 'chi 路由装配、中间件链、优雅停机' },
+      { id: 'cmd/gateway', label: 'cmd/gateway', sub: '启动入口', n: 39, role: '进程入口：配置加载、后台循环、服务器启动' }
+    ]}
+  ];
+
+  var PKG = {};
+  LAYERS.forEach(function (L) { L.pkgs.forEach(function (p) { PKG[p.id] = p; }); });
+
+  // The main request path, highlighted end to end.
+  var FLOW = ['clients', 'internal/clientapi', 'internal/middleware', 'internal/api',
+              'internal/router', 'internal/pool', 'internal/provider'];
+  var FLOW_SET = {};
+  FLOW.forEach(function (id) { FLOW_SET[id] = 1; });
+
+  var EDGES = [
+    ['internal/client', 'internal/provider', 47],
+    ['internal/clientapi', 'internal/store', 47],
+    ['internal/api', 'internal/provider', 130], ['internal/api', 'internal/router', 97],
+    ['internal/api', 'internal/store', 136], ['internal/api', 'internal/logstore', 0],
+    ['internal/api', 'internal/middleware', 0],
+    ['internal/mcp', 'internal/store', 142], ['internal/mcp', 'internal/api', 0],
+    ['internal/router', 'internal/store', 134], ['internal/router', 'internal/model', 68],
+    ['internal/router', 'internal/pool', 0], ['internal/router', 'internal/usage', 0],
+    ['internal/cache', 'internal/provider', 51],
+    ['internal/logstore', 'internal/model', 61],
+    ['internal/usage', 'internal/subusage', 0], ['internal/usage', 'internal/model', 0],
+    ['internal/subusage', 'internal/store', 46], ['internal/subusage', 'internal/model', 0],
+    ['internal/balance', 'internal/store', 0], ['internal/balance', 'internal/provider', 0],
+    ['internal/admin', 'internal/store', 132], ['internal/admin', 'internal/model', 61],
+    ['internal/admin', 'internal/provider', 50], ['internal/admin', 'internal/webui', 65],
+    ['internal/webui', 'internal/store', 270], ['internal/webui', 'internal/model', 156],
+    ['internal/webui', 'internal/logstore', 84], ['internal/webui', 'internal/provider', 77],
+    ['internal/server', 'internal/webui', 68], ['internal/server', 'internal/store', 45],
+    ['internal/alert', 'internal/store', 92], ['internal/alert', 'internal/logstore', 46],
+    ['internal/store', 'internal/model', 192],
+    ['cmd/gateway', 'internal/store', 50], ['cmd/gateway', 'internal/logstore', 46],
+    ['cmd/gateway', 'internal/server', 0], ['cmd/gateway', 'internal/router', 0],
+    ['internal/prober', 'internal/pool', 0], ['internal/intent', 'internal/router', 0]
+  ];
+
+  // ---- layout: layers stack vertically, packages wrap inside a lane ----
+  var W = 1180, PADL = 108, PADR = 20, PADT = 8, PADB = 8, GAPY = 12, GAPX = 10, ROWH = 44;
+  var PER_ROW = 5, NODE_W = 196;
+
+  var pos = {}, ly = PADT, laneH = [];
+  LAYERS.forEach(function (L) {
+    var rows = Math.ceil(L.pkgs.length / PER_ROW);
+    var h = rows * ROWH + (rows - 1) * GAPX + 12;
+    laneH.push(h);
+    var avail = W - PADL - PADR - 16;
+    var nodeW = NODE_W;
+    for (var i = 0; i < L.pkgs.length; i++) {
+      var r = Math.floor(i / PER_ROW), c = i % PER_ROW;
+      var rowCount = Math.min(PER_ROW, L.pkgs.length - r * PER_ROW);
+      var rowW = rowCount * nodeW + (rowCount - 1) * GAPX;
+      var x0 = PADL + 8 + Math.max(0, (avail - rowW) / 2);
+      pos[L.pkgs[i].id] = {
+        x: x0 + c * (nodeW + GAPX),
+        y: ly + 6 + r * (ROWH + GAPX),
+        w: nodeW, h: ROWH - 8
+      };
+    }
+    ly += h + GAPY;
+  });
+  var H = ly + PADB;
+
+  var NS = 'http://www.w3.org/2000/svg';
+  function el(tag, attrs, parent) {
+    var e = document.createElementNS(NS, tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    (parent || svg).appendChild(e);
+    return e;
+  }
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+  svg.setAttribute('preserveAspectRatio', 'xMidYMin meet');
+
+  // lanes
+  ly = PADT;
+  LAYERS.forEach(function (L, li) {
+    el('rect', { x: 0, y: ly, width: W, height: laneH[li], rx: 9, class: 'lane' });
+    var t = el('text', { x: PADL - 12, y: ly + 19, class: 'lane-label', 'text-anchor': 'end' });
+    t.textContent = L.name;
+    var t2 = el('text', { x: PADL - 12, y: ly + 33, class: 'lane-note', 'text-anchor': 'end' });
+    t2.textContent = L.note;
+    ly += laneH[li] + GAPY;
+  });
+
+  // edges
+  var edgeEls = [];
+  EDGES.forEach(function (e) {
+    var a = pos[e[0]], b = pos[e[1]];
+    if (!a || !b) return;
+    var isFlow = FLOW_SET[e[0]] && FLOW_SET[e[1]];
+    var x1 = a.x + a.w / 2, y1 = a.y + a.h;
+    var x2 = b.x + b.w / 2, y2 = b.y;
+    if (y2 <= y1) { // same layer: draw a short side link
+      x1 = a.x + a.w; y1 = a.y + a.h / 2;
+      x2 = b.x; y2 = b.y + b.h / 2;
+      var d2 = 'M' + x1 + ',' + y1 + ' C' + (x1 + 24) + ',' + y1 + ' ' + (x2 - 24) + ',' + y2 + ' ' + x2 + ',' + y2;
+      var p2 = el('path', { d: d2, class: 'edge' });
+      p2.setAttribute('data-from', e[0]); p2.setAttribute('data-to', e[1]);
+      edgeEls.push(p2);
+      return;
+    }
+    var my = (y1 + y2) / 2;
+    var d = 'M' + x1 + ',' + y1 + ' C' + x1 + ',' + my + ' ' + x2 + ',' + my + ' ' + x2 + ',' + y2;
+    var p = el('path', { d: d, class: isFlow ? 'edge flow' : 'edge' });
+    p.setAttribute('data-from', e[0]); p.setAttribute('data-to', e[1]);
+    edgeEls.push(p);
+  });
+
+  // nodes
+  var nodeEls = [];
+  LAYERS.forEach(function (L) {
+    L.pkgs.forEach(function (p) {
+      var q = pos[p.id];
+      var g = el('g', { class: 'node' + (FLOW_SET[p.id] ? ' flow' : '') });
+      g.setAttribute('data-id', p.id);
+      el('rect', { x: q.x, y: q.y, width: q.w, height: q.h, rx: 7, fill: 'var(--muted)' }, g);
+      var lab = el('text', { x: q.x + 9, y: q.y + 18, class: 'n-label' }, g);
+      lab.textContent = p.label;
+      var sub = el('text', { x: q.x + 9, y: q.y + 31, class: 'n-sub' }, g);
+      sub.textContent = p.sub + ' · ' + p.n;
+      nodeEls.push(g);
+    });
+  });
+
+  // legend
+  legend.innerHTML = '<span class="lg"><span class="sw" style="background:var(--viz-series-1)"></span>主请求链路</span>' +
+    '<span class="lg"><span class="sw" style="background:var(--muted)"></span>包（宽度 ∝ 生产符号数）</span>';
+
+  // ---- interaction ----
+  function clearAll() {
+    edgeEls.forEach(function (p) {
+      var f = p.getAttribute('data-from'), t = p.getAttribute('data-to');
+      p.setAttribute('class', (FLOW_SET[f] && FLOW_SET[t]) ? 'edge flow' : 'edge');
+    });
+    nodeEls.forEach(function (g) {
+      g.setAttribute('class', 'node' + (FLOW_SET[g.getAttribute('data-id')] ? ' flow' : ''));
+    });
+  }
+  function focus(id) {
+    clearAll();
+    var seen = {};
+    edgeEls.forEach(function (p) {
+      var f = p.getAttribute('data-from'), t = p.getAttribute('data-to');
+      if (f === id || t === id) {
+        p.setAttribute('class', 'edge hot');
+        seen[f === id ? t : f] = 1;
+      } else {
+        p.setAttribute('class', 'edge faded');
+      }
+    });
+    nodeEls.forEach(function (g) {
+      var gid = g.getAttribute('data-id');
+      if (gid === id || seen[gid]) g.setAttribute('class', 'node' + (FLOW_SET[gid] ? ' flow' : ''));
+      else g.setAttribute('class', 'node dim');
+    });
+  }
+  nodeEls.forEach(function (g) {
+    var id = g.getAttribute('data-id');
+    var p = PKG[id];
+    g.addEventListener('mouseenter', function () {
+      focus(id);
+      var out = 0, inn = 0;
+      EDGES.forEach(function (e) { if (e[0] === id) out++; if (e[1] === id) inn++; });
+      tip.innerHTML = '<b>' + p.label + '</b><div style="margin-top:.25rem">' + p.role + '</div>' +
+        '<div class="r"><span>生产符号</span><span>' + p.n + '</span></div>' +
+        '<div class="r"><span>被依赖 / 依赖</span><span>' + inn + ' / ' + out + '</span></div>';
+      tip.style.opacity = '1';
+      var r = g.getBoundingClientRect(), sr = stage.getBoundingClientRect();
+      var tw = 270;
+      var left = r.left - sr.left + r.width / 2 - tw / 2;
+      if (left + tw > sr.width) left = sr.width - tw;
+      if (left < 0) left = 0;
+      tip.style.left = left + 'px';
+      var top = r.top - sr.top + r.height + 6;
+      if (top + tip.offsetHeight > sr.height) top = Math.max(0, r.top - sr.top - tip.offsetHeight - 6);
+      tip.style.top = top + 'px';
+    });
+    g.addEventListener('mouseleave', function () { tip.style.opacity = '0'; clearAll(); });
+  });
+  svg.addEventListener('mouseleave', function () { tip.style.opacity = '0'; clearAll(); });
+})();
+</script>
+</div>
+
+<footer>
+本页由 graphify AST 扫描（<code>graphify extract . --code-only</code>：7758 符号 / 30778 边）实测包依赖生成，随仓库维护。<br>
+交互版与本文件同源：<code>docs/architecture.html</code>；对话内可视化使用同一片段，由宿主提供主题变量。
+</footer>
+</div>
+</body>
+</html>
