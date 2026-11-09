@@ -85,16 +85,20 @@ func (h *Handler) SubscriptionsPage(w http.ResponseWriter, r *http.Request) {
 		ProbeKind    string
 		Experimental bool
 		Points       []pointView
-		LocalQuota   *struct {
+		// Tightest is the window closest to exhaustion — the one that
+		// actually constrains traffic. It drives the ring gauge in the
+		// card header.
+		Tightest *pointView
+		LocalQuota *struct {
 			Used  float64
 			Limit float64
 			Ratio float64
 			Unit  string
 		}
-		CheckedAt  *time.Time
-		Error      string
-		Warn       string
-		Objective  string // "vendor" | "local" | "none"
+		CheckedAt *time.Time
+		Error     string
+		Warn      string
+		Objective string // "vendor" | "local" | "none"
 	}
 
 	out := make([]channelView, 0, len(chs))
@@ -148,6 +152,15 @@ func (h *Handler) SubscriptionsPage(w http.ResponseWriter, r *http.Request) {
 				return pts[a].Label < pts[b].Label
 			})
 			view.Points = pts
+			// The window closest to exhaustion drives the ring gauge.
+			for i := range pts {
+				if pts[i].Limit <= 0 {
+					continue
+				}
+				if view.Tightest == nil || pts[i].Ratio > view.Tightest.Ratio {
+					view.Tightest = &pts[i]
+				}
+			}
 		}
 		if ch.PlanQuota.Tracked() && h.usageTrk != nil {
 			u := h.usageTrk.Usage(ch, now)
@@ -270,8 +283,12 @@ func (h *Handler) renderSubscriptionCard(w http.ResponseWriter, r *http.Request,
 		"CheckedAt":  ch.UsageCheckedAt,
 		"Error":      ch.UsageError,
 		"HasMonitor": h.usageMon != nil,
+		// Objective and LocalQuota drive the footer strip; without
+		// them an HTMX refresh would drop it.
+		"Objective": "none",
 	}
 	var points []pointView
+	var tightest *pointView
 	if rep := subusage.ReportFromState(ch.UsageState); rep.Source != "" {
 		card["Experimental"] = rep.Experimental
 		card["Warn"] = rep.Warn
@@ -291,8 +308,35 @@ func (h *Handler) renderSubscriptionCard(w http.ResponseWriter, r *http.Request,
 		sort.SliceStable(points, func(a, b int) bool {
 			return windowRank(points[a].Window) < windowRank(points[b].Window)
 		})
+		// The ring gauge needs the tightest window, exactly like the
+		// full page — without it an HTMX refresh would drop the gauge
+		// and the card would visibly change shape.
+		for i := range points {
+			if points[i].Limit <= 0 {
+				continue
+			}
+			if tightest == nil || points[i].Ratio > tightest.Ratio {
+				tightest = &points[i]
+			}
+		}
 	}
 	card["Points"] = points
+	card["Tightest"] = tightest
+	if rep := subusage.ReportFromState(ch.UsageState); rep.Source != "" {
+		card["Objective"] = "vendor"
+	}
+	if ch.PlanQuota.Tracked() && h.usageTrk != nil {
+		u := h.usageTrk.Usage(ch, now)
+		card["LocalQuota"] = map[string]any{
+			"Used":  u.Used,
+			"Limit": ch.PlanQuota.Limit,
+			"Ratio": u.Ratio,
+			"Unit":  ch.PlanQuota.Metric,
+		}
+		if card["Objective"] == "none" {
+			card["Objective"] = "local"
+		}
+	}
 	if err := h.renderer.RenderPartial(w, "subscription_card", card); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}

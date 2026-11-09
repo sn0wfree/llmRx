@@ -138,7 +138,13 @@ func NewRenderer() (*Renderer, error) {
 		"fmtUsageAmount": func(unit string, v float64) string {
 			switch unit {
 			case "usd":
-				return "$" + strconv.FormatFloat(v, 'f', 4, 64)
+				// Two decimals is what an operator reads as money;
+				// sub-cent amounts keep four so a $0.0005 budget does
+				// not collapse to $0.00.
+				if v != 0 && math.Abs(v) < 0.01 {
+					return "$" + strconv.FormatFloat(v, 'f', 4, 64)
+				}
+				return "$" + strconv.FormatFloat(v, 'f', 2, 64)
 			case "tokens", "credits", "requests":
 				return strconv.FormatFloat(v, 'f', 0, 64)
 			}
@@ -218,6 +224,20 @@ func NewRenderer() (*Renderer, error) {
 				return "text-amber-600"
 			}
 			return "text-gray-500"
+		},
+		// ringOffset returns the stroke-dashoffset for the SVG ring
+		// gauge: the circle's circumference is 2*pi*15.5 = 97.4, and
+		// the offset shrinks the visible arc as the ratio grows.
+		"ringOffset": func(ratio float64) string {
+			const circumference = 97.39
+			r := ratio
+			if r < 0 {
+				r = 0
+			}
+			if r > 1 {
+				r = 1
+			}
+			return strconv.FormatFloat(circumference*(1-r), 'f', 2, 64)
 		},
 		// quotaBarWidth is the percentage string for a bar's style attr.
 		"quotaBarWidth": func(ratio float64) string {

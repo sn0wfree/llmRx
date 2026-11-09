@@ -12,6 +12,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/store"
 	"github.com/sn0wfree/llmRx/internal/subusage"
+	"github.com/sn0wfree/llmRx/internal/usage"
 )
 
 // TestSubscriptionsPage_Renders exercises the P22 page end to end:
@@ -108,7 +109,7 @@ func TestSubscriptionsPage_EmptyState(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "暂无配置了用量探针的渠道") {
+	if !strings.Contains(rec.Body.String(), "还没有配置用量探针的渠道") {
 		t.Fatalf("empty state missing")
 	}
 }
@@ -147,6 +148,60 @@ func TestSubscriptionsPage_ExperimentalBadge(t *testing.T) {
 	// The credits unit rides along with the amounts (500 of 2000).
 	if !strings.Contains(body, "500") || !strings.Contains(body, "2000") {
 		t.Fatalf("credits amounts missing")
+	}
+}
+
+func TestSubscriptionRefresh_KeepsGaugeAndLocalStrip(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	r, _ := NewRenderer()
+	// The local-estimate footer needs the P21 tracker wired in.
+	h := &Handler{store: st, renderer: r, usageTrk: usage.New()}
+
+	ch := &model.Channel{
+		Name: "or-ch", Provider: "openrouter", BaseURL: "https://openrouter.ai/api/v1",
+		Models: []string{"m1"}, Status: model.ChannelEnabled,
+		UsageProbe: model.UsageProbe{Kind: model.UsageProbeOpenRouter},
+		PlanQuota: model.PlanQuota{
+			Metric: model.QuotaMetricTokens, Limit: 1000, Window: model.QuotaWindowDaily,
+		},
+	}
+	if err := st.CreateChannel(ch); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	report := `{"source":"openrouter_key","points":[
+		{"window":"weekly","used":9,"limit":10,"remaining":1,"unit":"usd"},
+		{"window":"key_limit","used":20,"limit":100,"remaining":80,"unit":"usd"}
+	]}`
+	if err := st.UpdateChannelUsageState(ch.ID, report, time.Now(), ""); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/admin/subscriptions/1/refresh", nil)
+	stored, err := st.GetChannel(ch.ID)
+	if err != nil {
+		t.Fatalf("reload channel: %v", err)
+	}
+	h.renderSubscriptionCard(rec, req, stored)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh: %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	// The ring gauge must survive the HTMX swap — it is part of the
+	// card's shape, so losing it makes the page jump.
+	if !strings.Contains(body, "stroke-dashoffset") {
+		t.Fatalf("ring gauge missing from the refreshed card")
+	}
+	// The local-estimate footer must survive too.
+	if !strings.Contains(body, "本地估算") {
+		t.Fatalf("local estimate strip missing from the refreshed card")
+	}
+	if !strings.Contains(body, "厂商权威") {
+		t.Fatalf("vendor badge missing from the refreshed card")
 	}
 }
 
