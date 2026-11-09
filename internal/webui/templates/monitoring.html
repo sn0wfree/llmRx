@@ -127,9 +127,9 @@
       <div class="mt-2 h-2 bg-gray-100 rounded-full overflow-hidden">
         <div class="h-full rounded-full {{if ge .UsageRatio 1.0}}bg-red-500{{else if ge .UsageRatio 0.8}}bg-amber-500{{else}}bg-green-500{{end}}" style="width: {{min100 .UsageRatio}}%"></div>
       </div>
-      <div class="mt-1 text-xs text-gray-500">${{printf "%.2f" .UsedUSD}} / ${{printf "%.2f" .BudgetUSD}} · {{printf "%.0f%%" (mul100 .UsageRatio)}}</div>
+      <div class="mt-1 text-xs text-gray-500">${{fmtUSD .UsedUSD}} / ${{fmtUSD .BudgetUSD}} · {{printf "%.0f%%" (mul100 .UsageRatio)}}</div>
       {{else}}
-      <div class="mt-2 text-xs text-gray-400">未设预算上限 · 已用 ${{printf "%.2f" .UsedUSD}}</div>
+      <div class="mt-2 text-xs text-gray-400">未设预算上限 · 已用 ${{fmtUSD .UsedUSD}}</div>
       {{end}}
     </div>
     {{end}}
@@ -159,12 +159,16 @@
     });
   });
   buckets.sort();
+  // Merge duplicate (bucket, channel) cells: same-day rollover files
+  // (or several rows in one hour) each contribute their own point, so
+  // accumulate instead of overwriting.
   var tokenOf = {}, costOf = {};
   seriesList.forEach(function(s) {
-    tokenOf[s.channel_id] = {}; costOf[s.channel_id] = {};
+    tokenOf[s.channel_id] = tokenOf[s.channel_id] || {};
+    costOf[s.channel_id] = costOf[s.channel_id] || {};
     s.points.forEach(function(p) {
-      tokenOf[s.channel_id][p.bucket] = p.tokens;
-      costOf[s.channel_id][p.bucket] = p.cost;
+      tokenOf[s.channel_id][p.bucket] = (tokenOf[s.channel_id][p.bucket] || 0) + p.tokens;
+      costOf[s.channel_id][p.bucket] = (costOf[s.channel_id][p.bucket] || 0) + p.cost;
     });
   });
 
@@ -186,8 +190,10 @@
   layout();
 
   var maxTok = 1;
-  seriesList.forEach(function(s) {
-    s.points.forEach(function(p) { if (p.tokens > maxTok) maxTok = p.tokens; });
+  Object.keys(tokenOf).forEach(function(id) {
+    Object.keys(tokenOf[id]).forEach(function(b) {
+      if (tokenOf[id][b] > maxTok) maxTok = tokenOf[id][b];
+    });
   });
 
   function xPos(i) { return pad.left + (i / (buckets.length - 1 || 1)) * plotW; }
@@ -224,18 +230,30 @@
         var cb = legendEl.querySelector('input[data-ch="' + s.channel_id + '"]');
         if (cb && !cb.checked) return;
       }
-      ctx.beginPath();
-      var started = false;
+      var pts = [];
       buckets.forEach(function(b, i) {
         var v = tokenOf[s.channel_id][b];
         if (v === undefined) return;
-        var x = xPos(i), y = yTok(v);
-        if (!started) { ctx.moveTo(x, y); started = true; }
-        else ctx.lineTo(x, y);
+        pts.push([xPos(i), yTok(v)]);
       });
-      ctx.strokeStyle = color(si);
-      ctx.lineWidth = 2;
-      ctx.stroke();
+      // A line needs two points; traffic concentrated in one bucket
+      // (the common fresh-deployment case) still has to be visible.
+      if (pts.length > 1) {
+        ctx.beginPath();
+        pts.forEach(function(p, i) {
+          if (i === 0) ctx.moveTo(p[0], p[1]);
+          else ctx.lineTo(p[0], p[1]);
+        });
+        ctx.strokeStyle = color(si);
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+      ctx.fillStyle = color(si);
+      pts.forEach(function(p) {
+        ctx.beginPath();
+        ctx.arc(p[0], p[1], 3, 0, Math.PI * 2);
+        ctx.fill();
+      });
     });
 
     ctx.fillStyle = '#6b7280';
@@ -244,10 +262,13 @@
     var steps = Math.min(buckets.length, 8);
     var step = Math.max(1, Math.floor((buckets.length - 1) / (steps - 1 || 1)));
     for (var i = 0; i < buckets.length; i += step) {
+      // Bucket labels are "YYYY-MM-DDTHH" (hourly) or "YYYY-MM-DD"
+      // (daily); slice the parts directly — no Date parsing needed.
       var label = buckets[i];
-      if (label.length > 10) {
-        var d = new Date(label.replace('Z', ':00Z'));
-        if (!isNaN(d)) label = (d.getMonth()+1) + '/' + d.getDate() + ' ' + d.getHours() + ':00';
+      if (label.length >= 13) {
+        label = label.slice(5, 7) + '/' + label.slice(8, 10) + ' ' + label.slice(11, 13) + ':00';
+      } else if (label.length >= 10) {
+        label = label.slice(5, 7) + '/' + label.slice(8, 10);
       }
       ctx.fillText(label, xPos(i), H - 5);
     }

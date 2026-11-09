@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -123,6 +124,14 @@ func NewRenderer() (*Renderer, error) {
 			default:
 				return window
 			}
+		},
+		// fmtUSD renders dollar amounts with enough precision for
+		// tiny budgets (a $0.0005 test budget must not read as $0.00).
+		"fmtUSD": func(v float64) string {
+			if v != 0 && math.Abs(v) < 0.01 {
+				return strconv.FormatFloat(v, 'f', 4, 64)
+			}
+			return strconv.FormatFloat(v, 'f', 2, 64)
 		},
 		// balanceCell renders the upstream balance column (P14).
 		// Three distinct states matter to an operator: a value, a
