@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sn0wfree/llmRx/internal/model"
 )
 
 // Window names. Providers may add their own; these are the ones the UI
@@ -159,6 +161,16 @@ type Input struct {
 	JSONPath   string
 	WindowName string
 	Unit       string
+}
+
+// Prober is the narrow contract the control-plane packages need from
+// *Monitor: probe one channel and report what the vendor said.
+//
+// It lives here — with the implementation — so the admin API and the
+// HTML console can share one declaration instead of each keeping a
+// copy of the same two-method interface.
+type Prober interface {
+	QueryChannel(ctx context.Context, ch *model.Channel) (Report, error)
 }
 
 // Parser fetches and interprets one vendor's usage response.
