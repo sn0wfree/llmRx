@@ -121,6 +121,9 @@ channels:
   #   plan_quota_limit: 120000
   #   plan_quota_window: rolling
   #   plan_quota_window_hours: 5
+  #
+  # 注：上面的 plan_quota_* 是 P21 的「本地估算」。要拿厂商侧真实用量，在渠道编辑页
+  # 配置「源头用量探针」（P22），见文件末尾 usage_monitor 段。
 
   - name: minimax-main
     provider: minimax
@@ -134,3 +137,15 @@ channels:
     output_price_per_1m: 0.30
     max_failures: 5
     reset_timeout_ms: 60000
+
+# P22 厂商侧订阅用量探测。探针按渠道配置（渠道编辑页「源头用量探针」区，或
+# PUT /admin/api/v1/channels/{id} 的 usage_probe 字段）；这里只控制轮询节奏。
+# usage_probe.kind 可用值：
+#   openrouter_key  官方 GET /api/v1/key（推荐；多窗口：key 限额 / 日 / 周 / 月）
+#   zhipu_web       GLM Coding Plan 仪表盘 Cookie 抓取（实验性，需填 Cookie 与接口地址）
+#   custom          通用 JSONPath（endpoint_url + json_path + window_name + unit）
+usage_monitor:
+  enabled: true
+  interval_sec: 3600      # 厂商仪表盘更新慢，不建议低于 300
+  timeout_sec: 15
+  retention_days: 90

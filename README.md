@@ -67,6 +67,9 @@ P0 → P7+ 全部完成，所有 L1-L5 路由层齐全，多协议 provider，�
   按渠道堆叠的 token 趋势图、下游 Plan 预算卡
 - **配额感知路由**（P21）：渠道配额耗尽自动避开（L2.5 quota guard，运行时可关），
   `quota_aware` 成本策略按剩余配额智能分配（默认不启用，运行时可切）
+- **订阅用量页**（P22）：`/admin/subscriptions` —— 直接向厂商查询套餐真实消耗
+  （OpenRouter 官方 API 多窗口 / GLM Coding Plan Cookie 探针（实验性）/ 自定义 JSONPath），
+  与本地估算并列对照；厂商数据可用时路由优先采用（RouterPath 标记 `L2.5(quota,src)`）
 - 日志过滤 UI + **SSE 实时尾随**（Live toggle）
 - Analytics 时序图 + Top-N
 - **告警子系统**：error_rate / p95_latency / cost_spike / key_exhausted + webhook + 站内事件 + ack
@@ -410,6 +413,7 @@ go test -v ./internal/admin ./internal/api
 | [docs/P16-DISTRIBUTION.md](docs/P16-DISTRIBUTION.md) | 交付与发布骨架:版本化、多平台产物、Docker/Helm/二进制分发(规划稿) |
 | [docs/P17-JSONL-LOGS.md](docs/P17-JSONL-LOGS.md) | 日志存储改 JSONL + rotate:去掉写入路径的 SQLite/CGO(已实施) |
 | [docs/P21-USAGE-MONITOR.md](docs/P21-USAGE-MONITOR.md) | **渠道用量监控 + 上游套餐配额 + 配额感知路由**(P21,已实施) |
+| [docs/P22-SUBSCRIPTION-USAGE.md](docs/P22-SUBSCRIPTION-USAGE.md) | **厂商侧订阅用量监控**(P22,已实施): API 能力矩阵、窗口模型、GLM Cookie 方案风险 |
 | [CHANGELOG.md](CHANGELOG.md) | 各 Phase 变更记录 |
 
 ## 路线图
@@ -434,4 +438,5 @@ go test -v ./internal/admin ./internal/api
 | **P11** | ✅ | MCP gateway（server + client 模式 + 按工具花费 + Web UI + 流式 agentic 桥接） |
 | **P13** | ✅ | 自动重试 / 100+ provider / guardrails（引擎 + 管理端）/ Prometheus / Helm chart |
 | **P21** | ✅ | 渠道用量监控页 / 上游套餐（code plan·token plan）配额跟踪 / L2.5 配额 guard / quota_aware 策略 |
+| **P22** | ✅ | 厂商侧订阅用量（OpenRouter 多窗口 / GLM Cookie 探针 / 自定义 JSONPath）+ 订阅页 + 路由优先采用厂商数据 |
 | P12+ | ⏳ | 集群模式 / 多节点同步 |

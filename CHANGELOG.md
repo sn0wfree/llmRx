@@ -4,6 +4,37 @@ All notable changes to llmRx are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — P22
+
+厂商侧订阅用量监控（详见 [docs/P22-SUBSCRIPTION-USAGE.md](docs/P22-SUBSCRIPTION-USAGE.md)）。
+
+### Added
+
+- **订阅用量页** `/admin/subscriptions`：按渠道展示厂商报告的套餐窗口（Key 限额 / 日 / 周 / 月 /
+  5h 滚动 / 余额），含已用·上限·剩余·进度条·重置倒计时，并与 P21 本地估算并列对照；
+  侧边栏「监控」区新增入口。
+- **用量探针** `Channel.UsageProbe`：`openrouter_key`（官方 `/api/v1/key`，多窗口开箱即用）/
+  `zhipu_web`（GLM Coding Plan Cookie 抓取，实验性）/ `custom`（通用 JSONPath）。
+  配置存 `channels.usage_probe`，最近报告缓存于 `channels.usage_state`。
+- **新包 `internal/subusage`**：窗口模型 `UsagePoint`（Ratio 优先采用厂商 remaining）、
+  可插拔解析器注册表、P14 同构轮询循环（jitter / 单渠道间隔 / 失败保留上次成功值 /
+  历史 10 分钟去重 / 90 天保留）。
+- **历史表 `channel_usage_points`**：每窗口一条，供订阅页趋势与消耗速率分析。
+- **Admin API**：`GET /subscriptions`、`POST /subscriptions/{id}/refresh`、
+  `GET /subscriptions/{id}/history`、`GET /subscription-parsers`。
+
+### Changed
+
+- **路由优先采用厂商数据**：`usage.Tracker` 新增 `SourceRatio`，L2.5 guard 在厂商报告可用且
+  未过期时改用它；RouterPath 区分 `L2.5(quota)`（本地）与 `L2.5(quota,src)`（厂商）。
+- 探针 Cookie 经 AES-256-GCM 加密存储，字段 `json:"-"` 不回显；未配置 master key 时拒绝保存。
+
+### Fixed
+
+- **P14 余额刷新按钮在生产环境失效**：`main()` 在 `server.New()` 之后才调用
+  `SetBalanceMonitor`，而 webui handler 在 `New()` 内已构造完毕，拿到的永远是 nil。
+  `Server` 现在保留 webui 引用并在 setter 中回推（同一修复覆盖 P22 的 usage monitor）。
+
 ## [Unreleased] — P21
 
 渠道用量监控 + 上游套餐配额 + 配额感知路由（详见
