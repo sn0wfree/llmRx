@@ -132,17 +132,7 @@ func (d *SQLiteDriver) Insert(entry *model.Log) error {
 		return err
 	}
 
-	if _, err := df.conn.Exec(
-		`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, cache_hit, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		entry.TokenID, entry.ChannelID, entry.KeyID, entry.Model,
-		entry.PromptTokens, entry.CompletionTokens, entry.CachedTokens,
-		entry.ReasoningTokens, int64(boolToInt(entry.CacheHit)),
-		entry.RealCostUSD, entry.BilledCostUSD,
-		entry.DurationMs, entry.StatusCode, entry.RouterPath, entry.RequestIP,
-		entry.Endpoint, entry.Units,
-		entry.CreatedAt.UTC().Unix(),
-	); err != nil {
+	if _, err := df.conn.Exec(logsInsertSQL, logInsertArgs(entry)...); err != nil {
 		return fmt.Errorf("logstore: insert %s: %w", dayFileKey, err)
 	}
 
@@ -206,24 +196,14 @@ func (d *SQLiteDriver) batchInsertForDate(date string, entries []*model.Log) (in
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(
-		`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, cache_hit, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(logsInsertSQL)
 	if err != nil {
 		return 0, fmt.Errorf("logstore: prepare %s: %w", dayFileKey, err)
 	}
 	defer stmt.Close()
 
 	for _, entry := range entries {
-		if _, err := stmt.Exec(
-			entry.TokenID, entry.ChannelID, entry.KeyID, entry.Model,
-			entry.PromptTokens, entry.CompletionTokens, entry.CachedTokens,
-			entry.ReasoningTokens, int64(boolToInt(entry.CacheHit)),
-			entry.RealCostUSD, entry.BilledCostUSD,
-			entry.DurationMs, entry.StatusCode, entry.RouterPath, entry.RequestIP,
-			entry.Endpoint, entry.Units,
-			entry.CreatedAt.UTC().Unix(),
-		); err != nil {
+		if _, err := stmt.Exec(logInsertArgs(entry)...); err != nil {
 			return 0, fmt.Errorf("logstore: batch insert %s: %w", dayFileKey, err)
 		}
 	}
@@ -417,32 +397,10 @@ func dayFileKey(date string, seq int) string {
 }
 
 // ensureLogSchema creates the logs table and its indexes if absent.
-// The schema matches the one formerly in store/sqlite.go so admin
-// queries (analytics, /logs) continue to work unchanged.
+// The DDL is the canonical logsTableDDL shared with the Postgres
+// driver; the index set is the shared superset (logsIndexes).
 func ensureLogSchema(db *sql.DB) error {
-	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS logs (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			token_id INTEGER NOT NULL DEFAULT 0,
-			channel_id INTEGER NOT NULL DEFAULT 0,
-			key_id INTEGER NOT NULL DEFAULT 0,
-			model TEXT NOT NULL DEFAULT '',
-			prompt_tokens INTEGER NOT NULL DEFAULT 0,
-			completion_tokens INTEGER NOT NULL DEFAULT 0,
-			cached_tokens INTEGER NOT NULL DEFAULT 0,
-			real_cost_usd REAL NOT NULL DEFAULT 0,
-			billed_cost_usd REAL NOT NULL DEFAULT 0,
-			duration_ms INTEGER NOT NULL DEFAULT 0,
-			status_code INTEGER NOT NULL DEFAULT 0,
-			router_path TEXT NOT NULL DEFAULT '',
-			request_ip TEXT NOT NULL DEFAULT '',
-			endpoint TEXT NOT NULL DEFAULT '',
-			units INTEGER NOT NULL DEFAULT 0,
-			created_at INTEGER NOT NULL
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_logs_created ON logs(created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_logs_channel ON logs(channel_id)`,
-	}
+	stmts := append([]string{logsTableDDL}, logsIndexes...)
 	for _, q := range stmts {
 		if _, err := db.Exec(q); err != nil {
 			return err
@@ -680,14 +638,6 @@ func (d *SQLiteDriver) ScanSince(since time.Time, fn func(*model.Log) bool) erro
 	return nil
 }
 
-// logRowCols is the SELECT list for reading a logs row into a
-// model.Log. It must stay in lockstep with streamLogRows — a mismatch
-// is a runtime scan error, not a compile error.
-const logRowCols = "id, token_id, channel_id, key_id, model, prompt_tokens, " +
-	"completion_tokens, cached_tokens, reasoning_tokens, cache_hit, " +
-	"real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, " +
-	"request_ip, endpoint, units, created_at"
-
 // streamLogRows scans *sql.Rows shaped like logRowCols into fn.
 // fn returns false to stop.
 func streamLogRows(rows *sql.Rows, fn func(*model.Log) bool) error {
@@ -861,7 +811,7 @@ func (d *SQLiteDriver) LogStats(days []string) (LogStatsResult, error) {
 	defer detachAll(df.conn, attachAliases)
 
 	var sb strings.Builder
-	sb.WriteString("SELECT COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(real_cost_usd),0), COALESCE(SUM(billed_cost_usd),0), COUNT(*), COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END),0) FROM (")
+	sb.WriteString(logStatsProjection + " FROM (")
 	for i := range days {
 		if i > 0 {
 			sb.WriteString(" UNION ALL ")
@@ -902,7 +852,7 @@ func (d *SQLiteDriver) TimeSeries(filter QueryFilter, bucketSec int64, days []st
 	defer detachAll(df.conn, attachAliases)
 
 	var sb strings.Builder
-	sb.WriteString("SELECT (created_at / ?) * ? AS bucket, COUNT(*), COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(real_cost_usd), 0), COALESCE(SUM(billed_cost_usd), 0) FROM (")
+	sb.WriteString(logTimeSeriesProjection + " FROM (")
 	for i := range days {
 		if i > 0 {
 			sb.WriteString(" UNION ALL ")
@@ -969,9 +919,7 @@ func (d *SQLiteDriver) TopByField(filter QueryFilter, field string, limit int, d
 	defer detachAll(df.conn, attachAliases)
 
 	var sb strings.Builder
-	sb.WriteString("SELECT ")
-	sb.WriteString(field)
-	sb.WriteString(", COUNT(*), COALESCE(SUM(prompt_tokens+completion_tokens),0), COALESCE(SUM(billed_cost_usd),0), COALESCE(SUM(real_cost_usd),0) FROM (")
+	sb.WriteString(logTopProjection(field) + " FROM (")
 	for i := range days {
 		if i > 0 {
 			sb.WriteString(" UNION ALL ")

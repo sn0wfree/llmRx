@@ -52,33 +52,13 @@ func NewPostgresDriver(dsn string) (*PostgresDriver, error) {
 
 // Open creates the logs table and indexes (idempotent). dir is
 // ignored — there are no files in the Postgres backend.
+//
+// The DDL is the canonical SQLite-form logsTableDDL translated by
+// dialect.RewriteDDL — the same source the SQLite driver uses, so
+// the schema lives in exactly one place (postgres_ddl_test.go pins
+// the translated output).
 func (p *PostgresDriver) Open(dir string) error {
-	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS logs (
-			id BIGSERIAL PRIMARY KEY,
-			token_id BIGINT NOT NULL DEFAULT 0,
-			channel_id BIGINT NOT NULL DEFAULT 0,
-			key_id BIGINT NOT NULL DEFAULT 0,
-			model TEXT NOT NULL DEFAULT '',
-			prompt_tokens INTEGER NOT NULL DEFAULT 0,
-			completion_tokens INTEGER NOT NULL DEFAULT 0,
-			cached_tokens INTEGER NOT NULL DEFAULT 0,
-			reasoning_tokens INTEGER NOT NULL DEFAULT 0,
-			cache_hit INTEGER NOT NULL DEFAULT 0,
-			real_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
-			billed_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
-			duration_ms BIGINT NOT NULL DEFAULT 0,
-			status_code INTEGER NOT NULL DEFAULT 0,
-			router_path TEXT NOT NULL DEFAULT '',
-			request_ip TEXT NOT NULL DEFAULT '',
-			endpoint TEXT NOT NULL DEFAULT '',
-			units INTEGER NOT NULL DEFAULT 0,
-			created_at BIGINT NOT NULL
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_logs_created ON logs(created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_logs_token_created ON logs(token_id, created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_logs_channel_created ON logs(channel_id, created_at)`,
-	}
+	stmts := append([]string{logsTableDDL}, logsIndexes...)
 	for _, q := range stmts {
 		if _, err := p.db.Exec(p.d.RewriteDDL(q)); err != nil {
 			return fmt.Errorf("logstore: migrate: %w", err)
@@ -89,17 +69,7 @@ func (p *PostgresDriver) Open(dir string) error {
 
 // Insert appends one log entry.
 func (p *PostgresDriver) Insert(entry *model.Log) error {
-	_, err := p.db.Exec(p.d.RewriteQuery(
-		`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, cache_hit, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		entry.TokenID, entry.ChannelID, entry.KeyID, entry.Model,
-		entry.PromptTokens, entry.CompletionTokens, entry.CachedTokens,
-		entry.ReasoningTokens, int64(boolToInt(entry.CacheHit)),
-		entry.RealCostUSD, entry.BilledCostUSD,
-		entry.DurationMs, entry.StatusCode, entry.RouterPath, entry.RequestIP,
-		entry.Endpoint, entry.Units,
-		entry.CreatedAt.UTC().Unix(),
-	)
+	_, err := p.db.Exec(p.d.RewriteQuery(logsInsertSQL), logInsertArgs(entry)...)
 	if err != nil {
 		return fmt.Errorf("logstore: insert: %w", err)
 	}
@@ -117,17 +87,7 @@ func (p *PostgresDriver) BatchInsert(entries []*model.Log) (int, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 	for _, e := range entries {
-		if _, err := tx.Exec(p.d.RewriteQuery(
-			`INSERT INTO logs(token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, cache_hit, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-			e.TokenID, e.ChannelID, e.KeyID, e.Model,
-			e.PromptTokens, e.CompletionTokens, e.CachedTokens,
-			e.ReasoningTokens, int64(boolToInt(e.CacheHit)),
-			e.RealCostUSD, e.BilledCostUSD,
-			e.DurationMs, e.StatusCode, e.RouterPath, e.RequestIP,
-			e.Endpoint, e.Units,
-			e.CreatedAt.UTC().Unix(),
-		); err != nil {
+		if _, err := tx.Exec(p.d.RewriteQuery(logsInsertSQL), logInsertArgs(e)...); err != nil {
 			return 0, fmt.Errorf("logstore: batch insert: %w", err)
 		}
 	}
@@ -136,8 +96,6 @@ func (p *PostgresDriver) BatchInsert(entries []*model.Log) (int, error) {
 	}
 	return len(entries), nil
 }
-
-const logCols = "id, token_id, channel_id, key_id, model, prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, cache_hit, real_cost_usd, billed_cost_usd, duration_ms, status_code, router_path, request_ip, endpoint, units, created_at"
 
 // QueryAcross returns rows matching filter, optionally restricted
 // to the given days, with total count and pagination.
@@ -163,19 +121,8 @@ func (p *PostgresDriver) QueryAcross(filter QueryFilter, days []string) ([]model
 		return nil, 0, fmt.Errorf("logstore: count: %w", err)
 	}
 
-	limit := filter.Limit
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 500 {
-		limit = 500
-	}
-	offset := filter.Offset
-	if offset < 0 {
-		offset = 0
-	}
-
-	q := "SELECT " + logCols + " " + from + " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+	limit, offset := clampPage(filter.Limit, filter.Offset)
+	q := "SELECT " + logRowCols + " " + from + " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
 
 	rows, err := p.db.Query(p.d.RewriteQuery(q), args...)
@@ -193,57 +140,31 @@ func (p *PostgresDriver) QueryAcross(filter QueryFilter, days []string) ([]model
 		cap = remaining
 	}
 	out := make([]model.Log, 0, cap)
-	for rows.Next() {
-		var l model.Log
-		var created int64
-		var cacheHit int
-		if err := rows.Scan(&l.ID, &l.TokenID, &l.ChannelID, &l.KeyID, &l.Model,
-			&l.PromptTokens, &l.CompletionTokens, &l.CachedTokens,
-			&l.ReasoningTokens, &cacheHit,
-			&l.RealCostUSD, &l.BilledCostUSD, &l.DurationMs, &l.StatusCode,
-			&l.RouterPath, &l.RequestIP, &l.Endpoint, &l.Units, &created); err != nil {
-			return nil, 0, err
-		}
-		l.CacheHit = cacheHit != 0
-		l.CreatedAt = time.Unix(created, 0).UTC()
-		out = append(out, l)
+	if err := streamLogRows(rows, func(l *model.Log) bool {
+		out = append(out, *l)
+		return true
+	}); err != nil {
+		return nil, 0, err
 	}
-	return out, total, rows.Err()
+	return out, total, nil
 }
 
 // ScanSince streams rows with CreatedAt >= since to fn, ascending by
 // creation time. The created_at index makes this a range scan.
 func (p *PostgresDriver) ScanSince(since time.Time, fn func(*model.Log) bool) error {
-	q := "SELECT " + logCols + " FROM logs WHERE created_at >= ? ORDER BY created_at ASC, id ASC"
+	q := "SELECT " + logRowCols + " FROM logs WHERE created_at >= ? ORDER BY created_at ASC, id ASC"
 	rows, err := p.db.Query(p.d.RewriteQuery(q), since.Unix())
 	if err != nil {
 		return fmt.Errorf("logstore: scan-since: %w", err)
 	}
 	defer rows.Close()
-	for rows.Next() {
-		var l model.Log
-		var created int64
-		var cacheHit int
-		if err := rows.Scan(&l.ID, &l.TokenID, &l.ChannelID, &l.KeyID, &l.Model,
-			&l.PromptTokens, &l.CompletionTokens, &l.CachedTokens,
-			&l.ReasoningTokens, &cacheHit,
-			&l.RealCostUSD, &l.BilledCostUSD, &l.DurationMs, &l.StatusCode,
-			&l.RouterPath, &l.RequestIP, &l.Endpoint, &l.Units, &created); err != nil {
-			return err
-		}
-		l.CacheHit = cacheHit != 0
-		l.CreatedAt = time.Unix(created, 0).UTC()
-		if !fn(&l) {
-			return nil
-		}
-	}
-	return rows.Err()
+	return streamLogRows(rows, fn)
 }
 
 // LogStats aggregates totals across all rows (days ignored — the
 // single table is always "all files").
 func (p *PostgresDriver) LogStats(days []string) (LogStatsResult, error) {
-	q := `SELECT COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(real_cost_usd),0), COALESCE(SUM(billed_cost_usd),0), COUNT(*), COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END),0) FROM logs`
+	q := logStatsProjection + " FROM logs"
 	var out LogStatsResult
 	if err := p.db.QueryRow(p.d.RewriteQuery(q)).Scan(
 		&out.PromptTokens, &out.CompletionTokens, &out.RealCostUSD,
@@ -269,7 +190,7 @@ func (p *PostgresDriver) TimeSeries(filter QueryFilter, bucketSec int64, days []
 		args = append(args, dayArgs...)
 	}
 
-	q := `SELECT (created_at / ?) * ? AS bucket, COUNT(*), COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(real_cost_usd), 0), COALESCE(SUM(billed_cost_usd), 0) FROM logs`
+	q := logTimeSeriesProjection + " FROM logs"
 	if where != "" {
 		q += " WHERE " + where
 	}
@@ -314,7 +235,7 @@ func (p *PostgresDriver) TopByField(filter QueryFilter, field string, limit int,
 		args = append(args, dayArgs...)
 	}
 
-	q := "SELECT " + field + ", COUNT(*), COALESCE(SUM(prompt_tokens+completion_tokens),0), COALESCE(SUM(billed_cost_usd),0), COALESCE(SUM(real_cost_usd),0) FROM logs"
+	q := logTopProjection(field) + " FROM logs"
 	if where != "" {
 		q += " WHERE " + where
 	}
