@@ -96,7 +96,7 @@ RecoverRecent(trk, logStore, store)  // 启动恢复：最宽窗口边界起 Sca
   超 soft 线后斜率翻倍（耗尽 ≈ 1.5）；未跟踪渠道取中性 0.5。运行时
   `cost_strategy: quota_aware` 即可切换（`PUT /admin/api/v1/config` 白名单已扩展）。
 
-### 3.5 Admin API（`internal/admin/usage.go`）
+### 3.5 Admin API（`internal/admin/user-usage.go`）
 
 | 端点 | 内容 |
 |---|---|
@@ -108,7 +108,7 @@ RecoverRecent(trk, logStore, store)  // 启动恢复：最宽窗口边界起 Sca
 `AggregateChannelUsage` / `ChannelBuckets` / `ParseRange`。7d/30d 走 meta（O(files)），
 24h 与非 JSONL 后端走 ScanSince 行扫描。
 
-### 3.6 监控页（`/admin/monitoring`）
+### 3.6 监控页（`/admin/channel-monitor`）
 
 - 顶部汇总卡：请求 / prompt（含 cached）/ completion / 双成本 / 错误率。
 - 渠道明细表：四类 token、双成本、错误率、**配额进度条**（绿 <80% / 黄 ≥80% / 红 ≥100%）、
@@ -116,7 +116,7 @@ RecoverRecent(trk, logStore, store)  // 启动恢复：最宽窗口边界起 Sca
 - 趋势图：按渠道堆叠的 token 曲线（canvas 内联 JS，沿用 Analytics 模式），24h 逐小时 /
   7d·30d 逐日，图例可勾选。
 - 下游 Plan 预算卡。
-- 侧边栏「监控」区新增「用量监控」入口。
+- 侧边栏「监控」区新增「渠道监控」入口。
 
 渠道表单（Channels → 编辑）新增「上游套餐配额」区：类型 / 指标 / 上限 / 窗口 / 滚动小时数，
 留空上限即停止跟踪（与余额清零语义一致）。

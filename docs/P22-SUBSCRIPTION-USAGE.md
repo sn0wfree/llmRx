@@ -148,7 +148,7 @@ func (t *Tracker) SourceRatio(ch, now) (ratio float64, ok bool)
 | `GET /admin/api/v1/subscriptions/{id}/history?days=N` | 单渠道历史 |
 | `GET /admin/api/v1/subscription-parsers` | 已注册解析器 + 说明 |
 
-页面 `/admin/subscriptions`（侧边栏「监控 → 订阅用量」）：
+页面 `/admin/subscription-quota`（侧边栏「监控 → 订阅用量」）：
 
 - 每渠道一张卡：`厂商权威` / `本地估算` / `无数据` 徽章，实验性徽章 + 警告；
 - 每窗口一行：已用 / 上限 / 剩余 / 进度条 / 重置倒计时（`3d 4h`、`22h 13m`）；

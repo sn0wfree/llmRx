@@ -2,12 +2,12 @@
   <div class="bg-gradient-to-r from-slate-900 via-emerald-900 to-teal-900 rounded-xl shadow-lg p-6 text-white">
     <div class="flex justify-between items-end gap-4 flex-wrap">
       <div>
-        <h1 class="text-2xl font-bold tracking-tight">订阅用量</h1>
+        <h1 class="text-2xl font-bold tracking-tight">订阅配额</h1>
         <p class="mt-1 text-sm text-emerald-100/80">厂商侧报告的套餐消耗 · OpenRouter 官方 API · GLM Coding Plan Cookie 抓取 · 自定义探针</p>
       </div>
       <div class="flex gap-1 text-sm bg-white/10 p-1 rounded-lg backdrop-blur">
-        <a href="/admin/subscriptions" class="px-3.5 py-1.5 rounded-md transition {{if not .ShowAll}}bg-white text-emerald-900 font-medium shadow-sm{{else}}text-emerald-100 hover:bg-white/10{{end}}">仅订阅</a>
-        <a href="/admin/subscriptions?filter=all" class="px-3.5 py-1.5 rounded-md transition {{if .ShowAll}}bg-white text-emerald-900 font-medium shadow-sm{{else}}text-emerald-100 hover:bg-white/10{{end}}">全部渠道</a>
+        <a href="/admin/subscription-quota" class="px-3.5 py-1.5 rounded-md transition {{if not .ShowAll}}bg-white text-emerald-900 font-medium shadow-sm{{else}}text-emerald-100 hover:bg-white/10{{end}}">仅订阅</a>
+        <a href="/admin/subscription-quota?filter=all" class="px-3.5 py-1.5 rounded-md transition {{if .ShowAll}}bg-white text-emerald-900 font-medium shadow-sm{{else}}text-emerald-100 hover:bg-white/10{{end}}">全部渠道</a>
       </div>
     </div>
     <div class="mt-5 grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -101,7 +101,7 @@
       </div>
       {{end}}
       {{if .HasMonitor}}
-      <button hx-post="/admin/subscriptions/{{.ID}}/refresh"
+      <button hx-post="/admin/subscription-quota/{{.ID}}/refresh"
               hx-target="#sub-card-{{.ID}}" hx-swap="outerHTML"
               class="px-2.5 py-1 text-xs bg-gray-50 text-gray-600 rounded-md hover:bg-gray-100 hover:text-gray-900 ring-1 ring-gray-200/70 transition whitespace-nowrap inline-flex items-center gap-1">
         <span class="htmx-indicator inline-flex"><svg class="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"/><path d="M12 2a10 10 0 0110 10" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg></span>

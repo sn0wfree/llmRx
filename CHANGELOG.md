@@ -8,9 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 厂商侧订阅用量监控（详见 [docs/P22-SUBSCRIPTION-USAGE.md](docs/P22-SUBSCRIPTION-USAGE.md)）。
 
+### Changed
+
+- **页面改名，消除「用量」歧义**：三个都含「用量」的页面现在按维度区分
+  ——「用量」（下游用户）→ **用户用量** `/admin/user-usage`；
+  「用量监控」（上游渠道 · 本地计量）→ **渠道监控** `/admin/channel-monitor`；
+  「订阅用量」（上游 · 厂商报告）→ **订阅配额** `/admin/subscription-quota`。
+  旧 URL 不保留（直接 404）。JSON API 路径不变（`/admin/api/v1/usage/*`、
+  `/admin/api/v1/subscriptions*`）—— 它们是给程序用的，稳定优先。
+  用户侧「用量」（`/account/usage`）保持原名。
+
 ### Added
 
-- **订阅用量页** `/admin/subscriptions`：按渠道展示厂商报告的套餐窗口（Key 限额 / 日 / 周 / 月 /
+- **订阅配额页** `/admin/subscription-quota`：按渠道展示厂商报告的套餐窗口（Key 限额 / 日 / 周 / 月 /
   5h 滚动 / 余额），含已用·上限·剩余·进度条·重置倒计时，并与 P21 本地估算并列对照；
   侧边栏「监控」区新增入口。
 - **用量探针** `Channel.UsageProbe`：`openrouter_key`（官方 `/api/v1/key`，多窗口开箱即用）/
@@ -42,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **用量监控页** `/admin/monitoring`：各渠道 prompt/completion/cached/reasoning token
+- **渠道监控页** `/admin/channel-monitor`：各渠道 prompt/completion/cached/reasoning token
   用量（24h/7d/30d）、双成本、错误率、上游套餐配额进度条、按渠道堆叠的 token 趋势图、
   下游 Plan 预算卡；侧边栏「监控」区新增入口。
 - **上游套餐配额**：`Channel.PlanQuota`（kind: code/token · metric: tokens/prompt_tokens/usd ·

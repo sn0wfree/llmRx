@@ -117,7 +117,7 @@ curl -X PUT http://127.0.0.1:8787/admin/api/v1/channels/42 \
 
 ## 第 3 步：立即刷新并核对
 
-在 `/admin/subscriptions` 页面：
+在 `/admin/subscription-quota` 页面：
 
 1. 找到该渠道的卡片 → 点 **「立即刷新」**
 2. 期望看到「厂商权威」徽章 + 至少一个窗口行（已用 / 上限 / 剩余 / 进度 / 重置）
@@ -177,7 +177,7 @@ curl -s 'http://127.0.0.1:8787/admin/api/v1/logs?limit=5' \
 
 ## 第 5 步：确认本地 vs 厂商的对照
 
-`/admin/monitoring` 页底部有「本地估算（P21）」对照条。
+`/admin/channel-monitor` 页底部有「本地估算（P21）」对照条。
 
 - 本地 ≈ 厂商 → 流量基本都走 llmRx，正常
 - 本地 << 厂商 → 账号被其他工具共享，考虑分流或换号
@@ -195,7 +195,7 @@ usage_monitor:
   retention_days: 90
 ```
 
-改完重启实例。到 `/admin/subscriptions` 确认「探测状态：已启用」。
+改完重启实例。到 `/admin/subscription-quota` 确认「探测状态：已启用」。
 
 历史趋势（可选）：
 

@@ -6,11 +6,11 @@
     </div>
     <div class="flex gap-1 text-sm">
       {{$r := or .Range ""}}
-      <a href="/admin/usage?range=24h" class="px-3 py-1.5 rounded-md {{if eq $r "24h"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">24h</a>
-      <a href="/admin/usage?range=7d" class="px-3 py-1.5 rounded-md {{if eq $r "7d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">7d</a>
-      <a href="/admin/usage?range=30d" class="px-3 py-1.5 rounded-md {{if eq $r "30d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">30d</a>
-      <a href="/admin/usage?range=90d" class="px-3 py-1.5 rounded-md {{if eq $r "90d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">90d</a>
-      <a href="/admin/usage" class="px-3 py-1.5 rounded-md {{if eq $r ""}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">全部</a>
+      <a href="/admin/user-usage?range=24h" class="px-3 py-1.5 rounded-md {{if eq $r "24h"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">24h</a>
+      <a href="/admin/user-usage?range=7d" class="px-3 py-1.5 rounded-md {{if eq $r "7d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">7d</a>
+      <a href="/admin/user-usage?range=30d" class="px-3 py-1.5 rounded-md {{if eq $r "30d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">30d</a>
+      <a href="/admin/user-usage?range=90d" class="px-3 py-1.5 rounded-md {{if eq $r "90d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">90d</a>
+      <a href="/admin/user-usage" class="px-3 py-1.5 rounded-md {{if eq $r ""}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">全部</a>
     </div>
   </div>
 
@@ -30,7 +30,7 @@
       </thead>
       <tbody class="bg-white divide-y divide-gray-200">
         {{range .Views}}
-        <tr class="hover:bg-gray-50 cursor-pointer" onclick="location.href='/admin/usage/{{.User.ID}}?range={{$.Range}}'">
+        <tr class="hover:bg-gray-50 cursor-pointer" onclick="location.href='/admin/user-usage/{{.User.ID}}?range={{$.Range}}'">
           <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{{.User.Username}}</td>
           <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{.User.Role}}</td>
           <td class="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-700">{{.Summary.Requests}}</td>

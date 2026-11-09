@@ -125,9 +125,9 @@ cost = 分段计价(prompt_uncached, base/128k/200k input)
 ### 7.3 每用户用量统计
 
 - `tokens.user_id` 启动时按 `token.name == username` 回填，归属到用户
-- **Admin**：`/admin/usage` 所有用户聚合（请求/token/成本/缓存命中）；
+- **Admin**：`/admin/user-usage` 所有用户聚合（请求/token/成本/缓存命中）；
   点入单用户看每日趋势 + 按模型分布 + 请求明细 + CSV 导出
-  （`/admin/usage/{id}/export.csv`）
+  （`/admin/user-usage/{id}/export.csv`）
 - **用户自助**：`/admin/me` 现含用量统计（总量卡片、趋势图、按模型表、导出 CSV）
 - 日志新列：`reasoning_tokens`、`cache_hit`（读取时自动迁移旧日文件）
 

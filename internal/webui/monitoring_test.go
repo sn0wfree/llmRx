@@ -56,14 +56,14 @@ func TestMonitoringPage_Renders(t *testing.T) {
 	trk.Observe(ch.ID, 800, 100, 50, 20, 0.5, time.Now())
 
 	for _, rangeQ := range []string{"", "?range=7d", "?range=30d"} {
-		req := httptest.NewRequest(http.MethodGet, "/admin/monitoring"+rangeQ, nil)
+		req := httptest.NewRequest(http.MethodGet, "/admin/channel-monitor"+rangeQ, nil)
 		rec := httptest.NewRecorder()
 		h.MonitoringPage(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("monitoring%s: %d %s", rangeQ, rec.Code, rec.Body.String())
 		}
 		body := rec.Body.String()
-		if !strings.Contains(body, "用量监控") || !strings.Contains(body, "code-ch") {
+		if !strings.Contains(body, "渠道监控") || !strings.Contains(body, "code-ch") {
 			t.Fatalf("page missing expected content; full body:\n%s", body)
 		}
 		if rangeQ == "" {

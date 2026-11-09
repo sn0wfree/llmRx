@@ -62,12 +62,12 @@ P0 → P7+ 全部完成，所有 L1-L5 路由层齐全，多协议 provider，�
 
 #### 观测 / 运维
 - 用量日志：每次请求写入 JSONL 日志（含 token_id / cost / duration / cached_tokens）
-- **用量监控页**（P21）：`/admin/monitoring` —— 各渠道 prompt/completion/cached/reasoning
+- **渠道监控页**（P21）：`/admin/channel-monitor` —— 各渠道 prompt/completion/cached/reasoning
   token 用量、双成本、错误率、**上游套餐（code plan / token plan）配额进度**、
   按渠道堆叠的 token 趋势图、下游 Plan 预算卡
 - **配额感知路由**（P21）：渠道配额耗尽自动避开（L2.5 quota guard，运行时可关），
   `quota_aware` 成本策略按剩余配额智能分配（默认不启用，运行时可切）
-- **订阅用量页**（P22）：`/admin/subscriptions` —— 直接向厂商查询套餐真实消耗
+- **订阅配额页**（P22）：`/admin/subscription-quota` —— 直接向厂商查询套餐真实消耗
   （OpenRouter 官方 API 多窗口 / GLM Coding Plan Cookie 探针（实验性）/ 自定义 JSONPath），
   与本地估算并列对照；厂商数据可用时路由优先采用（RouterPath 标记 `L2.5(quota,src)`）
 - 日志过滤 UI + **SSE 实时尾随**（Live toggle）
@@ -438,6 +438,6 @@ go test -v ./internal/admin ./internal/api
 | **P10** | ✅ | OpenTelemetry + Prometheus `/metrics` |
 | **P11** | ✅ | MCP gateway（server + client 模式 + 按工具花费 + Web UI + 流式 agentic 桥接） |
 | **P13** | ✅ | 自动重试 / 100+ provider / guardrails（引擎 + 管理端）/ Prometheus / Helm chart |
-| **P21** | ✅ | 渠道用量监控页 / 上游套餐（code plan·token plan）配额跟踪 / L2.5 配额 guard / quota_aware 策略 |
+| **P21** | ✅ | 渠道渠道监控页 / 上游套餐（code plan·token plan）配额跟踪 / L2.5 配额 guard / quota_aware 策略 |
 | **P22** | ✅ | 厂商侧订阅用量（OpenRouter 多窗口 / GLM Cookie 探针 / 自定义 JSONPath）+ 订阅页 + 路由优先采用厂商数据 |
 | P12+ | ⏳ | 集群模式 / 多节点同步 |

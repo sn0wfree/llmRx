@@ -201,10 +201,12 @@ func (h *Handler) Routes() http.Handler {
 		r.Post("/model-costs/{model}/delete", h.ModelCostDelete)
 		r.Post("/model-costs/import", h.ModelCostImport)
 
-		// Per-user usage (admin)
-		r.Get("/usage", h.UsersUsagePage)
-		r.Get("/usage/{id}", h.UserUsagePage)
-		r.Get("/usage/{id}/export.csv", h.UserUsageExportCSV)
+		// Per-user usage (admin). Named "user-usage" rather than
+		// "usage" so it does not read as the same thing as the
+		// channel-side pages ("channel-monitor" / "subscription-quota").
+		r.Get("/user-usage", h.UsersUsagePage)
+		r.Get("/user-usage/{id}", h.UserUsagePage)
+		r.Get("/user-usage/{id}/export.csv", h.UserUsageExportCSV)
 
 		r.Get("/mcp-servers", h.MCPServersPage)
 		r.Post("/mcp-servers", h.MCPServerCreate)
@@ -232,10 +234,13 @@ func (h *Handler) Routes() http.Handler {
 		r.Post("/alerts/events/{id}/ack", h.alertAck)
 
 		r.Get("/analytics", h.AnalyticsPage)
-		r.Get("/monitoring", h.MonitoringPage)
-		r.Get("/subscriptions", h.SubscriptionsPage)
-		r.Post("/subscriptions/{id}/refresh", h.SubscriptionRefresh)
-		r.Get("/subscriptions/{id}/history", h.SubscriptionHistoryPage)
+		// Channel-side pages: "channel-monitor" is llmRx's own count
+		// per upstream channel, "subscription-quota" is what the vendor
+		// reports about the subscription plan.
+		r.Get("/channel-monitor", h.MonitoringPage)
+		r.Get("/subscription-quota", h.SubscriptionsPage)
+		r.Post("/subscription-quota/{id}/refresh", h.SubscriptionRefresh)
+		r.Get("/subscription-quota/{id}/history", h.SubscriptionHistoryPage)
 		r.Get("/health", h.ChannelHealthPage)
 		r.Post("/health/{id}/probe", h.ChannelProbeNow)
 

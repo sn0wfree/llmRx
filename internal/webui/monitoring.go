@@ -163,9 +163,9 @@ func (h *Handler) MonitoringPage(w http.ResponseWriter, r *http.Request) {
 
 	data := map[string]any{
 		"Body":           "monitoring_body",
-		"Title":          "用量监控",
+		"Title":          "渠道监控",
 		"User":           userToView(getUser(r)),
-		"Active":         "monitoring",
+		"Active":         "channel-monitor",
 		"Range":          rangeName,
 		"Rows":           rows,
 		"SeriesJSON":     seriesJSON,

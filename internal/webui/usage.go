@@ -124,9 +124,9 @@ func (h *Handler) UsersUsagePage(w http.ResponseWriter, r *http.Request) {
 
 	data := map[string]any{
 		"Body":   "users_usage_body",
-		"Title":  "用量 · 用户",
+		"Title":  "用户用量",
 		"User":   userToView(getUser(r)),
-		"Active": "usage",
+		"Active": "user-usage",
 		"Views":  views,
 		"Range":  rangeVal,
 	}
@@ -180,9 +180,9 @@ func (h *Handler) UserUsagePage(w http.ResponseWriter, r *http.Request) {
 
 	data := map[string]any{
 		"Body":       "user_usage_body",
-		"Title":      "用量 · " + u.Username,
+		"Title":      "用户用量 · " + u.Username,
 		"User":       userToView(getUser(r)),
-		"Active":     "usage",
+		"Active":     "user-usage",
 		"TargetUser": u,
 		"Summary":    summary,
 		"ByModel":    byModel,

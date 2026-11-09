@@ -65,13 +65,13 @@ func TestSubscriptionsPage_Renders(t *testing.T) {
 
 	t.Run("default", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		h.SubscriptionsPage(rec, httptest.NewRequest(http.MethodGet, "/admin/subscriptions", nil))
+		h.SubscriptionsPage(rec, httptest.NewRequest(http.MethodGet, "/admin/subscription-quota", nil))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 		}
 		body := rec.Body.String()
 		for _, want := range []string{
-			"订阅用量", "or-main", "厂商权威", "Key 限额", "每周",
+			"订阅配额", "or-main", "厂商权威", "Key 限额", "每周",
 			"90%", // weekly is 9/10
 		} {
 			if !strings.Contains(body, want) {
@@ -85,7 +85,7 @@ func TestSubscriptionsPage_Renders(t *testing.T) {
 
 	t.Run("show all", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		h.SubscriptionsPage(rec, httptest.NewRequest(http.MethodGet, "/admin/subscriptions?filter=all", nil))
+		h.SubscriptionsPage(rec, httptest.NewRequest(http.MethodGet, "/admin/subscription-quota?filter=all", nil))
 		body := rec.Body.String()
 		if !strings.Contains(body, "plain-ch") {
 			t.Fatal("filter=all must list probe-less channels")
@@ -105,7 +105,7 @@ func TestSubscriptionsPage_EmptyState(t *testing.T) {
 	r, _ := NewRenderer()
 	h := &Handler{store: st, renderer: r}
 	rec := httptest.NewRecorder()
-	h.SubscriptionsPage(rec, httptest.NewRequest(http.MethodGet, "/admin/subscriptions", nil))
+	h.SubscriptionsPage(rec, httptest.NewRequest(http.MethodGet, "/admin/subscription-quota", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d", rec.Code)
 	}
@@ -138,7 +138,7 @@ func TestSubscriptionsPage_ExperimentalBadge(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	h.SubscriptionsPage(rec, httptest.NewRequest(http.MethodGet, "/admin/subscriptions", nil))
+	h.SubscriptionsPage(rec, httptest.NewRequest(http.MethodGet, "/admin/subscription-quota", nil))
 	body := rec.Body.String()
 	for _, want := range []string{"实验性", "5 小时滚动", "dashboard shape may change"} {
 		if !strings.Contains(body, want) {
@@ -181,7 +181,7 @@ func TestSubscriptionRefresh_KeepsGaugeAndLocalStrip(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/admin/subscriptions/1/refresh", nil)
+	req := httptest.NewRequest(http.MethodPost, "/admin/subscription-quota/1/refresh", nil)
 	stored, err := st.GetChannel(ch.ID)
 	if err != nil {
 		t.Fatalf("reload channel: %v", err)

@@ -5,13 +5,13 @@
       <p class="mt-1 text-sm text-gray-500">按日趋势、模型分布与请求明细</p>
     </div>
     <div class="flex gap-2 items-center">
-      <a href="/admin/usage/{{.TargetUser.ID}}/export.csv?range={{.Range}}" class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-sm font-medium">导出 CSV</a>
+      <a href="/admin/user-usage/{{.TargetUser.ID}}/export.csv?range={{.Range}}" class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-sm font-medium">导出 CSV</a>
       <div class="flex gap-1 text-sm">
         {{$r := or .Range ""}}
-        <a href="/admin/usage/{{.TargetUser.ID}}?range=24h" class="px-3 py-1.5 rounded-md {{if eq $r "24h"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">24h</a>
-        <a href="/admin/usage/{{.TargetUser.ID}}?range=7d" class="px-3 py-1.5 rounded-md {{if eq $r "7d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">7d</a>
-        <a href="/admin/usage/{{.TargetUser.ID}}?range=30d" class="px-3 py-1.5 rounded-md {{if eq $r "30d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">30d</a>
-        <a href="/admin/usage/{{.TargetUser.ID}}" class="px-3 py-1.5 rounded-md {{if eq $r ""}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">全部</a>
+        <a href="/admin/user-usage/{{.TargetUser.ID}}?range=24h" class="px-3 py-1.5 rounded-md {{if eq $r "24h"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">24h</a>
+        <a href="/admin/user-usage/{{.TargetUser.ID}}?range=7d" class="px-3 py-1.5 rounded-md {{if eq $r "7d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">7d</a>
+        <a href="/admin/user-usage/{{.TargetUser.ID}}?range=30d" class="px-3 py-1.5 rounded-md {{if eq $r "30d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">30d</a>
+        <a href="/admin/user-usage/{{.TargetUser.ID}}" class="px-3 py-1.5 rounded-md {{if eq $r ""}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">全部</a>
       </div>
     </div>
   </div>
@@ -116,7 +116,7 @@
     </table>
     {{if gt .Page 0}}
     <div class="px-6 py-3 border-t border-gray-200">
-      <a href="/admin/usage/{{.TargetUser.ID}}?page={{sub .Page 1}}&range={{.Range}}&model={{.Model}}" class="text-sm text-blue-600">上一页</a>
+      <a href="/admin/user-usage/{{.TargetUser.ID}}?page={{sub .Page 1}}&range={{.Range}}&model={{.Model}}" class="text-sm text-blue-600">上一页</a>
     </div>
     {{end}}
   </div>

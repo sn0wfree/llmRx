@@ -13,7 +13,7 @@ import (
 
 // ---------- usage monitoring (P21) ----------
 //
-// Three read-only endpoints feed the /admin/monitoring page:
+// Three read-only endpoints feed the /admin/channel-monitor page:
 //
 //	GET /admin/api/v1/usage/overview?range=24h|7d|30d
 //	GET /admin/api/v1/usage/timeseries?range=24h|7d|30d

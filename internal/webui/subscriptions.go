@@ -51,7 +51,7 @@ func windowLabel(name string) string {
 	return name
 }
 
-// SubscriptionsPage renders /admin/subscriptions.
+// SubscriptionsPage renders /admin/subscription-quota.
 func (h *Handler) SubscriptionsPage(w http.ResponseWriter, r *http.Request) {
 	chs, err := h.store.GetChannels()
 	if err != nil {
@@ -180,9 +180,9 @@ func (h *Handler) SubscriptionsPage(w http.ResponseWriter, r *http.Request) {
 
 	data := map[string]any{
 		"Body":           "subscriptions_body",
-		"Title":          "订阅用量",
+		"Title":          "订阅配额",
 		"User":           userToView(getUser(r)),
-		"Active":         "subscriptions",
+		"Active":         "subscription-quota",
 		"Channels":       out,
 		"ShowAll":        showAll,
 		"ExhaustedCount": exhaustedCount,
