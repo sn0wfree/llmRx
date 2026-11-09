@@ -7,8 +7,8 @@ import (
 	"github.com/sn0wfree/llmRx/internal/model"
 )
 
-// stubStore satisfies the small BreakerStore interface that the
-// breaker depends on. Keeping it minimal makes tests straightforward.
+// stubStore satisfies the small BreakerStore interface — consulted
+// only when config is (re)pushed: startup priming and reload().
 type stubStore struct {
 	channels map[int64]*model.Channel
 }
@@ -34,6 +34,16 @@ func newStub(maxFail int, reset time.Duration) *stubStore {
 	}
 }
 
+// prime pushes a per-channel breaker override into the breaker,
+// mirroring what startup and the admin channel-update path do under
+// the push-based contract.
+func prime(b *CircuitBreaker, id int64, maxFail int, reset time.Duration) {
+	b.PrimeChannel(&model.Channel{
+		ID:             id,
+		CircuitBreaker: model.CircuitBreakerConfig{MaxFailures: maxFail, ResetTimeout: reset},
+	})
+}
+
 func mkChannels(ids ...int64) []*model.Channel {
 	out := make([]*model.Channel, 0, len(ids))
 	for _, id := range ids {
@@ -45,7 +55,7 @@ func mkChannels(ids ...int64) []*model.Channel {
 
 func TestBreaker_ClosedAllowsAll(t *testing.T) {
 	b := NewCircuitBreaker(nil)
-	b.store = newStub(3, 50*time.Millisecond)
+	prime(b, 1, 3, 50*time.Millisecond)
 	ch := mkChannels(1)
 	got := b.Filter(ch)
 	if len(got) != 1 {
@@ -55,7 +65,7 @@ func TestBreaker_ClosedAllowsAll(t *testing.T) {
 
 func TestBreaker_OpensAfterMaxFailures(t *testing.T) {
 	b := NewCircuitBreaker(nil)
-	b.store = newStub(3, 50*time.Millisecond)
+	prime(b, 1, 3, 50*time.Millisecond)
 
 	for i := 0; i < 3; i++ {
 		b.RecordFailure(1, 500)
@@ -69,7 +79,7 @@ func TestBreaker_OpensAfterMaxFailures(t *testing.T) {
 
 func TestBreaker_HalfOpenAfterReset(t *testing.T) {
 	b := NewCircuitBreaker(nil)
-	b.store = newStub(2, 30*time.Millisecond)
+	prime(b, 1, 2, 30*time.Millisecond)
 
 	b.RecordFailure(1, 500)
 	b.RecordFailure(1, 500)
@@ -86,7 +96,7 @@ func TestBreaker_HalfOpenAfterReset(t *testing.T) {
 
 func TestBreaker_RecordSuccessResetsState(t *testing.T) {
 	b := NewCircuitBreaker(nil)
-	b.store = newStub(2, 30*time.Millisecond)
+	prime(b, 1, 2, 30*time.Millisecond)
 
 	b.RecordFailure(1, 500)
 	b.RecordFailure(1, 500)
@@ -102,10 +112,10 @@ func TestBreaker_RecordSuccessResetsState(t *testing.T) {
 
 func TestBreaker_PartialOpenFiltersOnlyAffected(t *testing.T) {
 	b := NewCircuitBreaker(nil)
-	b.store = &stubStore{channels: map[int64]*model.Channel{
-		1: {ID: 1, CircuitBreaker: model.CircuitBreakerConfig{MaxFailures: 2, ResetTimeout: 30 * time.Millisecond}},
-		2: {ID: 2, CircuitBreaker: model.CircuitBreakerConfig{MaxFailures: 2, ResetTimeout: 30 * time.Millisecond}},
-	}}
+	b.PrimeAll([]model.Channel{
+		{ID: 1, CircuitBreaker: model.CircuitBreakerConfig{MaxFailures: 2, ResetTimeout: 30 * time.Millisecond}},
+		{ID: 2, CircuitBreaker: model.CircuitBreakerConfig{MaxFailures: 2, ResetTimeout: 30 * time.Millisecond}},
+	})
 
 	b.RecordFailure(1, 500)
 	b.RecordFailure(1, 500)
@@ -185,7 +195,7 @@ var _ BreakerDefaults = (*liveDefaults)(nil)
 // cooldown but never counts toward the consecutive-failure counter.
 func TestBreaker_429Cooldown(t *testing.T) {
 	b := NewCircuitBreaker(nil)
-	b.store = newStub(2, 30*time.Millisecond)
+	prime(b, 1, 2, 30*time.Millisecond)
 
 	for i := 0; i < 5; i++ {
 		b.RecordFailure(1, 429)
@@ -213,7 +223,7 @@ func TestBreaker_429Cooldown(t *testing.T) {
 // until an operator reload or a success — retrying is pointless.
 func TestBreaker_401HardReject(t *testing.T) {
 	b := NewCircuitBreaker(nil)
-	b.store = newStub(50, 30*time.Millisecond)
+	prime(b, 1, 50, 30*time.Millisecond)
 
 	b.RecordFailure(1, 401)
 	if got := b.Filter(mkChannels(1)); len(got) != 0 {
@@ -238,7 +248,7 @@ func TestBreaker_401HardReject(t *testing.T) {
 // TestBreaker_404HardReject mirrors 401 for not-found upstreams.
 func TestBreaker_404HardReject(t *testing.T) {
 	b := NewCircuitBreaker(nil)
-	b.store = newStub(50, 30*time.Millisecond)
+	prime(b, 1, 50, 30*time.Millisecond)
 	b.RecordFailure(1, 404)
 	if got := b.Filter(mkChannels(1)); len(got) != 0 {
 		t.Fatal("expected 404 hard reject to filter the channel")
@@ -256,7 +266,7 @@ func TestBreaker_404HardReject(t *testing.T) {
 // push the rate back below the threshold.
 func TestBreaker_MinuteRateCooldown(t *testing.T) {
 	b := NewCircuitBreaker(nil)
-	b.store = newStub(50, 30*time.Millisecond)
+	prime(b, 1, 50, 30*time.Millisecond)
 
 	for i := 0; i < 7; i++ {
 		b.RecordFailure(1, 500)
@@ -281,7 +291,7 @@ func TestBreaker_MinuteRateCooldown(t *testing.T) {
 // the 50% threshold must not park the channel.
 func TestBreaker_HealthyRateNoCooldown(t *testing.T) {
 	b := NewCircuitBreaker(nil)
-	b.store = newStub(50, 30*time.Millisecond)
+	prime(b, 1, 50, 30*time.Millisecond)
 
 	for i := 0; i < 5; i++ {
 		b.RecordFailure(1, 500)
@@ -296,7 +306,7 @@ func TestBreaker_HealthyRateNoCooldown(t *testing.T) {
 // existing consecutive-failure semantics.
 func TestBreaker_5xxOpensBreaker(t *testing.T) {
 	b := NewCircuitBreaker(nil)
-	b.store = newStub(3, 30*time.Millisecond)
+	prime(b, 1, 3, 30*time.Millisecond)
 	for i := 0; i < 3; i++ {
 		b.RecordFailure(1, 503)
 	}
@@ -327,7 +337,7 @@ func (s *stubHealthChecker) Healthy(id int64) bool {
 // even when the breaker itself considers them healthy.
 func TestBreaker_HealthCheckerFiltersUnhealthy(t *testing.T) {
 	b := NewCircuitBreaker(nil)
-	b.store = newStub(50, 30*time.Millisecond)
+	prime(b, 1, 50, 30*time.Millisecond)
 	b.SetHealthChecker(&stubHealthChecker{unhealthy: map[int64]bool{2: true}})
 
 	ch1 := &model.Channel{ID: 1, Name: "healthy-ch"}
@@ -344,7 +354,7 @@ func TestBreaker_HealthCheckerFiltersUnhealthy(t *testing.T) {
 // an empty list (degraded attempt > no traffic).
 func TestBreaker_HealthCheckerSafetyNet(t *testing.T) {
 	b := NewCircuitBreaker(nil)
-	b.store = newStub(50, 30*time.Millisecond)
+	prime(b, 1, 50, 30*time.Millisecond)
 	b.SetHealthChecker(&stubHealthChecker{unhealthy: map[int64]bool{1: true, 2: true}})
 
 	got := b.Filter(mkChannels(1, 2))
@@ -357,10 +367,88 @@ func TestBreaker_HealthCheckerSafetyNet(t *testing.T) {
 // HealthChecker must not affect filtering at all.
 func TestBreaker_HealthCheckerNil(t *testing.T) {
 	b := NewCircuitBreaker(nil)
-	b.store = newStub(50, 30*time.Millisecond)
+	prime(b, 1, 50, 30*time.Millisecond)
 	// No SetHealthChecker call: healthChecker is nil.
 	got := b.Filter(mkChannels(1))
 	if len(got) != 1 {
 		t.Fatalf("nil health checker: expected channel to pass, got %d", len(got))
+	}
+}
+
+// countingStore counts every GetChannel call so tests can pin the
+// push-based contract: the request path never consults the store.
+type countingStore struct {
+	stubStore
+	calls int
+}
+
+func (s *countingStore) GetChannel(id int64) (*model.Channel, error) {
+	s.calls++
+	return s.stubStore.GetChannel(id)
+}
+
+// TestBreaker_NoRequestPathStoreIO pins the push contract end to
+// end: after PrimeChannel, routing decisions and failure recording
+// must not consult the store; only reload() (admin-time) may pull
+// exactly once, and the pulled override must take effect.
+func TestBreaker_NoRequestPathStoreIO(t *testing.T) {
+	st := &countingStore{stubStore: stubStore{channels: map[int64]*model.Channel{
+		1: {ID: 1, CircuitBreaker: model.CircuitBreakerConfig{MaxFailures: 3, ResetTimeout: 30 * time.Millisecond}},
+	}}}
+	b := NewCircuitBreaker(st)
+	b.PrimeChannel(&model.Channel{ID: 1, CircuitBreaker: model.CircuitBreakerConfig{MaxFailures: 3, ResetTimeout: 30 * time.Millisecond}})
+
+	b.RecordFailure(1, 500)
+	b.RecordSuccess(1)
+	if got := b.Filter(mkChannels(1)); len(got) != 1 {
+		t.Fatal("expected primed channel to pass")
+	}
+	if st.calls != 0 {
+		t.Fatalf("request path consulted the store %d time(s)", st.calls)
+	}
+
+	// reload() is admin-time: it may pull the channel once to
+	// re-prime, and the pulled override must take effect (open at
+	// 3 failures, not at the 5-failure default).
+	b.reload(1)
+	if st.calls != 1 {
+		t.Fatalf("reload should pull the channel exactly once, got %d", st.calls)
+	}
+	for i := 0; i < 3; i++ {
+		b.RecordFailure(1, 500)
+	}
+	if got := b.Filter(mkChannels(1)); len(got) != 0 {
+		t.Fatal("expected reload-pushed override (max 3) to open the breaker")
+	}
+	if st.calls != 1 {
+		t.Fatalf("post-reload request path consulted the store: %d call(s)", st.calls)
+	}
+}
+
+// TestBreaker_ReloadDropsOverrideForDeletedChannel: reload() on a
+// channel that no longer exists clears any cached override, so the
+// breaker does not keep applying config from a deleted row.
+func TestBreaker_ReloadDropsOverrideForDeletedChannel(t *testing.T) {
+	st := &countingStore{stubStore: stubStore{channels: map[int64]*model.Channel{}}}
+	b := NewCircuitBreaker(st)
+	prime(b, 1, 2, 30*time.Millisecond)
+	b.reload(1) // channel gone from the store
+
+	b.cfgMu.RLock()
+	_, stillCached := b.cfgCache[1]
+	b.cfgMu.RUnlock()
+	if stillCached {
+		t.Fatal("expected the deleted channel's override to be dropped")
+	}
+	// Falls back to defaults: 5 failures needed to open.
+	for i := 0; i < 4; i++ {
+		b.RecordFailure(1, 500)
+	}
+	if got := b.Filter(mkChannels(1)); len(got) != 1 {
+		t.Fatal("expected default threshold (5) after override was dropped")
+	}
+	b.RecordFailure(1, 500)
+	if got := b.Filter(mkChannels(1)); len(got) != 0 {
+		t.Fatal("expected breaker to open at the default 5-failure threshold")
 	}
 }

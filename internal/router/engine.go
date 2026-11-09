@@ -114,6 +114,12 @@ func New(st store.Store, pool *pool.ChannelPool) *RouterEngine {
 	// Wire latency tracker into the cost router so latency-aware
 	// strategies can rank candidates by EWMA response time.
 	r.cost.SetLatencyProvider(latencyTr)
+	// Push every channel's circuit-breaker override into the breaker
+	// cache up front: from here on the request path resolves breaker
+	// config purely from cache, never from the store.
+	if chs, err := st.GetChannels(); err == nil {
+		r.breaker.PrimeAll(chs)
+	}
 	return r
 }
 
@@ -222,6 +228,10 @@ func (e *RouterEngine) ReloadAllChannels() {
 	e.breaker.reloadAll()
 	e.thompson.ResetAll()
 	e.static.Reload()
+	// Re-push breaker overrides so the cache mirrors the current DB.
+	if chs, err := e.store.GetChannels(); err == nil {
+		e.breaker.PrimeAll(chs)
+	}
 	if e.latency != nil {
 		e.latency.Reset()
 	}

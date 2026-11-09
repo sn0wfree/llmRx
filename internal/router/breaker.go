@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/model"
-	"github.com/sn0wfree/llmRx/internal/store"
 )
 
 const (
@@ -65,9 +64,11 @@ type BreakerDefaults interface {
 	BreakerResetTimeoutMs() int64
 }
 
-// breakerCfg is the resolved per-channel circuit-breaker config:
-// maxFailures + resetDur. Stored in a per-channel cache so the hot
-// path never hits the store.
+// breakerCfg is a per-channel circuit-breaker override: the values
+// from Channel.CircuitBreaker, with 0 meaning "unset — fall back to
+// the live defaults". Overrides are pushed into the cache by
+// PrimeChannel/PrimeAll at startup and whenever the admin updates a
+// channel, so the request path never consults the store.
 type breakerCfg struct {
 	maxFailures int
 	resetDur    time.Duration
@@ -99,10 +100,11 @@ type CircuitBreaker struct {
 	// lock-free.
 	cachedDefaults atomic.Value // *breakerCfg
 
-	// cfgCache holds per-channel breakerCfg entries. The snapshot
-	// is read under cfgMu RLock; reload() rebuilds a single entry
-	// under cfgMu Lock. The map is keyed by channelID and never
-	// shrinks (channels are bounded by operator config).
+	// cfgCache holds per-channel breakerCfg overrides, pushed in by
+	// PrimeChannel/PrimeAll (startup + admin channel updates) and by
+	// reload(). The snapshot is read under cfgMu RLock on the hot
+	// path; the map is keyed by channelID and never queried against
+	// the store.
 	cfgCache map[int64]breakerCfg
 	cfgMu    sync.RWMutex
 
@@ -112,14 +114,16 @@ type CircuitBreaker struct {
 	entries sync.Map
 }
 
-// BreakerStore is the narrow contract the breaker actually depends
-// on: a single lookup for a channel's circuit-breaker config. The
-// production code passes a *store.SQLite; tests pass a stub.
+// BreakerStore is the narrow contract the breaker depends on: a
+// single channel lookup used only when config is (re)pushed — at
+// startup, after an admin channel update, or on /reload. The
+// request path never calls it. The production code passes a
+// *store.SQLite; tests pass a stub.
 type BreakerStore interface {
 	GetChannel(id int64) (*model.Channel, error)
 }
 
-func NewCircuitBreaker(st store.Store) *CircuitBreaker {
+func NewCircuitBreaker(st BreakerStore) *CircuitBreaker {
 	b := &CircuitBreaker{
 		store:    st,
 		cfgCache: make(map[int64]breakerCfg),
@@ -164,46 +168,63 @@ func (b *CircuitBreaker) refreshDefaults() {
 	// Cache the resolved snapshot.
 	def := breakerCfg{maxFailures: int(maxFail), resetDur: resetDur}
 	b.cachedDefaults.Store(&def)
-	// Per-channel overrides still need recomputation; clear the
-	// cache so cfgFor() re-reads them from the store on next access.
+	// Per-channel overrides are defaults-independent; no cache
+	// invalidation is needed for a defaults change.
+}
+
+// PrimeChannel pushes one channel's circuit-breaker override into
+// the cache. Called when the admin updates a channel (via reload)
+// and at startup. Zeros mean "unset" — cfgFor then falls back to
+// the live defaults.
+func (b *CircuitBreaker) PrimeChannel(ch *model.Channel) {
+	if ch == nil {
+		return
+	}
 	b.cfgMu.Lock()
-	b.cfgCache = make(map[int64]breakerCfg)
+	if b.cfgCache == nil {
+		b.cfgCache = make(map[int64]breakerCfg)
+	}
+	b.cfgCache[ch.ID] = breakerCfg{
+		maxFailures: ch.CircuitBreaker.MaxFailures,
+		resetDur:    ch.CircuitBreaker.ResetTimeout,
+	}
 	b.cfgMu.Unlock()
 }
 
-// cfgFor resolves the per-channel breaker config. Hot path: a single
-// RLock + map lookup. Cold path (first call for a channel): one
-// SQL GetChannel() lookup, then cached.
+// PrimeAll replaces the whole override cache with the given channel
+// set. Called at startup and on /reload so the cache mirrors the DB.
+func (b *CircuitBreaker) PrimeAll(chs []model.Channel) {
+	fresh := make(map[int64]breakerCfg, len(chs))
+	for _, ch := range chs {
+		fresh[ch.ID] = breakerCfg{
+			maxFailures: ch.CircuitBreaker.MaxFailures,
+			resetDur:    ch.CircuitBreaker.ResetTimeout,
+		}
+	}
+	b.cfgMu.Lock()
+	b.cfgCache = fresh
+	b.cfgMu.Unlock()
+}
+
+// cfgFor resolves the effective per-channel breaker config. Hot
+// path: one RLock + map lookup over pushed overrides plus the
+// cached defaults snapshot — no store IO. A channel that was never
+// primed (created outside the admin path) simply runs on defaults.
 func (b *CircuitBreaker) cfgFor(channelID int64) (int, time.Duration) {
+	def := b.resolveDefaults()
+	maxFail, resetDur := def.maxFailures, def.resetDur
 	if b.cfgCache != nil {
 		b.cfgMu.RLock()
-		cfg, ok := b.cfgCache[channelID]
+		ov, ok := b.cfgCache[channelID]
 		b.cfgMu.RUnlock()
 		if ok {
-			return cfg.maxFailures, cfg.resetDur
-		}
-	}
-
-	// Cold path: read from the store and populate the cache.
-	def := b.resolveDefaults()
-	maxFail := def.maxFailures
-	resetDur := def.resetDur
-	if b.store != nil {
-		if ch, err := b.store.GetChannel(channelID); err == nil && ch != nil {
-			if ch.CircuitBreaker.MaxFailures > 0 {
-				maxFail = int(ch.CircuitBreaker.MaxFailures)
+			if ov.maxFailures > 0 {
+				maxFail = ov.maxFailures
 			}
-			if ch.CircuitBreaker.ResetTimeout > 0 {
-				resetDur = ch.CircuitBreaker.ResetTimeout
+			if ov.resetDur > 0 {
+				resetDur = ov.resetDur
 			}
 		}
-	}
-	if b.cfgCache != nil {
-		b.cfgMu.Lock()
-		// Double-check: another goroutine may have populated while
-		// we were unlocked. Cheap to overwrite with the same value.
-		b.cfgCache[channelID] = breakerCfg{maxFailures: maxFail, resetDur: resetDur}
-		b.cfgMu.Unlock()
 	}
 	return maxFail, resetDur
 }
@@ -258,11 +279,18 @@ func (b *CircuitBreaker) reload(channelID int64) {
 	entry.hardReject = false
 	entry.cooldownUntil = time.Time{}
 	entry.mu.Unlock()
-	// Also clear the cached cfg so the next cfgFor() picks up any
-	// updated operator config (per-channel or defaults).
-	b.cfgMu.Lock()
-	delete(b.cfgCache, channelID)
-	b.cfgMu.Unlock()
+	// Re-prime the override from the store. This is admin-time IO,
+	// triggered by an admin channel update or /reload — never by a
+	// request. A channel that has vanished drops its override.
+	if b.store != nil {
+		if ch, err := b.store.GetChannel(channelID); err == nil && ch != nil {
+			b.PrimeChannel(ch)
+		} else {
+			b.cfgMu.Lock()
+			delete(b.cfgCache, channelID)
+			b.cfgMu.Unlock()
+		}
+	}
 	b.refreshDefaults()
 }
 
