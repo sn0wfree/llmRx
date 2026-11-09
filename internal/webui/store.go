@@ -1,116 +1,39 @@
 package webui
 
 import (
-	"context"
-	"time"
-
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/store"
 )
 
 // UserLookup is the narrow interface SessionMiddleware needs from the store.
 // It extracts only the single method called during session resolution,
-// decoupling the middleware from the full 63-method store.Store.
+// decoupling the middleware from the full store surface.
 type UserLookup interface {
 	GetUserBySession(token string) (*model.User, error)
 }
 
-// WebuiStore is the subset of store.Store methods consumed by webui handlers.
-// Defined here (consumer side) per Go best practice: "accept interfaces,
-// return structs". store.Store (63 methods) implicitly satisfies this
-// interface via Go's structural typing, so no adapter code is needed.
+// WebuiStore is what the HTML console needs from the store: the shared
+// store.Reader plus the calls only the console makes.
+//
+// The shared part lives in internal/store so this package and the admin
+// JSON API both depend on the contract instead of on each other.
 type WebuiStore interface {
-	UserLookup
+	store.Reader
 
-	// Channels
-	GetChannels() ([]model.Channel, error)
-	GetChannel(id int64) (*model.Channel, error)
-	CreateChannel(ch *model.Channel) error
-	UpdateChannel(ch *model.Channel) error
-	DeleteChannel(id int64) error
-	// BalanceHistory backs the inline trend chart (P14 phase 3).
-	BalanceHistory(channelID int64, from time.Time, limit int) ([]store.BalancePoint, error)
-	// UsagePoints backs the subscription page's burn-down chart (P22).
-	UsagePoints(channelID int64, from time.Time, limit int) ([]store.UsagePoint, error)
-
-	// Keys
-	GetKeys(channelID int64) ([]model.Key, error)
-	CreateKey(k *model.Key) error
-	DeleteKey(id int64) error
-
-	// Tokens
-	GetTokens() ([]model.Token, error)
-	GetTokenByID(id int64) (*model.Token, error)
-	GetTokenByName(name string) (*model.Token, error)
-	GetTokensByUserID(userID int64) ([]model.Token, error)
-	CreateToken(t *model.Token) error
-	UpdateToken(t *model.Token) error
-	DeleteToken(id int64) error
-
-	// Plans
-	GetPlans() ([]model.Plan, error)
-	GetPlan(id int64) (*model.Plan, error)
-	CreatePlan(p *model.Plan) error
-	UpdatePlan(p *model.Plan) error
-	DeletePlan(id int64) error
-
-	// Users
-	GetUser(id int64) (*model.User, error)
-	GetUserByUsername(username string) (*model.User, error)
-	GetUsers() ([]model.User, error)
-	CreateUser(u *model.User) error
-	UpdateUser(u *model.User) error
-
-	// Redeem codes
-	CreateRedeemCode(c *model.RedeemCode) error
-	ListRedeemCodes() ([]model.RedeemCode, error)
-
-	// Model costs
-	GetModelCost(model string) (*model.ModelCost, error)
-	ListModelCosts() ([]model.ModelCost, error)
-	UpsertModelCost(c *model.ModelCost) error
-	DeleteModelCost(model string) error
-	BatchUpsertModelCosts(costs []model.ModelCost) error
-	CountModelCosts() (int, error)
-
-	// Alerts
-	GetAlerts() ([]model.Alert, error)
-	GetAlert(id int64) (*model.Alert, error)
-	CreateAlert(a *model.Alert) error
-	UpdateAlert(a *model.Alert) error
-	DeleteAlert(id int64) error
-	GetAlertEvents(limit int) ([]model.AlertEvent, error)
-	AckAlertEvent(id int64) error
-
-	// Runtime
-	GetRuntimeSettings() ([]byte, error)
-
-	// ProviderDefs
-	GetProviderDefs() ([]model.ProviderDef, error)
-	CreateProviderDef(p *model.ProviderDef) error
-	DeleteProviderDef(id int64) error
-
-	// ComboModels
-	GetComboModels(tokenID int64) ([]model.TokenComboModel, error)
-	GetComboModel(id int64) (*model.TokenComboModel, error)
+	// Combo models: the console lists every combo and sets the default
+	// one for a token.
 	GetAllComboModels() ([]model.TokenComboModel, error)
+
 	ListAllComboModels() ([]model.TokenComboModel, error)
-	CreateComboModel(c *model.TokenComboModel) error
-	UpdateComboModel(c *model.TokenComboModel) error
-	DeleteComboModel(id int64) error
+
 	SetDefaultModelSet(tokenID, comboID int64) error
 
-	// MCP Servers
-	GetMCPServers(ctx context.Context) ([]store.MCPServer, error)
-	GetMCPServer(ctx context.Context, id int64) (*store.MCPServer, error)
-	CreateMCPServer(ctx context.Context, s *store.MCPServer) error
-	DeleteMCPServer(ctx context.Context, id int64) error
-	GetMCPTools(ctx context.Context, serverID int64) ([]store.MCPTool, error)
-	GetMCPToolPricing(ctx context.Context, toolID int64) (*store.MCPToolPricing, error)
-	SetMCPToolPricing(ctx context.Context, p *store.MCPToolPricing) error
+	// Provider definitions back the console's provider picker.
+	GetProviderDefs() ([]model.ProviderDef, error)
 
-	// Guardrails
-	GetGuardrailRules() ([]model.GuardrailRule, error)
-	CreateGuardrailRule(r *model.GuardrailRule) error
-	DeleteGuardrailRule(id int64) error
+	// Tokens: the console resolves a token by name and lists a user's
+	// tokens.
+	GetTokenByName(name string) (*model.Token, error)
+
+	GetTokensByUserID(userID int64) ([]model.Token, error)
 }

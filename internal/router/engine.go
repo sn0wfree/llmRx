@@ -30,10 +30,15 @@ type RouterEngine struct {
 	extraChannels []func() []*model.Channel // BYOK hook (Phase 1.5 reserved)
 	trafficObs    atomic.Value               // holds []TrafficObserver; immutable once stored
 	latency       *latency.Tracker           // per-channel EWMA latency tracker
-	usage         UsageProvider              // P21 plan-quota tracker; nil disables the quota guard
+	usage         UsageProvider              // merged quota source (local + vendor); nil disables the quota guard
+	usageLocal    UsageProvider              // P21 local plan-quota tracker
 	quotaGuardOn  func() bool                // live toggle for the L2.5 guard; nil = always on
+	// vendorUsage is the optional vendor-side quota source (P22).
+	// When it reports a live window, the guard trusts it over the
+	// local count — the vendor sees traffic from tools that never
+	// passed through llmRx.
+	vendorUsage VendorUsageProvider
 }
-
 // TrafficObserver is the pluggable hook RouterEngine invokes on
 // every successful or failed real (non-probe) call. Implementations
 // must be safe for concurrent use.
@@ -160,8 +165,31 @@ type UsageProvider interface {
 // state) disables the L2.5 quota guard and the quota_aware strategy's
 // usage input.
 func (e *RouterEngine) SetUsageTracker(u UsageProvider) {
-	e.usage = u
-	e.cost.SetUsageProvider(u)
+	e.usageLocal = u
+	e.rebuildQuotaSource()
+}
+
+// SetVendorUsageTracker wires the vendor-side quota source (P22).
+// When it has a live reading for a channel, both the L2.5 guard and
+// the quota_aware strategy prefer it over the local count.
+func (e *RouterEngine) SetVendorUsageTracker(v VendorUsageProvider) {
+	e.vendorUsage = v
+	e.rebuildQuotaSource()
+}
+
+// rebuildQuotaSource re-merges the local tracker and the vendor source
+// into the single provider the cost router and the guard consume: the
+// vendor reading wins when it is live, the local count is the
+// fallback. Called only when a source is wired, never per request.
+func (e *RouterEngine) rebuildQuotaSource() {
+	if e.usageLocal == nil && e.vendorUsage == nil {
+		e.usage = nil
+		e.cost.SetUsageProvider(nil)
+		return
+	}
+	q := &quotaProvider{local: e.usageLocal, vendor: e.vendorUsage}
+	e.usage = q
+	e.cost.SetUsageProvider(q)
 }
 
 // SetQuotaSoftThreshold updates the consumed-ratio line above which

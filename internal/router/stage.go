@@ -206,6 +206,37 @@ type VendorUsageProvider interface {
 	SourceRatio(ch *model.Channel, now time.Time) (ratio float64, ok bool)
 }
 
+// quotaProvider merges the local count and the vendor report into the
+// one provider the guard and the cost router consume. The vendor
+// reading wins when it is live: it accounts for traffic that never
+// passed through llmRx (the same account shared with other tools).
+type quotaProvider struct {
+	local  UsageProvider
+	vendor VendorUsageProvider
+}
+
+// UsageRatio returns the vendor ratio when live, else the local one.
+func (q *quotaProvider) UsageRatio(ch *model.Channel, now time.Time) float64 {
+	if q.vendor != nil {
+		if r, ok := q.vendor.SourceRatio(ch, now); ok {
+			return r
+		}
+	}
+	if q.local != nil {
+		return q.local.UsageRatio(ch, now)
+	}
+	return 0
+}
+
+// SourceRatio exposes the vendor side so the guard can tell which
+// source made the decision.
+func (q *quotaProvider) SourceRatio(ch *model.Channel, now time.Time) (float64, bool) {
+	if q.vendor == nil {
+		return 0, false
+	}
+	return q.vendor.SourceRatio(ch, now)
+}
+
 // quotaGuard compacts out channels whose upstream plan quota window
 // is exhausted (usage ratio >= 1). The result is a fresh slice — the
 // input may alias the static router's internal index, which must not

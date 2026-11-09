@@ -8,6 +8,7 @@ import (
 
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/router"
+	"github.com/sn0wfree/llmRx/internal/subusage"
 	"github.com/sn0wfree/llmRx/internal/testhelper"
 	"github.com/sn0wfree/llmRx/internal/usage"
 )
@@ -80,7 +81,7 @@ func TestQuotaGuard_ExpiredVendorWindowFallsBack(t *testing.T) {
 	trk.Observe(ch.ID, 3, 0, 0, 0, 0, time.Now()) // 3/1000 locally
 	app.Engine.SetUsageTracker(trk)
 
-	if _, ok := trk.SourceRatio(ch, time.Now()); ok {
+	if _, ok := subusage.SourceRatio(ch, time.Now()); ok {
 		t.Fatal("an expired vendor window must not be used")
 	}
 	r, err := app.Engine.RouteWith(context.Background(), "m", router.RouteOptions{})

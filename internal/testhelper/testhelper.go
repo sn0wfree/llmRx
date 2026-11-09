@@ -29,6 +29,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/router"
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/store"
+	"github.com/sn0wfree/llmRx/internal/subusage"
 	"github.com/sn0wfree/llmRx/internal/tokencache"
 	"github.com/sn0wfree/llmRx/internal/usage"
 )
@@ -110,6 +111,9 @@ func New(t *testing.T) *App {
 	adminH.SetUsageTracker(usageTrk)
 	chatH.SetUsageTracker(usageTrk)
 	eng.SetUsageTracker(usageTrk)
+	// P22: the vendor-side quota source reads the report cached on the
+	// channel, so it needs no state of its own.
+	eng.SetVendorUsageTracker(subusage.RatioSource{})
 	usage.RecoverRecent(usageTrk, logStore, st)
 	chatH.SetProvider(mp)
 	chatH.SetProviders(map[string]provider.Provider{
@@ -202,6 +206,9 @@ func NewWithStore(t *testing.T, st store.Store) *App {
 	adminH.SetUsageTracker(usageTrk)
 	chatH.SetUsageTracker(usageTrk)
 	eng.SetUsageTracker(usageTrk)
+	// P22: the vendor-side quota source reads the report cached on the
+	// channel, so it needs no state of its own.
+	eng.SetVendorUsageTracker(subusage.RatioSource{})
 	usage.RecoverRecent(usageTrk, logStore, st)
 	chatH.SetProvider(mp)
 	chatH.SetProviders(map[string]provider.Provider{

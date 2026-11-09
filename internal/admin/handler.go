@@ -78,13 +78,7 @@ type Handler struct {
 	usageTrk *usage.Tracker
 	// usageMon polls vendor-side subscription usage (P22). nil makes
 	// the refresh endpoint 503 and hides the subscription page data.
-	usageMon UsageProber
-}
-
-// UsageProber is the narrow contract the admin subscription endpoints
-// need from *subusage.Monitor.
-type UsageProber interface {
-	QueryChannel(ctx context.Context, ch *model.Channel) (subusage.Report, error)
+	usageMon subusage.Prober
 }
 
 // SessionCounter is the narrow slice of the session store the admin
@@ -125,7 +119,7 @@ func (h *Handler) SetUsageTracker(t *usage.Tracker) { h.usageTrk = t }
 
 // SetUsageMonitor wires the P22 vendor-side usage monitor into the
 // subscription endpoints. nil makes refresh return 503.
-func (h *Handler) SetUsageMonitor(m UsageProber) { h.usageMon = m }
+func (h *Handler) SetUsageMonitor(m subusage.Prober) { h.usageMon = m }
 
 // SetSessions wires the session-affinity pin store into the state
 // endpoint (session count). nil hides the block.

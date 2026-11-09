@@ -681,6 +681,12 @@ func (s *Server) SetUsageMonitor(m *subusage.Monitor) {
 	if s.webUI != nil {
 		s.webUI.SetUsageMonitor(m)
 	}
+	// P22: the router reads the vendor report from the channel's cached
+	// state. The monitor is the natural carrier of that reading, so
+	// hand it to the engine as the vendor-side quota source.
+	if m != nil {
+		s.router.SetVendorUsageTracker(m)
+	}
 }
 
 // SetReloadNotifier installs the cross-replica notify sender

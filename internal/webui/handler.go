@@ -1,7 +1,6 @@
 package webui
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -37,7 +36,7 @@ type Handler struct {
 	usageTrk *usage.Tracker
 	// usageMon probes vendor-side subscription usage (P22). nil hides
 	// the refresh button on the subscriptions page.
-	usageMon UsageProber
+	usageMon subusage.Prober
 	// balanceMon refreshes upstream balances (P14). nil makes the
 	// per-row refresh a no-op error rather than a panic.
 	balanceMon BalanceQuerier
@@ -73,15 +72,8 @@ func (h *Handler) SetProber(p *prober.Cache) { h.prober = p }
 // monitoring page's live gauges.
 func (h *Handler) SetUsageTracker(t *usage.Tracker) { h.usageTrk = t }
 
-// UsageProber is the narrow contract the subscriptions page needs from
-// *subusage.Monitor (declared here to keep webui free of the probe
-// implementation's surface).
-type UsageProber interface {
-	QueryChannel(ctx context.Context, ch *model.Channel) (subusage.Report, error)
-}
-
 // SetUsageMonitor injects the P22 vendor-usage monitor.
-func (h *Handler) SetUsageMonitor(m UsageProber) { h.usageMon = m }
+func (h *Handler) SetUsageMonitor(m subusage.Prober) { h.usageMon = m }
 
 func (h *Handler) SetCache(c cache.Cache) { h.responseCache = c }
 
