@@ -144,6 +144,47 @@ func NewRenderer() (*Renderer, error) {
 			}
 			return strconv.FormatFloat(v, 'f', 2, 64)
 		},
+		// fmtNum groups thousands: 1234567 → "1,234,567".
+		"fmtNum": func(v int64) string {
+			s := strconv.FormatInt(v, 10)
+			neg := strings.HasPrefix(s, "-")
+			if neg {
+				s = s[1:]
+			}
+			var b strings.Builder
+			for i, c := range s {
+				if i > 0 && (len(s)-i)%3 == 0 {
+					b.WriteByte(',')
+				}
+				b.WriteRune(c)
+			}
+			if neg {
+				return "-" + b.String()
+			}
+			return b.String()
+		},
+		// fmtCompact abbreviates large counts: 1234567 → "1.23M".
+		"fmtCompact": func(v int64) string {
+			neg := v < 0
+			if neg {
+				v = -v
+			}
+			var out string
+			switch {
+			case v >= 1_000_000_000:
+				out = strconv.FormatFloat(float64(v)/1e9, 'f', 2, 64) + "B"
+			case v >= 1_000_000:
+				out = strconv.FormatFloat(float64(v)/1e6, 'f', 2, 64) + "M"
+			case v >= 10_000:
+				out = strconv.FormatFloat(float64(v)/1e3, 'f', 1, 64) + "K"
+			default:
+				out = strconv.FormatInt(v, 10)
+			}
+			if neg {
+				return "-" + out
+			}
+			return out
+		},
 		// fmtUsageUnit is the short unit suffix.
 		"fmtUsageUnit": func(unit string) string {
 			switch unit {
@@ -247,6 +288,8 @@ func NewRenderer() (*Renderer, error) {
 		},
 		"add": func(a, b int) int { return a + b },
 		"sub": func(a, b int) int { return a - b },
+		// add64 adds two int64 counters (token totals).
+		"add64": func(a, b int64) int64 { return a + b },
 		// percentage returns the percent used of budget (0..100).
 		"percentage": func(used, budget float64) float64 {
 			if budget <= 0 {

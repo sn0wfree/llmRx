@@ -139,10 +139,14 @@ func TestSubscriptionsPage_ExperimentalBadge(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.SubscriptionsPage(rec, httptest.NewRequest(http.MethodGet, "/admin/subscriptions", nil))
 	body := rec.Body.String()
-	for _, want := range []string{"实验性", "5 小时滚动", "dashboard shape may change", "积分"} {
+	for _, want := range []string{"实验性", "5 小时滚动", "dashboard shape may change"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q", want)
 		}
+	}
+	// The credits unit rides along with the amounts (500 of 2000).
+	if !strings.Contains(body, "500") || !strings.Contains(body, "2000") {
+		t.Fatalf("credits amounts missing")
 	}
 }
 
