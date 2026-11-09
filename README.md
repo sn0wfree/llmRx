@@ -414,6 +414,7 @@ go test -v ./internal/admin ./internal/api
 | [docs/P17-JSONL-LOGS.md](docs/P17-JSONL-LOGS.md) | 日志存储改 JSONL + rotate:去掉写入路径的 SQLite/CGO(已实施) |
 | [docs/P21-USAGE-MONITOR.md](docs/P21-USAGE-MONITOR.md) | **渠道用量监控 + 上游套餐配额 + 配额感知路由**(P21,已实施) |
 | [docs/P22-SUBSCRIPTION-USAGE.md](docs/P22-SUBSCRIPTION-USAGE.md) | **厂商侧订阅用量监控**(P22,已实施): API 能力矩阵、窗口模型、GLM Cookie 方案风险 |
+| [docs/REAL-DATA-TEST.md](docs/REAL-DATA-TEST.md) | **真实数据测试操作指南**: OpenRouter / 智谱 探针的逐步配置与验证手册 |
 | [CHANGELOG.md](CHANGELOG.md) | 各 Phase 变更记录 |
 
 ## 路线图
