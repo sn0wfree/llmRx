@@ -35,6 +35,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/secrets"
 	"github.com/sn0wfree/llmRx/internal/server"
 	"github.com/sn0wfree/llmRx/internal/store"
+	"github.com/sn0wfree/llmRx/internal/subusage"
 	"github.com/sn0wfree/llmRx/internal/tokencache"
 
 	"gopkg.in/yaml.v3"
@@ -469,6 +470,30 @@ func main() {
 		defer balanceMon.Stop()
 	} else {
 		logging.Info("balance monitor: background sweep disabled (manual refresh still available)")
+	}
+
+	// P22: vendor-side subscription usage probes (OpenRouter keys, GLM
+	// coding-plan cookies, custom JSON probes). Shares the channel pool
+	// and the store with the balance monitor; built unconditionally so
+	// the manual refresh endpoint works even with the loop disabled.
+	usageMon := subusage.New(subusage.Config{
+		Interval: cfg.UsageMonitor.UsageMonitorInterval(),
+		Timeout:  cfg.UsageMonitor.UsageMonitorTimeout(),
+	}, cp, cp, st)
+	if sp, ok := st.(store.SecretsProvider); ok {
+		if mgr := sp.SecretsManager(); mgr != nil {
+			usageMon.SetDecrypter(mgr)
+		}
+	}
+	usageMon.SetRetention(func() time.Duration {
+		return time.Duration(cfg.UsageMonitor.UsageMonitorRetentionDays()) * 24 * time.Hour
+	})
+	srv.SetUsageMonitor(usageMon)
+	if cfg.UsageMonitor.UsageMonitorEnabled() {
+		go usageMon.Start(ctx)
+		defer usageMon.Stop()
+	} else {
+		logging.Info("usage monitor: background probe disabled (manual refresh still available)")
 	}
 	
 	// 多例模式: 初始化 cluster 包

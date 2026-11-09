@@ -218,6 +218,73 @@
       </div>
       <p class="mt-1 text-xs text-gray-500">配置后监控页展示配额进度；耗尽的渠道被路由自动避开（L2.5 quota guard），切到 quota_aware 策略还可按剩余配额智能分配。窗口=滚动时需填小时数（如 GLM/Claude 编程套餐的 5h）。</p>
     </div>
+
+    <!-- P22: vendor-side subscription usage probe -->
+    <div class="mt-4 pt-4 border-t border-gray-100">
+      <h3 class="text-sm font-medium text-gray-900 mb-1">源头用量探针（P22）</h3>
+      <p class="text-xs text-gray-500 mb-2">向厂商查询套餐的真实消耗，与上面的「本地估算」并列展示；有厂商数据时路由优先采用它。</p>
+      {{$pk := or (getFormValue .FormData "UsageProbeKind") .Channel.UsageProbe.Kind}}
+      <div class="grid grid-cols-4 gap-3">
+        <div>
+          <label class="block text-xs font-medium text-gray-700">探针类型</label>
+          <select name="usage_probe_kind" id="usage-probe-kind"
+                  class="mt-1 block w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm">
+            <option value="" {{if eq $pk ""}}selected{{end}}>不探测</option>
+            <option value="openrouter_key" {{if eq $pk "openrouter_key"}}selected{{end}}>OpenRouter（官方 API）</option>
+            <option value="zhipu_web" {{if eq $pk "zhipu_web"}}selected{{end}}>GLM Coding Plan（Cookie，实验性）</option>
+            <option value="custom" {{if eq $pk "custom"}}selected{{end}}>自定义 JSONPath</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-700">检查间隔（秒）</label>
+          <input type="number" min="0" max="86400" name="usage_probe_interval"
+                 value="{{if .Channel}}{{or (getFormValue .FormData "UsageProbeInterval") (printf "%d" .Channel.UsageProbe.IntervalSec)}}{{else}}{{getFormValue .FormData "UsageProbeInterval"}}{{end}}"
+                 placeholder="0 = 用全局默认（1h）"
+                 class="mt-1 block w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm">
+        </div>
+        <div class="col-span-2">
+          <label class="block text-xs font-medium text-gray-700">接口地址覆盖（可选）</label>
+          <input type="url" name="usage_probe_endpoint"
+                 value="{{if .Channel}}{{or (getFormValue .FormData "UsageProbeEndpoint") .Channel.UsageProbe.EndpointURL}}{{else}}{{getFormValue .FormData "UsageProbeEndpoint"}}{{end}}"
+                 placeholder="留空 = 用内置默认地址"
+                 class="mt-1 block w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm">
+        </div>
+      </div>
+
+      <div class="mt-3 grid grid-cols-4 gap-3">
+        <div class="col-span-2">
+          <label class="block text-xs font-medium text-gray-700">会话 Cookie（仅 GLM Cookie 抓取）</label>
+          <input type="password" name="usage_probe_cookie" autocomplete="new-password"
+                 placeholder="{{if .Channel}}{{if .Channel.UsageProbe.CookieMasked}}已保存 {{.Channel.UsageProbe.CookieMasked}}，留空保持不变{{else}}粘贴浏览器里的 Cookie{{end}}{{else}}粘贴浏览器里的 Cookie{{end}}"
+                 class="mt-1 block w-full px-2 py-1.5 border border-gray-300 rounded-md font-mono text-xs">
+          <p class="mt-1 text-xs text-gray-400">加密存储（AES-GCM），不会回显。从浏览器开发者工具复制 Cookie 请求头。</p>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-700">JSONPath（自定义）</label>
+          <input type="text" name="usage_probe_json_path"
+                 value="{{if .Channel}}{{or (getFormValue .FormData "UsageProbeJsonPath") .Channel.UsageProbe.JSONPath}}{{else}}{{getFormValue .FormData "UsageProbeJsonPath"}}{{end}}"
+                 placeholder="data.quota"
+                 class="mt-1 block w-full px-2 py-1.5 border border-gray-300 rounded-md font-mono text-sm">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-700">窗口名 / 单位</label>
+          <div class="mt-1 flex gap-1">
+            <input type="text" name="usage_probe_window"
+                   value="{{if .Channel}}{{or (getFormValue .FormData "UsageProbeWindow") .Channel.UsageProbe.WindowName}}{{else}}{{getFormValue .FormData "UsageProbeWindow"}}{{end}}"
+                   placeholder="credits"
+                   class="block w-1/2 px-2 py-1.5 border border-gray-300 rounded-md text-sm">
+            {{$pu := or (getFormValue .FormData "UsageProbeUnit") .Channel.UsageProbe.Unit}}
+            <select name="usage_probe_unit" class="block w-1/2 px-2 py-1.5 border border-gray-300 rounded-md text-sm">
+              <option value="" {{if eq $pu ""}}selected{{end}}>自动</option>
+              <option value="usd" {{if eq $pu "usd"}}selected{{end}}>USD</option>
+              <option value="tokens" {{if eq $pu "tokens"}}selected{{end}}>tokens</option>
+              <option value="credits" {{if eq $pu "credits"}}selected{{end}}>积分</option>
+              <option value="requests" {{if eq $pu "requests"}}selected{{end}}>次数</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div>

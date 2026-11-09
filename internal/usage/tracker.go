@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/model"
+	"github.com/sn0wfree/llmRx/internal/subusage"
 )
 
 const (
@@ -260,6 +261,50 @@ func (t *Tracker) UsageRatio(ch *model.Channel, now time.Time) float64 {
 		return 0
 	}
 	return t.Usage(ch, now).Ratio
+}
+
+// SourceRatio returns the vendor-reported consumed fraction (P22) for
+// the channel's most constrained live window, so the router honours
+// quota burned by other tools sharing the same upstream account.
+//
+// It returns ok=false — meaning "fall back to the local ratio" — when
+// there is no probe, no cached report, or every window the vendor
+// reported has already reset. A stale report is worse than none: it
+// would keep a channel sidelined after its window rolled over.
+func (t *Tracker) SourceRatio(ch *model.Channel, now time.Time) (float64, bool) {
+	if !ch.UsageProbe.Enabled() || ch.UsageState == "" {
+		return 0, false
+	}
+	rep := subusage.ReportFromState(ch.UsageState)
+	if rep.Source == "" || len(rep.Points) == 0 {
+		return 0, false
+	}
+
+	tightest := -1.0
+	live := false
+	for i := range rep.Points {
+		p := rep.Points[i]
+		// Skip windows the vendor says have rolled over.
+		if !p.ResetsAt.IsZero() && !p.ResetsAt.After(now) {
+			continue
+		}
+		live = true
+		if p.Limit <= 0 {
+			continue
+		}
+		r := p.Ratio()
+		if r > tightest {
+			tightest = r
+		}
+	}
+	if !live {
+		return 0, false
+	}
+	if tightest < 0 {
+		// Vendor reports usage but no limits at all: nothing to enforce.
+		return 0, false
+	}
+	return tightest, true
 }
 
 // Snapshot returns Usage for every channel, keyed by channel ID.

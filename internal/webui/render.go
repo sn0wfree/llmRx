@@ -133,6 +133,80 @@ func NewRenderer() (*Renderer, error) {
 			}
 			return strconv.FormatFloat(v, 'f', 2, 64)
 		},
+		// P22 subscription helpers.
+		// fmtUsageAmount renders a vendor-reported quantity in its unit.
+		"fmtUsageAmount": func(unit string, v float64) string {
+			switch unit {
+			case "usd":
+				return "$" + strconv.FormatFloat(v, 'f', 4, 64)
+			case "tokens", "credits", "requests":
+				return strconv.FormatFloat(v, 'f', 0, 64)
+			}
+			return strconv.FormatFloat(v, 'f', 2, 64)
+		},
+		// fmtUsageUnit is the short unit suffix.
+		"fmtUsageUnit": func(unit string) string {
+			switch unit {
+			case "usd":
+				return "USD"
+			case "tokens":
+				return "tokens"
+			case "credits":
+				return "积分"
+			case "requests":
+				return "次"
+			}
+			return unit
+		},
+		// pctClass colours a progress bar by how close it is to empty.
+		"pctClass": func(ratio float64) string {
+			switch {
+			case ratio >= 1:
+				return "bg-red-500"
+			case ratio >= 0.8:
+				return "bg-amber-500"
+			}
+			return "bg-green-500"
+		},
+		// pctTextClass colours the percentage label.
+		"pctTextClass": func(ratio float64) string {
+			switch {
+			case ratio >= 1:
+				return "text-red-600 font-semibold"
+			case ratio >= 0.8:
+				return "text-amber-600"
+			}
+			return "text-gray-500"
+		},
+		// quotaBarWidth is the percentage string for a bar's style attr.
+		"quotaBarWidth": func(ratio float64) string {
+			p := ratio * 100
+			if p > 100 {
+				p = 100
+			}
+			if p < 0 {
+				p = 0
+			}
+			return strconv.FormatFloat(p, 'f', 1, 64)
+		},
+		// dict-free helper for the window label lookup in cards.
+		"windowLabelOf": func(name string) string {
+			switch name {
+			case "rolling_5h":
+				return "5 小时滚动"
+			case "key_limit":
+				return "Key 限额"
+			case "daily":
+				return "每日"
+			case "weekly":
+				return "每周"
+			case "monthly":
+				return "每月"
+			case "credits":
+				return "余额"
+			}
+			return name
+		},
 		// balanceCell renders the upstream balance column (P14).
 		// Three distinct states matter to an operator: a value, a
 		// value with a stale-warning, and "not supported".

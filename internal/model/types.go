@@ -133,6 +133,90 @@ type PlanQuota struct {
 	WindowHours int     `yaml:"window_hours" json:"window_hours,omitempty"`
 }
 
+// UsageProbe configures how llmRx asks the UPSTREAM VENDOR for this
+// channel's real subscription usage (P22). It is the vendor-side
+// counterpart of PlanQuota: PlanQuota is what llmRx measured locally,
+// UsageProbe is what the provider itself reports.
+//
+// Kind selects the parser:
+//
+//	openrouter_key  GET {base}/key with the channel's API key
+//	                (limit / usage / limit_remaining / usage_daily…)
+//	zhipu_web       EXPERIMENTAL: scrape the GLM Coding Plan dashboard
+//	                endpoint with an operator-supplied session cookie
+//	custom          generic JSONPath extraction from EndpointURL
+//
+// The zero value (Kind == "") means "do not probe".
+type UsageProbe struct {
+	Kind string `yaml:"kind" json:"kind,omitempty"`
+	// CookieCipher is the AES-GCM-sealed session cookie for web
+	// scrapers (zhipu_web). Never serialized to the API — see
+	// CookieMasked for the UI.
+	CookieCipher string `json:"-"`
+	CookieMasked string `json:"cookie_masked,omitempty"`
+	// EndpointURL overrides the parser's default endpoint (required
+	// for "custom", optional elsewhere).
+	EndpointURL string `json:"endpoint_url,omitempty"`
+	// JSONPath is the "a.b.c" path (dot-separated, array indexes as
+	// numbers) into the response used by the "custom" parser. The
+	// values found are read as {used, limit, remaining, resets_at}.
+	JSONPath string `json:"json_path,omitempty"`
+	// WindowName labels the custom parser's single window.
+	WindowName string `json:"window_name,omitempty"`
+	// Unit is "usd" | "tokens" | "credits" | "requests".
+	Unit string `json:"unit,omitempty"`
+	// IntervalSec overrides the monitor's global interval for this
+	// channel (0 = global).
+	IntervalSec int `json:"interval_sec,omitempty"`
+}
+
+// UsageProbe kinds.
+const (
+	UsageProbeOpenRouter = "openrouter_key"
+	UsageProbeZhipuWeb   = "zhipu_web"
+	UsageProbeCustom     = "custom"
+)
+
+// Validate checks the probe configuration. The zero value is valid
+// ("disabled"); an enabled probe needs a recognised kind, and the
+// custom kind needs an endpoint + JSONPath + window name.
+func (p UsageProbe) Validate() error {
+	if p.Kind == "" {
+		return nil
+	}
+	switch p.Kind {
+	case UsageProbeOpenRouter, UsageProbeZhipuWeb, UsageProbeCustom:
+	default:
+		return fmt.Errorf("usage_probe.kind must be openrouter_key|zhipu_web|custom")
+	}
+	if p.Kind == UsageProbeCustom {
+		if p.EndpointURL == "" {
+			return fmt.Errorf("usage_probe.endpoint_url is required for the custom parser")
+		}
+		if p.JSONPath == "" {
+			return fmt.Errorf("usage_probe.json_path is required for the custom parser")
+		}
+		if p.WindowName == "" {
+			return fmt.Errorf("usage_probe.window_name is required for the custom parser")
+		}
+	}
+	if p.Kind == UsageProbeZhipuWeb && p.CookieCipher == "" {
+		return fmt.Errorf("usage_probe requires a session cookie for the zhipu_web parser")
+	}
+	if p.IntervalSec < 0 || p.IntervalSec > 24*60*60 {
+		return fmt.Errorf("usage_probe.interval_sec must be 0..86400")
+	}
+	switch p.Unit {
+	case "", "usd", "tokens", "credits", "requests":
+	default:
+		return fmt.Errorf("usage_probe.unit must be usd|tokens|credits|requests")
+	}
+	return nil
+}
+
+// Enabled reports whether the probe should run for this channel.
+func (p UsageProbe) Enabled() bool { return p.Kind != "" }
+
 // Quota metrics accepted in PlanQuota.Metric.
 const (
 	QuotaMetricTokens       = "tokens"
@@ -239,6 +323,22 @@ type Channel struct {
 	// the quota_aware cost strategy prefers channels with quota left.
 	// Zero value = untracked.
 	PlanQuota PlanQuota `json:"plan_quota"`
+
+	// UsageProbe configures vendor-side subscription usage polling
+	// (P22). Unlike PlanQuota (llmRx's local count) this asks the
+	// provider what it thinks was consumed, so the two can be compared.
+	// Zero value = no probe.
+	UsageProbe UsageProbe `json:"usage_probe"`
+
+	// UsageState caches the most recent vendor report as JSON
+	// (subusage.Report). Empty = never probed successfully. P22 writes
+	// this; the monitoring/subscription pages read it.
+	UsageState string `json:"-"`
+	// UsageCheckedAt is when the last probe ran (success or failure).
+	UsageCheckedAt *time.Time `json:"usage_checked_at,omitempty"`
+	// UsageError carries the last probe failure (truncated). Cleared on
+	// the next success; the last good UsageState is kept.
+	UsageError string `json:"usage_error,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

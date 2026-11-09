@@ -42,6 +42,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/runtime"
 	"github.com/sn0wfree/llmRx/internal/secrets"
 	"github.com/sn0wfree/llmRx/internal/store"
+	"github.com/sn0wfree/llmRx/internal/subusage"
 	"github.com/sn0wfree/llmRx/internal/tokencache"
 	"github.com/sn0wfree/llmRx/internal/usage"
 	"github.com/sn0wfree/llmRx/internal/webui"
@@ -93,6 +94,13 @@ type Server struct {
 	// balanceMon refreshes upstream account balances (P14). nil leaves
 	// the balance endpoints returning 503.
 	balanceMon *balance.Monitor
+	// usageMon polls vendor-side subscription usage (P22).
+	usageMon *subusage.Monitor
+	// webUI is kept so setters called AFTER New() (main builds the
+	// monitors once the store is ready) can still reach the HTML
+	// handler. Route registration happens in New, so without this the
+	// subscription page would never see its monitor.
+	webUI *webui.Handler
 	// edgeIngestor owns the /client/v1 surface and the control-plane
 	// state (P15 phase 2). nil when no edge clients are configured.
 	edgeIngestor *clientapi.Ingestor
@@ -338,6 +346,11 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 
 	adminHandler := admin.New(s.store, s.logStore, s.pool, s.router, s.tokens, lb, rt, s.cfg, s.keyFile)
 	adminHandler.SetUsageTracker(usageTrk)
+	// P22: the usage monitor is constructed by main before Start(); if
+	// it is already attached, give the admin handler the same instance.
+	if s.usageMon != nil {
+		adminHandler.SetUsageMonitor(s.usageMon)
+	}
 	s.admin = adminHandler
 	if responseCache != nil {
 		adminHandler.SetCache(responseCache)
@@ -403,13 +416,26 @@ func (s *Server) registerRoutes(lb *broker.Broker[*model.Log], rt *runtime.Defau
 	if err != nil {
 		fatalf("webui init failed", logging.F("error", err.Error()))
 	}
+	s.webUI = webUI
 	webUI.SetProber(proberCache)
 	webUI.SetUsageTracker(usageTrk)
+	// P22: probe cookies are write-only secrets; seal them with the same
+	// AES-GCM key that protects channel API keys.
+	if sp, ok := s.store.(store.SecretsProvider); ok {
+		if mgr := sp.SecretsManager(); mgr != nil {
+			webui.SetCookieSealer(func(raw string) (string, error) {
+				return mgr.Encrypt([]byte(raw))
+			})
+		}
+	}
 	if responseCache != nil {
 		webUI.SetCache(responseCache)
 	}
 	webUI.SetMCPClientManager(s.mcpClientMgr)
 	webUI.SetOAuthManager(oauthMgr)
+	if s.usageMon != nil {
+		webUI.SetUsageMonitor(s.usageMon)
+	}
 	// P14: the row-level balance refresh button. Set here as well as
 	// in SetBalanceMonitor because webUI is constructed after New
 	// returns, so the setter may have run before this handler existed.
@@ -632,6 +658,28 @@ func (s *Server) SetBalanceMonitor(m *balance.Monitor) {
 	s.balanceMon = m
 	if s.admin != nil {
 		s.admin.SetBalanceMonitor(m)
+	}
+	// Same timing issue as SetUsageMonitor: main() builds the monitor
+	// after New() returned, so the webui's copy made during route
+	// registration saw nil. Without this the per-row balance refresh
+	// button rendered by the channels page never worked.
+	if s.webUI != nil {
+		s.webUI.SetBalanceMonitor(m)
+	}
+}
+
+// SetUsageMonitor installs the P22 vendor-side subscription usage
+// monitor. Like the balance monitor it is built even when the sweep is
+// disabled, because it backs the manual refresh endpoint.
+func (s *Server) SetUsageMonitor(m *subusage.Monitor) {
+	s.usageMon = m
+	if s.admin != nil {
+		s.admin.SetUsageMonitor(m)
+	}
+	// main() calls this after New() has already registered routes and
+	// built the webui handler, so push it there too.
+	if s.webUI != nil {
+		s.webUI.SetUsageMonitor(m)
 	}
 }
 

@@ -114,6 +114,9 @@ var channelFormFields = []string{
 	"balance_threshold", "balance_url",
 	"plan_kind", "plan_quota_metric", "plan_quota_limit",
 	"plan_quota_window", "plan_quota_window_hours",
+	"usage_probe_kind", "usage_probe_cookie", "usage_probe_endpoint",
+	"usage_probe_json_path", "usage_probe_window", "usage_probe_unit",
+	"usage_probe_interval",
 }
 
 var channelFormRenames = map[string]string{
@@ -124,6 +127,52 @@ var channelFormRenames = map[string]string{
 	"output_price":      "OutputPriceStr",
 	"base_url":          "BaseURL",
 	"balance_threshold": "BalanceThresholdStr",
+}
+
+// parseUsageProbe builds a model.UsageProbe from the channel form.
+// An empty kind means "no probe" and clears the configuration. The
+// cookie field is write-only: an empty value keeps the stored one.
+func parseUsageProbe(r *http.Request, cur model.UsageProbe) (model.UsageProbe, error) {
+	kind := strings.TrimSpace(r.FormValue("usage_probe_kind"))
+	if kind == "" {
+		return model.UsageProbe{}, nil
+	}
+	up := model.UsageProbe{
+		Kind:        kind,
+		EndpointURL: strings.TrimSpace(r.FormValue("usage_probe_endpoint")),
+		JSONPath:    strings.TrimSpace(r.FormValue("usage_probe_json_path")),
+		WindowName:  strings.TrimSpace(r.FormValue("usage_probe_window")),
+		Unit:        strings.TrimSpace(r.FormValue("usage_probe_unit")),
+		IntervalSec: int(parseIntDefault(r.FormValue("usage_probe_interval"), 0)),
+		// Keep the existing sealed cookie unless the operator typed a
+		// new one (it is never echoed back into the form).
+		CookieCipher: cur.CookieCipher,
+		CookieMasked: cur.CookieMasked,
+	}
+	if raw := strings.TrimSpace(r.FormValue("usage_probe_cookie")); raw != "" {
+		sealed, err := sealCookie(raw)
+		if err != nil {
+			return up, err
+		}
+		up.CookieCipher = sealed
+		up.CookieMasked = secrets.Mask(raw)
+	}
+	return up, up.Validate()
+}
+
+// sealFunc is installed by the server when the secrets manager is
+// available; nil falls back to rejecting cookie probes with a clear
+// message rather than storing a plaintext cookie.
+var sealFunc func(string) (string, error)
+
+// SetCookieSealer wires the AES-GCM sealer used for probe cookies.
+func SetCookieSealer(fn func(string) (string, error)) { sealFunc = fn }
+
+func sealCookie(raw string) (string, error) {
+	if sealFunc == nil {
+		return "", errors.New("usage probe cookie requires LLMRX_KEY_MASTER (no sealer configured)")
+	}
+	return sealFunc(raw)
 }
 
 // parsePlanQuota builds a model.PlanQuota from the channel form. An
@@ -192,6 +241,17 @@ func (h *Handler) ChannelCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ch.PlanQuota = pq
+	up, uerr := parseUsageProbe(r, model.UsageProbe{})
+	if uerr != nil {
+		h.renderFormError(w, r, formErrorView{
+			Body: "channels_form_body", Title: "新建通道",
+			Active: "channels", Msg: uerr.Error(), Form: r.Form,
+			Fields: channelFormFields, FieldRenames: channelFormRenames,
+			Extras: map[string]any{"Providers": provider.AllProviders()},
+		})
+		return
+	}
+	ch.UsageProbe = up
 
 	if err := validateChannel(ch); err != nil {
 		h.renderFormError(w, r, formErrorView{
@@ -275,6 +335,17 @@ func (h *Handler) updateChannelByID(w http.ResponseWriter, r *http.Request, id i
 		return
 	}
 	cur.PlanQuota = pq
+	up, uerr := parseUsageProbe(r, cur.UsageProbe)
+	if uerr != nil {
+		h.renderFormError(w, r, formErrorView{
+			Body: "channels_form_body", Title: "编辑通道",
+			Active: "channels", Record: cur, Msg: uerr.Error(), Form: r.Form,
+			Fields: channelFormFields, FieldRenames: channelFormRenames,
+			Extras: map[string]any{"Providers": provider.AllProviders()},
+		})
+		return
+	}
+	cur.UsageProbe = up
 	cur.Status = model.ChannelDisabled
 	if r.FormValue("status") == "1" {
 		cur.Status = model.ChannelEnabled

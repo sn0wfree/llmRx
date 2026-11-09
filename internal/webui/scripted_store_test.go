@@ -211,6 +211,24 @@ func (s *ScriptedStore) PruneBalanceHistory(cutoff time.Time) (int64, error) {
 	return s.underlying.PruneBalanceHistory(cutoff)
 }
 
+// --- Vendor subscription usage (P22) ---
+
+func (s *ScriptedStore) UsagePoints(channelID int64, from time.Time, limit int) ([]store.UsagePoint, error) {
+	return s.underlying.UsagePoints(channelID, from, limit)
+}
+
+func (s *ScriptedStore) AppendUsagePoint(p store.UsagePoint) error {
+	return s.underlying.AppendUsagePoint(p)
+}
+
+func (s *ScriptedStore) PruneUsagePoints(cutoff time.Time) (int64, error) {
+	return s.underlying.PruneUsagePoints(cutoff)
+}
+
+func (s *ScriptedStore) UpdateChannelUsageState(channelID int64, state string, checkedAt time.Time, probeErr string) error {
+	return s.underlying.UpdateChannelUsageState(channelID, state, checkedAt, probeErr)
+}
+
 // --- Per-key balance (P14 phase 4) ---
 
 func (s *ScriptedStore) UpdateKeyBalance(keyID int64, balance, currency string, checkedAt time.Time, balanceErr string) error {

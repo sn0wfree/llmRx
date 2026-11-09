@@ -78,6 +78,10 @@ type Store interface {
 	// BalanceHistoryRepository backs the balance time series (P14).
 	BalanceHistoryRepository
 	KeyBalanceRepository
+	// UsageHistoryRepository / UsageStateRepository back vendor-side
+	// subscription usage tracking (P22).
+	UsageHistoryRepository
+	UsageStateRepository
 
 	Ping(ctx context.Context) error
 	Close() error

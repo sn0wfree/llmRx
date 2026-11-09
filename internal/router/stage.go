@@ -67,9 +67,14 @@ func (e *RouterEngine) routeWithPipeline(ctx context.Context, modelName string, 
 	// (quotaGuard returns the input unchanged in that case).
 	if e.usage != nil && (e.quotaGuardOn == nil || e.quotaGuardOn()) {
 		before := len(rctx.Candidates)
-		rctx.Candidates = quotaGuard(rctx.Candidates, e.usage, time.Now())
+		var usedVendor bool
+		rctx.Candidates, usedVendor = quotaGuard(rctx.Candidates, e.usage, time.Now())
 		if len(rctx.Candidates) < before {
-			rctx.LogParts = append(rctx.LogParts, "L2.5(quota)")
+			if usedVendor {
+				rctx.LogParts = append(rctx.LogParts, "L2.5(quota,src)")
+			} else {
+				rctx.LogParts = append(rctx.LogParts, "L2.5(quota)")
+			}
 		}
 	}
 
@@ -190,24 +195,57 @@ func containsString(xs []string, s string) bool {
 	return false
 }
 
+// VendorUsageProvider is an optional extension of UsageProvider: it
+// answers from the vendor's own last report (P22) instead of llmRx's
+// local count. Trackers that implement it are preferred by the guard,
+// because the vendor knows about traffic that never passed through us.
+type VendorUsageProvider interface {
+	// SourceRatio returns the vendor-reported consumed fraction for the
+	// channel's most constrained live window. ok=false means "no usable
+	// vendor data" and the caller falls back to the local ratio.
+	SourceRatio(ch *model.Channel, now time.Time) (ratio float64, ok bool)
+}
+
 // quotaGuard compacts out channels whose upstream plan quota window
 // is exhausted (usage ratio >= 1). The result is a fresh slice — the
 // input may alias the static router's internal index, which must not
 // be mutated. Order is preserved (stable compaction); L3 re-sorts
 // anyway. Untracked channels always pass.
 //
+// Vendor-reported usage wins when available: it accounts for traffic
+// from other tools sharing the same upstream account. The local count
+// is the fallback (and the only data for channels without a probe).
+//
 // When every candidate is exhausted the input is returned unchanged:
 // an upstream throttle response beats a hard routing failure, and the
 // admin can see the all-exhausted state on the monitoring page.
-func quotaGuard(channels []*model.Channel, up UsageProvider, now time.Time) []*model.Channel {
-	kept := make([]*model.Channel, 0, len(channels))
+func quotaGuard(channels []*model.Channel, up UsageProvider, now time.Time) (kept []*model.Channel, usedVendor bool) {
+	vp, hasVendor := up.(VendorUsageProvider)
+	kept = make([]*model.Channel, 0, len(channels))
 	for _, ch := range channels {
-		if !ch.PlanQuota.Tracked() || up.UsageRatio(ch, now) < 1 {
+		if !ch.PlanQuota.Tracked() {
 			kept = append(kept, ch)
+			continue
 		}
+		ratio, fromVendor := 0.0, false
+		if hasVendor {
+			ratio, fromVendor = vp.SourceRatio(ch, now)
+		}
+		if !fromVendor {
+			ratio = up.UsageRatio(ch, now)
+		}
+		if ratio >= 1 {
+			// The channel is being dropped. Remember whether the
+			// decision came from the vendor so the log line can say so
+			// — that is the diagnostic an operator needs when a channel
+			// disappears from rotation with a low local count.
+			usedVendor = usedVendor || fromVendor
+			continue
+		}
+		kept = append(kept, ch)
 	}
 	if len(kept) == 0 {
-		return channels
+		return channels, usedVendor
 	}
-	return kept
+	return kept, usedVendor
 }

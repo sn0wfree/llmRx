@@ -371,6 +371,25 @@ func (s *dbStore) migrate() error {
 			FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_channel_balances_lookup ON channel_balances(channel_id, ts)`,
+		// P22: vendor-reported subscription usage history. One row per
+		// (channel, window) per sweep; used by the trend chart and by the
+		// "how fast am I burning through the plan" view. Window is a
+		// reserved word in Postgres, hence quoting via the dialect-safe
+		// name "win" (kept short for index size).
+		`CREATE TABLE IF NOT EXISTS channel_usage_points (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel_id INTEGER NOT NULL,
+			ts INTEGER NOT NULL,
+			source TEXT NOT NULL DEFAULT '',
+			win TEXT NOT NULL DEFAULT '',
+			used REAL NOT NULL DEFAULT 0,
+			limit_val REAL NOT NULL DEFAULT 0,
+			remaining REAL NOT NULL DEFAULT -1,
+			unit TEXT NOT NULL DEFAULT '',
+			resets_at INTEGER NOT NULL DEFAULT 0,
+			FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_channel_usage_points_lookup ON channel_usage_points(channel_id, ts)`,
 		// Registered edge clients. secret_hash is sha256, not Argon2id:
 		// the secret is 192 bits of randomness (not a user password), and
 		// it is verified on every 30s heartbeat.
@@ -470,6 +489,22 @@ func (s *dbStore) migrate() error {
 	// P21: upstream subscription plan quota (JSON-encoded model.PlanQuota,
 	// {} = untracked). Unlike the balance snapshot this feeds routing.
 	if err := s.addColumn("channels", "plan_quota", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
+		return err
+	}
+	// P22: vendor-side subscription usage polling. usage_probe is the
+	// configuration (JSON model.UsageProbe, {} = disabled);
+	// usage_state caches the latest vendor report (JSON subusage.Report);
+	// usage_checked_at / usage_error mirror channels.balance_* semantics.
+	if err := s.addColumn("channels", "usage_probe", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
+		return err
+	}
+	if err := s.addColumn("channels", "usage_state", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumn("channels", "usage_checked_at", "INTEGER"); err != nil {
+		return err
+	}
+	if err := s.addColumn("channels", "usage_error", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	// P14 phase 4: per-key balance. Account-level data belongs on the
@@ -704,6 +739,26 @@ func decodePQ(s string) model.PlanQuota {
 	return pq
 }
 
+// encodeUP serialises the usage probe; the zero value collapses to "{}"
+// so untracked channels keep the column default. CookieCipher is tagged
+// json:"-" so an accidental JSON write cannot leak the cookie.
+func encodeUP(up model.UsageProbe) string {
+	if up == (model.UsageProbe{}) {
+		return "{}"
+	}
+	b, _ := json.Marshal(up)
+	return string(b)
+}
+
+func decodeUP(s string) model.UsageProbe {
+	if s == "" {
+		return model.UsageProbe{}
+	}
+	var up model.UsageProbe
+	_ = json.Unmarshal([]byte(s), &up)
+	return up
+}
+
 func encodeTiers(t map[string]model.TierConfig) string {
 	if t == nil {
 		return ""
@@ -729,7 +784,7 @@ func decodeTiers(s string) map[string]model.TierConfig {
 const channelColumns = `id, name, provider, protocol, base_url, models, intents, priority, ` +
 	`input_price, output_price, cached_input_discount, circuit_breaker, status, total_cost_usd, ` +
 	`balance, balance_currency, balance_updated_at, balance_error, balance_url, balance_threshold, ` +
-	`plan_quota, created_at, updated_at`
+	`plan_quota, usage_probe, usage_state, usage_checked_at, usage_error, created_at, updated_at`
 
 func (s *dbStore) GetChannels() ([]model.Channel, error) {
 	rows, err := s.query(`SELECT ` + channelColumns + ` FROM channels ORDER BY id`)
@@ -764,14 +819,14 @@ func (s *dbStore) CreateChannel(ch *model.Channel) error {
 		ch.CachedInputDiscount = 0.1
 	}
 	id, err := dialect.InsertOne(s.d, s.db,
-		`INSERT INTO channels(name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, balance, balance_currency, balance_url, balance_threshold, plan_quota, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO channels(name, provider, protocol, base_url, models, intents, priority, input_price, output_price, cached_input_discount, circuit_breaker, status, balance, balance_currency, balance_url, balance_threshold, plan_quota, usage_probe, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ch.Name, ch.Provider, ch.Protocol, ch.BaseURL,
 		encodeStrings(ch.Models), encodeStrings(ch.Intents),
 		ch.Priority, ch.InputPrice, ch.OutputPrice, ch.CachedInputDiscount, encodeCB(ch.CircuitBreaker),
 		int(ch.Status),
 		ch.Balance, ch.BalanceCurrency, ch.BalanceURL, ch.BalanceThreshold,
-		encodePQ(ch.PlanQuota),
+		encodePQ(ch.PlanQuota), encodeUP(ch.UsageProbe),
 		toUnix(ch.CreatedAt), toUnix(ch.UpdatedAt),
 	)
 	if err != nil {
@@ -787,11 +842,12 @@ func (s *dbStore) UpdateChannel(ch *model.Channel) error {
 		ch.Protocol = "openai"
 	}
 	_, err := s.exec(
-		`UPDATE channels SET name=?, provider=?, protocol=?, base_url=?, models=?, intents=?, priority=?, input_price=?, output_price=?, cached_input_discount=?, circuit_breaker=?, status=?, balance_url=?, balance_threshold=?, plan_quota=?, updated_at=? WHERE id=?`,
+		`UPDATE channels SET name=?, provider=?, protocol=?, base_url=?, models=?, intents=?, priority=?, input_price=?, output_price=?, cached_input_discount=?, circuit_breaker=?, status=?, balance_url=?, balance_threshold=?, plan_quota=?, usage_probe=?, updated_at=? WHERE id=?`,
 		ch.Name, ch.Provider, ch.Protocol, ch.BaseURL,
 		encodeStrings(ch.Models), encodeStrings(ch.Intents),
 		ch.Priority, ch.InputPrice, ch.OutputPrice, ch.CachedInputDiscount, encodeCB(ch.CircuitBreaker),
-		int(ch.Status), ch.BalanceURL, ch.BalanceThreshold, encodePQ(ch.PlanQuota), toUnix(ch.UpdatedAt), ch.ID,
+		int(ch.Status), ch.BalanceURL, ch.BalanceThreshold, encodePQ(ch.PlanQuota), encodeUP(ch.UsageProbe),
+		toUnix(ch.UpdatedAt), ch.ID,
 	)
 	return err
 }
@@ -853,17 +909,18 @@ func scanChannel(r interface {
 	Scan(dest ...any) error
 }) (*model.Channel, error) {
 	var ch model.Channel
-	var modelsJSON, intentsJSON, cbJSON, pqJSON string
+	var modelsJSON, intentsJSON, cbJSON, pqJSON, upJSON string
 	var status int
 	var created, updated int64
-	var balanceUpdated sql.NullInt64
+	var balanceUpdated, usageChecked sql.NullInt64
 	if err := r.Scan(&ch.ID, &ch.Name, &ch.Provider, &ch.Protocol, &ch.BaseURL,
 		&modelsJSON, &intentsJSON, &ch.Priority,
 		&ch.InputPrice, &ch.OutputPrice, &ch.CachedInputDiscount, &cbJSON, &status,
 		&ch.TotalCostUSD,
 		&ch.Balance, &ch.BalanceCurrency, &balanceUpdated, &ch.BalanceError, &ch.BalanceURL,
 		&ch.BalanceThreshold,
-		&pqJSON, &created, &updated); err != nil {
+		&pqJSON, &upJSON, &ch.UsageState, &usageChecked, &ch.UsageError,
+		&created, &updated); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
 		}
@@ -873,6 +930,10 @@ func scanChannel(r interface {
 		t := fromUnix(balanceUpdated.Int64)
 		ch.BalanceUpdatedAt = &t
 	}
+	if usageChecked.Valid {
+		t := fromUnix(usageChecked.Int64)
+		ch.UsageCheckedAt = &t
+	}
 	ch.Models = decodeStrings(modelsJSON)
 	ch.Intents = decodeStrings(intentsJSON)
 	if ch.Protocol == "" {
@@ -880,6 +941,7 @@ func scanChannel(r interface {
 	}
 	ch.CircuitBreaker = decodeCB(cbJSON)
 	ch.PlanQuota = decodePQ(pqJSON)
+	ch.UsageProbe = decodeUP(upJSON)
 	ch.Status = model.ChannelStatus(status)
 	ch.CreatedAt = fromUnix(created)
 	ch.UpdatedAt = fromUnix(updated)

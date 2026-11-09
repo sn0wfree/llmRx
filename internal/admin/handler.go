@@ -32,6 +32,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/secrets"
 	"github.com/sn0wfree/llmRx/internal/sse"
 	"github.com/sn0wfree/llmRx/internal/store"
+	"github.com/sn0wfree/llmRx/internal/subusage"
 	"github.com/sn0wfree/llmRx/internal/tokencache"
 	"github.com/sn0wfree/llmRx/internal/usage"
 )
@@ -75,6 +76,15 @@ type Handler struct {
 	// the api emitter). nil renders the usage endpoints without live
 	// quota gauges.
 	usageTrk *usage.Tracker
+	// usageMon polls vendor-side subscription usage (P22). nil makes
+	// the refresh endpoint 503 and hides the subscription page data.
+	usageMon UsageProber
+}
+
+// UsageProber is the narrow contract the admin subscription endpoints
+// need from *subusage.Monitor.
+type UsageProber interface {
+	QueryChannel(ctx context.Context, ch *model.Channel) (subusage.Report, error)
 }
 
 // SessionCounter is the narrow slice of the session store the admin
@@ -112,6 +122,10 @@ func (h *Handler) SetModelCosts(c *modelcost.Cache) { h.modelCosts = c }
 // SetUsageTracker wires the P21 plan-quota tracker (shared with the
 // api emitter) into the usage endpoints. nil hides quota gauges.
 func (h *Handler) SetUsageTracker(t *usage.Tracker) { h.usageTrk = t }
+
+// SetUsageMonitor wires the P22 vendor-side usage monitor into the
+// subscription endpoints. nil makes refresh return 503.
+func (h *Handler) SetUsageMonitor(m UsageProber) { h.usageMon = m }
 
 // SetSessions wires the session-affinity pin store into the state
 // endpoint (session count). nil hides the block.
@@ -225,6 +239,11 @@ func (h *Handler) Routes() http.Handler {
 		r.Get("/usage/overview", h.UsageOverview)
 		r.Get("/usage/timeseries", h.UsageTimeseries)
 		r.Get("/usage/plans", h.UsagePlans)
+		// P22 vendor-side subscription usage.
+		r.Get("/subscriptions", h.ListSubscriptions)
+		r.Post("/subscriptions/{id}/refresh", h.RefreshSubscription)
+		r.Get("/subscriptions/{id}/history", h.SubscriptionHistory)
+		r.Get("/subscription-parsers", h.ListSubscriptionParsers)
 		r.Get("/plans", h.ListPlans)
 		r.Post("/plans", h.CreatePlan)
 		r.Get("/plans/{id}", h.GetPlan)
@@ -485,6 +504,10 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := ch.UsageProbe.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := h.store.CreateChannel(&ch); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -529,6 +552,8 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 		// P21: upstream plan quota. A full object replaces the stored
 		// one (send {} to stop tracking).
 		PlanQuota *model.PlanQuota `json:"plan_quota"`
+		// P22: vendor usage probe. Send {} to stop probing.
+		UsageProbe *model.UsageProbe `json:"usage_probe"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
@@ -598,6 +623,18 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		cur.PlanQuota = *patch.PlanQuota
+	}
+	if patch.UsageProbe != nil {
+		// The cookie is not settable through this API (it must be sealed
+		// by the server's secrets manager); the UI path handles it.
+		// Preserve whatever is stored so a PATCH cannot silently wipe it.
+		patch.UsageProbe.CookieCipher = cur.UsageProbe.CookieCipher
+		patch.UsageProbe.CookieMasked = cur.UsageProbe.CookieMasked
+		if err := patch.UsageProbe.Validate(); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		cur.UsageProbe = *patch.UsageProbe
 	}
 	if err := h.store.UpdateChannel(cur); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())

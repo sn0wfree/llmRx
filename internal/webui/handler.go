@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/prober"
 	"github.com/sn0wfree/llmRx/internal/store"
+	"github.com/sn0wfree/llmRx/internal/subusage"
 	"github.com/sn0wfree/llmRx/internal/usage"
 )
 
@@ -33,6 +35,9 @@ type Handler struct {
 	// usageTrk serves the monitoring page's live quota gauges (P21).
 	// nil renders the page without them.
 	usageTrk *usage.Tracker
+	// usageMon probes vendor-side subscription usage (P22). nil hides
+	// the refresh button on the subscriptions page.
+	usageMon UsageProber
 	// balanceMon refreshes upstream balances (P14). nil makes the
 	// per-row refresh a no-op error rather than a panic.
 	balanceMon BalanceQuerier
@@ -67,6 +72,16 @@ func (h *Handler) SetProber(p *prober.Cache) { h.prober = p }
 // SetUsageTracker injects the P21 plan-quota tracker for the
 // monitoring page's live gauges.
 func (h *Handler) SetUsageTracker(t *usage.Tracker) { h.usageTrk = t }
+
+// UsageProber is the narrow contract the subscriptions page needs from
+// *subusage.Monitor (declared here to keep webui free of the probe
+// implementation's surface).
+type UsageProber interface {
+	QueryChannel(ctx context.Context, ch *model.Channel) (subusage.Report, error)
+}
+
+// SetUsageMonitor injects the P22 vendor-usage monitor.
+func (h *Handler) SetUsageMonitor(m UsageProber) { h.usageMon = m }
 
 func (h *Handler) SetCache(c cache.Cache) { h.responseCache = c }
 
@@ -218,6 +233,9 @@ func (h *Handler) Routes() http.Handler {
 
 		r.Get("/analytics", h.AnalyticsPage)
 		r.Get("/monitoring", h.MonitoringPage)
+		r.Get("/subscriptions", h.SubscriptionsPage)
+		r.Post("/subscriptions/{id}/refresh", h.SubscriptionRefresh)
+		r.Get("/subscriptions/{id}/history", h.SubscriptionHistoryPage)
 		r.Get("/health", h.ChannelHealthPage)
 		r.Post("/health/{id}/probe", h.ChannelProbeNow)
 

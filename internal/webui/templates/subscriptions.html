@@ -1,0 +1,122 @@
+{{define "subscriptions_body"}}<div class="mb-6 flex justify-between items-end">
+  <div>
+    <h1 class="text-2xl font-bold text-gray-900">订阅用量</h1>
+    <p class="mt-1 text-sm text-gray-500">厂商侧报告的套餐消耗（OpenRouter 官方 API · GLM Coding Plan Cookie 抓取 · 自定义探针）</p>
+  </div>
+  <div class="flex gap-1 text-sm">
+    <a href="/admin/subscriptions" class="px-3 py-1.5 rounded-md {{if not .ShowAll}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">仅订阅</a>
+    <a href="/admin/subscriptions?filter=all" class="px-3 py-1.5 rounded-md {{if .ShowAll}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">全部渠道</a>
+  </div>
+</div>
+
+{{if not .HasMonitor}}
+<div class="mb-4 p-3 rounded-md bg-amber-50 border border-amber-200 text-sm text-amber-800">
+  用量探测监控未启用：手动刷新不可用，但上次成功抓取的数据仍显示在下方。
+</div>
+{{end}}
+
+{{if gt .ExhaustedCount 0}}
+<div class="mb-4 p-3 rounded-md bg-red-50 border border-red-200 text-sm text-red-800">
+  {{.ExhaustedCount}} 个配额窗口已耗尽 —— 路由的 L2.5 guard 会优先避开这些渠道（记为 <code class="font-mono text-xs">L2.5(quota,src)</code>）。
+</div>
+{{end}}
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+  {{range .Channels}}
+  {{template "subscription_card" dict "Channel" . "Name" .Name "ID" .ID "Provider" .Provider "ProbeKind" .ProbeKind "Points" .Points "LocalQuota" .LocalQuota "CheckedAt" .CheckedAt "Error" .Error "Warn" .Warn "Experimental" .Experimental "Objective" .Objective "HasMonitor" $.HasMonitor}}
+  {{else}}
+  <div class="col-span-2 bg-white rounded-lg shadow p-8 text-center text-gray-400 text-sm">
+    暂无配置了用量探针的渠道。到「通道」编辑页的「源头用量探针」区配置 OpenRouter key 或 GLM Cookie。
+  </div>
+  {{end}}
+</div>
+{{end}}
+
+{{define "subscription_card"}}<div id="sub-card-{{.ID}}" class="bg-white rounded-lg shadow p-5">
+  <div class="flex items-start justify-between mb-3">
+    <div>
+      <div class="flex items-center gap-2">
+        <a href="/admin/channels/{{.ID}}/edit" class="text-lg font-medium text-gray-900 hover:text-blue-700">{{.Name}}</a>
+        {{if eq .Objective "vendor"}}
+          <span class="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 text-xs">厂商权威</span>
+        {{else if eq .Objective "local"}}
+          <span class="px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 text-xs">本地估算</span>
+        {{else}}
+          <span class="px-1.5 py-0.5 rounded bg-gray-50 text-gray-400 text-xs">无数据</span>
+        {{end}}
+        {{if .Experimental}}
+          <span class="px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 text-xs" title="非公开 API，仪表盘改版会失效">实验性</span>
+        {{end}}
+      </div>
+      <div class="mt-0.5 text-xs text-gray-500">
+        {{.Provider}}{{if .ProbeKind}} · 探针 {{.ProbeKind}}{{end}}
+        {{if .CheckedAt}} · 上次检查 {{.CheckedAt.Format "01-02 15:04"}}{{end}}
+      </div>
+    </div>
+    {{if .HasMonitor}}
+    <button hx-post="/admin/subscriptions/{{.ID}}/refresh"
+            hx-target="#sub-card-{{.ID}}" hx-swap="outerHTML"
+            class="px-2.5 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200 whitespace-nowrap">
+      立即刷新
+    </button>
+    {{end}}
+  </div>
+
+  {{if .Error}}
+  <div class="mb-3 p-2 rounded bg-red-50 border border-red-100 text-xs text-red-700 break-words">
+    探测失败：{{.Error}}
+  </div>
+  {{end}}
+  {{if .Warn}}
+  <div class="mb-3 p-2 rounded bg-amber-50 border border-amber-100 text-xs text-amber-800 break-words">
+    {{.Warn}}
+  </div>
+  {{end}}
+
+  {{if .Points}}
+  <table class="min-w-full text-sm">
+    <thead><tr class="text-xs text-gray-500 text-left">
+      <th class="py-1">窗口</th><th class="text-right">已用</th><th class="text-right">上限</th>
+      <th class="text-right">剩余</th><th class="pl-3 w-32">进度</th><th class="pl-2">重置</th>
+    </tr></thead>
+    <tbody>
+      {{range .Points}}
+      <tr class="border-t border-gray-100">
+        <td class="py-1.5">
+          <span class="text-gray-900">{{windowLabelOf .Window}}</span>
+          {{if .Label}}<span class="text-xs text-gray-400">{{.Label}}</span>{{end}}
+          {{if .Scope}}<span class="text-xs text-gray-300">{{.Scope}}</span>{{end}}
+        </td>
+        <td class="text-right {{if .Exhausted}}text-red-600 font-semibold{{end}}">{{fmtUsageAmount .Unit .Used}}</td>
+        <td class="text-right text-gray-600">{{if gt .Limit 0.0}}{{fmtUsageAmount .Unit .Limit}}{{else}}<span class="text-gray-300">∞</span>{{end}}</td>
+        <td class="text-right {{if .Exhausted}}text-red-600{{else}}text-gray-600{{end}}">{{if ge .Remaining 0.0}}{{fmtUsageAmount .Unit .Remaining}}{{else}}<span class="text-gray-300">—</span>{{end}}</td>
+        <td class="pl-3">
+          {{if gt .Limit 0.0}}
+          <div class="flex items-center gap-1.5">
+            <div class="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+              <div class="h-full rounded-full {{pctClass .Ratio}}" style="width: {{quotaBarWidth .Ratio}}%"></div>
+            </div>
+            <span class="text-xs {{pctTextClass .Ratio}} whitespace-nowrap">{{printf "%.0f%%" (mul100 .Ratio)}}</span>
+          </div>
+          {{else}}<span class="text-xs text-gray-300">无上限</span>{{end}}
+        </td>
+        <td class="pl-2 text-xs text-gray-500 whitespace-nowrap">
+          {{if .ResetIn}}{{.ResetIn}}{{else if .ResetsAt}}{{.ResetsAt.Format "01-02 15:04"}}{{else}}<span class="text-gray-300">—</span>{{end}}
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <p class="mt-2 text-xs text-gray-400">单位：{{range .Points}}{{fmtUsageUnit .Unit}} {{end}}</p>
+  {{else if not .Error}}
+  <p class="text-sm text-gray-400 py-3">尚未抓取到数据，点击「立即刷新」或等待后台探测。</p>
+  {{end}}
+
+  {{if .LocalQuota}}
+  <div class="mt-3 pt-3 border-t border-gray-100 text-xs text-gray-500">
+    本地估算（P21）：{{.LocalQuota.Unit}} {{fmtUsageAmount .LocalQuota.Unit .LocalQuota.Used}} / {{fmtUsageAmount .LocalQuota.Unit .LocalQuota.Limit}}
+    · {{printf "%.0f%%" (mul100 .LocalQuota.Ratio)}}
+    {{if eq .Objective "vendor"}}<span class="text-gray-400">（与厂商数据存在差异通常意味着该账号还有其他工具在用）</span>{{end}}
+  </div>
+  {{end}}
+</div>{{end}}

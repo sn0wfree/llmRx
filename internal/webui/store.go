@@ -30,6 +30,8 @@ type WebuiStore interface {
 	DeleteChannel(id int64) error
 	// BalanceHistory backs the inline trend chart (P14 phase 3).
 	BalanceHistory(channelID int64, from time.Time, limit int) ([]store.BalancePoint, error)
+	// UsagePoints backs the subscription page's burn-down chart (P22).
+	UsagePoints(channelID int64, from time.Time, limit int) ([]store.UsagePoint, error)
 
 	// Keys
 	GetKeys(channelID int64) ([]model.Key, error)

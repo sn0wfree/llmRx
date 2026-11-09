@@ -21,6 +21,9 @@ type Config struct {
 	LatencyRoute LatencyRouteConfig `yaml:"latency_routing"`
 	Session      SessionConfig      `yaml:"session_affinity"`
 	Balance      BalanceConfig      `yaml:"balance_monitor"`
+	// UsageMonitor drives P22 vendor-side subscription usage polling
+	// (OpenRouter keys, GLM coding-plan cookie scraping, custom probes).
+	UsageMonitor UsageMonitorConfig `yaml:"usage_monitor"`
 	// EdgeClients lists gateway-client instances allowed to upload
 	// usage (P15). Empty disables the /client/v1/* endpoints entirely.
 	EdgeClients []EdgeClientConfig `yaml:"edge_clients"`
@@ -82,6 +85,55 @@ func (b BalanceConfig) BalanceRetentionDays() int {
 		return 90
 	}
 	return b.RetentionDays
+}
+
+// UsageMonitorConfig drives the P22 vendor-side subscription usage
+// polling. Same shape as BalanceConfig so operators only learn one
+// set of knobs.
+type UsageMonitorConfig struct {
+	// Enabled starts the background probe loop. Disabling it leaves the
+	// manual refresh endpoints usable.
+	Enabled *bool `yaml:"enabled"`
+	// IntervalSec is the probe period (default 1h). Vendor dashboards
+	// update far slower than this, so there is no point polling faster.
+	IntervalSec int `yaml:"interval_sec"`
+	// TimeoutSec bounds a single vendor call.
+	TimeoutSec int `yaml:"timeout_sec"`
+	// RetentionDays is how long usage history points are kept.
+	RetentionDays int `yaml:"retention_days"`
+}
+
+// UsageMonitorEnabled resolves the tri-state pointer (unset = on).
+func (u UsageMonitorConfig) UsageMonitorEnabled() bool {
+	if u.Enabled == nil {
+		return true
+	}
+	return *u.Enabled
+}
+
+// UsageMonitorInterval returns the probe period, default one hour.
+func (u UsageMonitorConfig) UsageMonitorInterval() time.Duration {
+	if u.IntervalSec <= 0 {
+		return time.Hour
+	}
+	return time.Duration(u.IntervalSec) * time.Second
+}
+
+// UsageMonitorTimeout returns the per-call timeout, default 15s
+// (scrapers can be slower than a plain balance endpoint).
+func (u UsageMonitorConfig) UsageMonitorTimeout() time.Duration {
+	if u.TimeoutSec <= 0 {
+		return 15 * time.Second
+	}
+	return time.Duration(u.TimeoutSec) * time.Second
+}
+
+// UsageMonitorRetentionDays returns the history window, default 90.
+func (u UsageMonitorConfig) UsageMonitorRetentionDays() int {
+	if u.RetentionDays <= 0 {
+		return 90
+	}
+	return u.RetentionDays
 }
 
 type ServerConfig struct {
