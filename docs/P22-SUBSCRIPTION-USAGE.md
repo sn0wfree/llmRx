@@ -18,14 +18,17 @@ P22 的目标：直接向厂商查询订阅消耗，在独立页面展示，并�
 | 厂商 | 源头接口 | 认证 | 能拿到什么 | 结论 |
 |---|---|---|---|---|
 | **OpenRouter** | `GET {base}/api/v1/key` | Bearer（普通 key） | `limit` / `limit_remaining` / `usage`，`usage_daily/weekly/monthly`，`budgets[]`（含 `reset_interval` + `resets_at`） | ✅ **已接入**，多窗口完整 |
-| **智谱 GLM Coding Plan** | 无公开 API | — | 官方文档只指向网页仪表盘 `bigmodel.cn/coding-plan/personal/usage`；套餐是「5h 动态刷新积分 + 每周积分」双上限 | ⚠️ **实验性 Cookie 抓取** |
+| **智谱 GLM Coding Plan** | `GET bigmodel.cn/api/paas/v4/monitor/usage/quota/limit`（另有 `credit-usage/activity`、`token-usage/activity`、`token-usage/usage-detail`） | **Authorization: Bearer**（Cookie 单独使用会被拒） | 用额度/已用/重置时间（字段名待实测确认） | ⚠️ **实验性**：接口非公开，字段靠启发式识别 |
 | DeepSeek / Moonshot / SiliconFlow | 仅余额接口 | Bearer | 剩余金额（无订阅窗口语义） | 由 P14 覆盖，无需重复 |
 | OpenAI / Anthropic 官方 | org usage report | **admin key**（与推理 key 不同） | 按日 token 汇总 | 未接入，`custom` 探针可临时顶替 |
 | one-api / new-api 中转 | `/api/user/self` | 系统访问令牌 | 额度 / 已用 / 请求数 | 未接入，`custom` 探针可临时顶替 |
 
+> 智谱接口路径来自其仪表盘自身的 JS bundle（`claude-usage` chunk），认证方式经实测确认：
+> 带 Cookie 返回「Header中未收到Authorization参数」，带 `Authorization: Bearer` 才进入令牌校验。
+
 > 结论：**订阅用量没有行业统一接口**。因此 P22 的核心不是「写死几个厂商」，
 > 而是「一个窗口模型 + 可插拔解析器」，让确定能拿到的（OpenRouter）开箱即用，
-> 拿不到的（GLM）能通过配置工作，未知厂商能用通用探针兜底。
+> 拿不到的（智谱）能通过配置工作，未知厂商能用通用探针兜底。
 
 ## 3. 数据模型
 
@@ -88,14 +91,15 @@ type UsagePoint struct {
 
 ### `zhipu_web`（**实验性**）
 GLM 无公开 API，因此：
-1. 用运营者粘贴的会话 Cookie 请求 `EndpointURL`（默认推测路径，需按浏览器网络面板填写）；
+1. 请求 `EndpointURL`（默认 `https://bigmodel.cn/api/paas/v4/monitor/usage/quota/limit`），
+   认证用 **`Authorization: Bearer <渠道 API Key>`**；若运营者额外提供了 Cookie 则一并发送；
 2. 先按 JSON 解析，失败则在 HTML 里找 `__NEXT_DATA__` / `__INITIAL_STATE__` / `window.__NUXT__` 内嵌 JSON；
 3. 遍历整棵 JSON 树，按字段族（`used/usedCredits/usedQuota`、`total/limit/quota`、
    `remaining/left/available`、`resetAt/resetTime/...`）识别窗口。
 
 因为第 3 步是启发式的，`Report.Experimental = true`，UI 显示「实验性」徽章；
 识别失败时**不报错**而是返回 `Warn` + 原始响应前 512 字节，运营者据此调整
-`EndpointURL`/`JSONPath` 或改用 `custom`。
+`EndpointURL` 或改用 `custom`。
 
 ### `custom`
 `JSONPath`（`a.b.0.c`）+ `WindowName` + `Unit`，把任意厂商的接口塞进同一模型。
@@ -156,6 +160,8 @@ func (t *Tracker) SourceRatio(ch, now) (ratio float64, ok bool)
 
 ## 8. Cookie 安全
 
+- Cookie 是**可选**的：智谱接口走 `Authorization: Bearer`，默认直接用渠道 API Key；
+  仅当接口要求浏览器会话时才填 Cookie。
 - 只接受 `usage_probe_cookie` 表单字段，经 `secrets.Manager.Encrypt`（AES-256-GCM）后存
   `usage_probe` JSON 的 `CookieCipher`；
 - 该字段 `json:"-"`，**任何 API 都不会回显**；表单回填的是 `CookieMasked`；

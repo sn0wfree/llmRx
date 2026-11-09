@@ -201,7 +201,13 @@ func (p UsageProbe) Validate() error {
 		}
 	}
 	if p.Kind == UsageProbeZhipuWeb && p.CookieCipher == "" {
-		return fmt.Errorf("usage_probe requires a session cookie for the zhipu_web parser")
+		// A cookie is optional: the endpoint accepts an
+		// Authorization: Bearer token, which the channel key already
+		// provides. The cookie is only needed for dashboards that
+		// require a browser session.
+		if p.EndpointURL == "" {
+			return fmt.Errorf("usage_probe for zhipu_web needs either a cookie or an endpoint_url")
+		}
 	}
 	if p.IntervalSec < 0 || p.IntervalSec > 24*60*60 {
 		return fmt.Errorf("usage_probe.interval_sec must be 0..86400")

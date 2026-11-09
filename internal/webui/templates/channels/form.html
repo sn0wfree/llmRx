@@ -231,7 +231,7 @@
                   class="mt-1 block w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm">
             <option value="" {{if eq $pk ""}}selected{{end}}>不探测</option>
             <option value="openrouter_key" {{if eq $pk "openrouter_key"}}selected{{end}}>OpenRouter（官方 API）</option>
-            <option value="zhipu_web" {{if eq $pk "zhipu_web"}}selected{{end}}>GLM Coding Plan（Cookie，实验性）</option>
+            <option value="zhipu_web" {{if eq $pk "zhipu_web"}}selected{{end}}>GLM Coding Plan（实验性）</option>
             <option value="custom" {{if eq $pk "custom"}}selected{{end}}>自定义 JSONPath</option>
           </select>
         </div>
@@ -253,11 +253,11 @@
 
       <div class="mt-3 grid grid-cols-4 gap-3">
         <div class="col-span-2">
-          <label class="block text-xs font-medium text-gray-700">会话 Cookie（仅 GLM Cookie 抓取）</label>
+          <label class="block text-xs font-medium text-gray-700">会话 Cookie（可选）</label>
           <input type="password" name="usage_probe_cookie" autocomplete="new-password"
-                 placeholder="{{if .Channel}}{{if .Channel.UsageProbe.CookieMasked}}已保存 {{.Channel.UsageProbe.CookieMasked}}，留空保持不变{{else}}粘贴浏览器里的 Cookie{{end}}{{else}}粘贴浏览器里的 Cookie{{end}}"
+                 placeholder="{{if .Channel}}{{if .Channel.UsageProbe.CookieMasked}}已保存 {{.Channel.UsageProbe.CookieMasked}}，留空保持不变{{else}}多数情况用渠道 API Key 即可，无需填{{end}}{{else}}多数情况用渠道 API Key 即可，无需填{{end}}"
                  class="mt-1 block w-full px-2 py-1.5 border border-gray-300 rounded-md font-mono text-xs">
-          <p class="mt-1 text-xs text-gray-400">加密存储（AES-GCM），不会回显。从浏览器开发者工具复制 Cookie 请求头。</p>
+          <p class="mt-1 text-xs text-gray-400">加密存储（AES-GCM），不会回显。智谱用量接口走 <code class="font-mono">Authorization: Bearer</code>，默认直接用渠道 Key；仅当接口要求浏览器会话时才需填。</p>
         </div>
         <div>
           <label class="block text-xs font-medium text-gray-700">JSONPath（自定义）</label>

@@ -293,7 +293,8 @@ func (m *Monitor) buildInput(ch *model.Channel) (Input, error) {
 	}
 	// Parsers that authenticate with the channel key need one; fetch it
 	// lazily so cookie-only probes do not touch the key pool.
-	if ch.UsageProbe.Kind == model.UsageProbeOpenRouter || ch.UsageProbe.Kind == model.UsageProbeCustom {
+	switch ch.UsageProbe.Kind {
+	case model.UsageProbeOpenRouter, model.UsageProbeCustom, model.UsageProbeZhipuWeb:
 		if m.keys != nil {
 			if k, err := m.keys.NextKey(ch.ID); err == nil && k != nil {
 				in.APIKey = k.Key

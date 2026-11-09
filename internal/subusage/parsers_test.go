@@ -242,10 +242,37 @@ func TestZhipuWeb_CookieRejected(t *testing.T) {
 	})
 }
 
-func TestZhipuWeb_NoCookie(t *testing.T) {
+func TestZhipuWeb_NoCredential(t *testing.T) {
 	if _, err := Probe(context.Background(), "zhipu_web", Input{}); err == nil {
-		t.Fatal("cookie must be required")
+		t.Fatal("a key or cookie is required")
 	}
+}
+
+// TestZhipuWeb_BearerToken: the endpoint authenticates with
+// Authorization: Bearer, not a session cookie — the channel key is
+// enough, so the probe must send it.
+func TestZhipuWeb_BearerToken(t *testing.T) {
+	body := `{"code":200,"data":{"quotaLimit":{"used":800,"total":2000,"resetTime":"2026-12-01T10:00:00Z"}}}`
+	withStubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer zhipu-key" {
+			t.Errorf("authorization header = %q", got)
+		}
+		if r.Header.Get("Cookie") != "" {
+			t.Errorf("no cookie should be sent when only a key is given")
+		}
+		_, _ = w.Write([]byte(body))
+	}, func(base string) {
+		rep, err := Probe(context.Background(), "zhipu_web", Input{APIKey: "zhipu-key", EndpointURL: base + "/usage"})
+		if err != nil {
+			t.Fatalf("probe: %v", err)
+		}
+		if !rep.Experimental {
+			t.Fatal("zhipu_web must be flagged experimental")
+		}
+		if len(rep.Points) == 0 || rep.Points[0].Used != 800 {
+			t.Fatalf("points = %+v", rep.Points)
+		}
+	})
 }
 
 func TestZhipuWeb_UnrecognisedShapeIsWarnNotError(t *testing.T) {

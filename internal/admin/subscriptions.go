@@ -222,7 +222,7 @@ func (h *Handler) ListSubscriptionParsers(w http.ResponseWriter, r *http.Request
 		"data": subusage.ParserNames(),
 		"notes": map[string]string{
 			model.UsageProbeOpenRouter: "官方 API（GET /api/v1/key），支持日/周/月预算与 key 限额",
-			model.UsageProbeZhipuWeb:   "实验性：Cookie 抓取 GLM Coding Plan 仪表盘，页面改版会失效",
+			model.UsageProbeZhipuWeb:   "实验性：GLM Coding Plan 用量接口（非公开 API），用渠道 API key 认证；页面改版会失效",
 			model.UsageProbeCustom:     "通用 JSONPath 提取，需填 endpoint_url + json_path + window_name",
 		},
 	})

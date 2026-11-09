@@ -12,32 +12,37 @@ import (
 	"time"
 )
 
-// zhipuWeb fetches the GLM Coding Plan dashboard's usage endpoint with
-// an operator-supplied session cookie.
+// zhipuWeb fetches the GLM Coding Plan usage endpoints.
 //
 // EXPERIMENTAL. 智谱 does not publish a usage API — the coding-plan
 // documentation only points at the web dashboard
-// (bigmodel.cn/coding-plan/personal/usage), and that dashboard is a SPA
-// whose internal endpoint is not documented. We therefore do the
-// following, in order:
+// (bigmodel.cn/coding-plan/personal/usage), and that dashboard is a
+// SPA whose internal endpoints are not documented.
 //
-//  1. GET the configured EndpointURL (the operator pastes the URL the
-//     browser's network tab shows, with the same query string).
-//  2. Try to decode it as JSON. If that fails, look for a JSON object
-//     embedded in the HTML (Next.js payload style) and search that.
-//  3. Walk every object in the decoded tree looking for the field
-//     patterns 智谱 uses (used / total / quota / remaining / resetTime),
-//     accepting several spellings.
+// Verified by inspecting the dashboard's own JS bundles (the
+// `claude-usage` chunk lists them):
 //
-// Because step 3 is heuristic, a dashboard redesign can break this at
-// any time. That is why Report.Experimental is set and why failures
-// are reported with a raw-body excerpt: the operator can then point
-// EndpointURL/JSONPath at the new shape, or switch to the custom parser.
-const zhipuDefaultEndpoint = "https://bigmodel.cn/api/biz/codingPlan/usage"
+//	GET https://bigmodel.cn/api/paas/v4/monitor/usage/quota/limit
+//	GET https://bigmodel.cn/api/paas/v4/monitor/credit-usage/activity
+//	GET https://bigmodel.cn/api/paas/v4/monitor/token-usage/activity
+//	GET https://bigmodel.cn/api/paas/v4/monitor/token-usage/usage-detail
+//
+// Authentication is an `Authorization: Bearer <token>` header — a
+// session cookie alone is NOT accepted (the API answers "Header中未收到
+// Authorization参数"). The token is normally the channel's own API
+// key, so the probe prefers the channel key and only falls back to
+// the cookie for dashboards that need one.
+//
+// Because the response shape is undocumented, we walk the decoded
+// tree looking for the field families 智谱 uses (used / total /
+// quota / remaining / resetTime). A dashboard redesign can break this
+// at any time — that is why Report.Experimental is set and why
+// failures report the raw-body excerpt.
+const zhipuDefaultEndpoint = "https://bigmodel.cn/api/paas/v4/monitor/usage/quota/limit"
 
 func zhipuWebParser(ctx context.Context, in Input) (Report, error) {
-	if in.Cookie == "" {
-		return Report{}, fmt.Errorf("zhipu_web: session cookie is required")
+	if in.APIKey == "" && in.Cookie == "" {
+		return Report{}, fmt.Errorf("zhipu_web: needs a channel API key (Authorization: Bearer) or a session cookie")
 	}
 	url := in.EndpointURL
 	if url == "" {
@@ -52,8 +57,14 @@ func zhipuWebParser(ctx context.Context, in Input) (Report, error) {
 	// origin as referer; both are cheap to mimic.
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("Referer", "https://bigmodel.cn/coding-plan/personal/usage")
-	req.Header.Set("Cookie", in.Cookie)
+	req.Header.Set("Origin", "https://bigmodel.cn")
 	req.Header.Set("User-Agent", "llmRx/usage-probe (+https://github.com/sn0wfree/llmRx)")
+	if in.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+in.APIKey)
+	}
+	if in.Cookie != "" {
+		req.Header.Set("Cookie", in.Cookie)
+	}
 
 	resp, err := httpDoer().Do(req)
 	if err != nil {
@@ -69,7 +80,8 @@ func zhipuWebParser(ctx context.Context, in Input) (Report, error) {
 	rep := Report{Experimental: true, Raw: raw}
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return rep, fmt.Errorf("zhipu_web: session cookie rejected (status %d) — re-copy it from the browser", resp.StatusCode)
+		return rep, fmt.Errorf("zhipu_web: rejected (status %d) — the endpoint wants an Authorization: Bearer token; "+
+			"check that the channel key is a coding-plan key and that it can reach %s", resp.StatusCode, url)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return rep, fmt.Errorf("zhipu_web: upstream status %d: %s", resp.StatusCode, truncate(string(body), 200))
