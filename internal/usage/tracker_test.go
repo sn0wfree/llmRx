@@ -100,7 +100,13 @@ func TestDailyWindow(t *testing.T) {
 	ch := chWithQuota(1, model.PlanQuota{
 		Metric: model.QuotaMetricTokens, Limit: 100, Window: model.QuotaWindowDaily,
 	})
-	now := time.Now()
+	// Anchor at noon UTC: the tracker keys calendar counters by UTC
+	// day, so when this test runs in the first hour after midnight,
+	// -1h lands on the previous day and legitimately resets them
+	// (stale keys read as zero). Noon keeps both observations inside
+	// one day on every run.
+	base := time.Now().UTC()
+	now := time.Date(base.Year(), base.Month(), base.Day(), 12, 0, 0, 0, time.UTC)
 	tr.Observe(1, 10, 5, 0, 0, 0, now)
 	tr.Observe(1, 10, 5, 0, 0, 0, now.Add(-time.Hour))
 	if u := tr.Usage(ch, now); u.Used != 30 {

@@ -547,17 +547,7 @@ func (d *SQLiteDriver) QueryAcross(filter QueryFilter, days []string) ([]model.L
 	}
 
 	// Page.
-	limit := filter.Limit
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 500 {
-		limit = 500
-	}
-	offset := filter.Offset
-	if offset < 0 {
-		offset = 0
-	}
+	limit, offset := clampPage(filter.Limit, filter.Offset)
 
 	sb.WriteString(" ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?")
 	args = append(args, limit, offset)

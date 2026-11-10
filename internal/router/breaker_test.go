@@ -452,3 +452,87 @@ func TestBreaker_ReloadDropsOverrideForDeletedChannel(t *testing.T) {
 		t.Fatal("expected breaker to open at the default 5-failure threshold")
 	}
 }
+
+// TestBreaker_DefaultsChangeKeepsOverrides pins the push semantics:
+// refreshing the live defaults must NOT wipe per-channel overrides —
+// before the PrimeChannel refactor refreshDefaults cleared the whole
+// cfgCache, forcing every channel back through the store.
+func TestBreaker_DefaultsChangeKeepsOverrides(t *testing.T) {
+	b := NewCircuitBreaker(nil)
+	prime(b, 1, 3, 30*time.Millisecond)
+	live := &liveDefaults{maxFailures: 10, resetMs: 60}
+	b.SetDefaults(live) // defaults change
+
+	// Override (3) still wins over the new default (10).
+	if mf, rd := b.cfgFor(1); mf != 3 || rd != 30*time.Millisecond {
+		t.Fatalf("defaults change wiped the override: maxFail=%d reset=%v", mf, rd)
+	}
+	// A channel without an override does pick up the new default.
+	if mf, _ := b.cfgFor(2); mf != 10 {
+		t.Fatalf("new default not applied to unprimed channel: maxFail=%d", mf)
+	}
+}
+
+// TestBreaker_OverrideZerosFallBackToDefaults: a primed entry whose
+// row has no operator config (zeros) must resolve to the defaults,
+// not to zero.
+func TestBreaker_OverrideZerosFallBackToDefaults(t *testing.T) {
+	b := NewCircuitBreaker(nil)
+	b.PrimeChannel(&model.Channel{ID: 1}) // CircuitBreaker zero value
+	mf, rd := b.cfgFor(1)
+	if mf != defaultMaxFailures || rd != defaultResetDur {
+		t.Fatalf("zero override must fall back to defaults, got maxFail=%d reset=%v", mf, rd)
+	}
+}
+
+// TestBreaker_PrimeChannelNil: a nil channel is a no-op, not a panic.
+func TestBreaker_PrimeChannelNil(t *testing.T) {
+	b := NewCircuitBreaker(nil)
+	b.PrimeChannel(nil)
+	prime(b, 1, 4, time.Second) // cache still usable afterwards
+	if mf, _ := b.cfgFor(1); mf != 4 {
+		t.Fatalf("expected override after nil PrimeChannel, got %d", mf)
+	}
+}
+
+// TestBreaker_PrimeAllReplacesCache: PrimeAll installs the given set
+// wholesale — channels absent from the new set lose their override
+// and fall back to defaults (a disabled/deleted row must not keep
+// constraining the breaker).
+func TestBreaker_PrimeAllReplacesCache(t *testing.T) {
+	b := NewCircuitBreaker(nil)
+	prime(b, 1, 3, 30*time.Millisecond)
+	b.PrimeAll([]model.Channel{
+		{ID: 2, CircuitBreaker: model.CircuitBreakerConfig{MaxFailures: 4, ResetTimeout: time.Second}},
+	})
+	if mf, _ := b.cfgFor(1); mf != defaultMaxFailures {
+		t.Fatalf("stale override survived PrimeAll: maxFail=%d", mf)
+	}
+	if mf, rd := b.cfgFor(2); mf != 4 || rd != time.Second {
+		t.Fatalf("new set not installed: maxFail=%d reset=%v", mf, rd)
+	}
+}
+
+// TestBreaker_ResolveDefaultsClampsInvalid: a defaults source
+// returning non-positive values must be clamped to the built-in
+// constants, and a breaker built without NewCircuitBreaker (test
+// construction) still resolves them.
+func TestBreaker_ResolveDefaultsClampsInvalid(t *testing.T) {
+	live := &liveDefaults{maxFailures: 0, resetMs: -5}
+	b := &CircuitBreaker{defaults: live} // no NewCircuitBreaker: cold path
+	mf, rd := b.cfgFor(1)
+	if mf != defaultMaxFailures || rd != defaultResetDur {
+		t.Fatalf("invalid defaults not clamped: maxFail=%d reset=%v", mf, rd)
+	}
+}
+
+// TestBreaker_SetDefaultsClampsInvalid mirrors the clamp through the
+// SetDefaults/refreshDefaults path (the one admin /runtime actually
+// exercises).
+func TestBreaker_SetDefaultsClampsInvalid(t *testing.T) {
+	b := NewCircuitBreaker(nil)
+	b.SetDefaults(&liveDefaults{maxFailures: -3, resetMs: 0})
+	if mf, rd := b.cfgFor(1); mf != defaultMaxFailures || rd != defaultResetDur {
+		t.Fatalf("invalid live defaults not clamped: maxFail=%d reset=%v", mf, rd)
+	}
+}
