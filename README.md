@@ -415,6 +415,8 @@ go test -v ./internal/admin ./internal/api
 | [docs/P21-USAGE-MONITOR.md](docs/P21-USAGE-MONITOR.md) | **渠道用量监控 + 上游套餐配额 + 配额感知路由**(P21,已实施) |
 | [docs/P22-SUBSCRIPTION-USAGE.md](docs/P22-SUBSCRIPTION-USAGE.md) | **厂商侧订阅用量监控**(P22,已实施): API 能力矩阵、窗口模型、GLM Cookie 方案风险 |
 | [docs/REAL-DATA-TEST.md](docs/REAL-DATA-TEST.md) | **真实数据测试操作指南**: OpenRouter / 智谱 探针的逐步配置与验证手册 |
+| [docs/ACCOUNT-SECURITY.md](docs/ACCOUNT-SECURITY.md) | **账号与口令安全说明**: 改密操作、会话吊销、远程部署凭据流程、应急处置 |
+| [deploy/nginx-hardened/README.md](deploy/nginx-hardened/README.md) | **公网部署加固手册**: 攻击面评估、nginx 蜜罐 + 限速 + fail2ban |
 | [docs/architecture.html](docs/architecture.html) | **交互式架构分层图**: 7 层 41 包，悬停查看职责与依赖（graphify AST 扫描实测） |
 | [CHANGELOG.md](CHANGELOG.md) | 各 Phase 变更记录 |
 
