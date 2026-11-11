@@ -1,6 +1,11 @@
 # llmRx — LLM API 智能路由网关
 
 > 2026-07-07 · 架构设计文档 v0.3 (P7+ 闭环 + Passthrough A/B + 多租户 + 热重载)
+>
+> **注意**：本文是 v0.3 时点的设计快照，其中的变更记录表按阶段归档。
+> 当前实测的包结构与依赖关系以 [architecture.html](architecture.html)
+> （graphify AST 扫描，随仓库维护）为准；代码已远超 P7+——
+> 现阶段为 P0→P22 全部完成（详见 [CHANGELOG.md](../CHANGELOG.md)）。
 
 ---
 

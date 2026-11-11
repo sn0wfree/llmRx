@@ -938,6 +938,14 @@ POST /admin/api/v1/users/{id}/password              {old_password, new_password}
 GET  /admin/api/v1/dashboard                        总览（请求量、spend、错误率）
 GET  /api/v1/health                           liveness（无需鉴权）
 
+# Usage & Subscriptions (P21/P22 · 渠道用量与厂商套餐)
+GET  /admin/api/v1/usage/overview?range=24h         渠道 token 用量 + 配额进度（24h/7d/30d）
+GET  /admin/api/v1/usage/timeseries?range=7d        用量时间序列
+GET  /admin/api/v1/usage/plans                      下游 Plan 预算用量
+GET  /admin/api/v1/subscriptions                    厂商侧套餐窗口报告
+POST /admin/api/v1/subscriptions/{id}/refresh        立即探测指定渠道
+GET  /admin/api/v1/subscription-parsers             可用探针类型
+
 # Channels
 GET  /admin/api/v1/channels
 POST /admin/api/v1/channels                         {name, provider, base_url, models, priority, ...}

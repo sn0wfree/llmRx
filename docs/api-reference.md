@@ -316,6 +316,19 @@ model: "whisper-1"
 **GET** `/admin/api/v1/analytics/by-model` - 按模型统计
 **GET** `/admin/api/v1/analytics/by-channel` - 按通道统计
 
+### 4.9 用量监控（P21 · 渠道维度）
+
+**GET** `/admin/api/v1/usage/overview?range=24h|7d|30d` - 各渠道 token 用量（prompt/completion/cached/reasoning）、双成本、错误率、套餐配额进度
+**GET** `/admin/api/v1/usage/timeseries?range=24h|7d|30d` - 用量时间序列（24h 按小时分桶，其余按天）
+**GET** `/admin/api/v1/usage/plans` - 下游 Plan 预算用量
+
+### 4.10 订阅配额（P22 · 厂商维度）
+
+**GET** `/admin/api/v1/subscriptions` - 各渠道厂商侧套餐窗口报告（Key 限额 / 日 / 周 / 月 / 5h 滚动 / 余额，含本地估算对照）
+**POST** `/admin/api/v1/subscriptions/{channel_id}/refresh` - 立即探测指定渠道并刷新报告
+**GET** `/admin/api/v1/subscriptions/{channel_id}/history?days=30` - 窗口用量历史（默认 30 天）
+**GET** `/admin/api/v1/subscription-parsers` - 可用探针类型清单（openrouter_key / zhipu_web / custom）
+
 ## 五、节点管理 API 端点 (仅多例模式)
 
 ### 5.1 节点注册

@@ -13,6 +13,7 @@ Install](#fresh-install) section.
 | v2.1 security | `96fb06f`..`45b8b7c` | Admin password, token encryption, XFF trust, context propagation, CORS |
 | v2.2 lifecycle | `789ef7f`..`34b50de` | Graceful shutdown, runtime live updates |
 | v2.3 ops | `c5edf98`..`42ad785` | Env interpolation, master key fail-closed, Thompson persistence |
+| v0.2.0 usage | `v0.1.1`..`v0.2.0` | P21 channel usage, P22 vendor subscriptions, admin page renames, architecture refactors, deployment hardening |
 
 ## Breaking Changes
 
@@ -177,6 +178,28 @@ starts load it.
 generates its own distinct RNG seed (`time.Now().UnixNano()`)
 instead of the legacy fixed seed. Sampling sequences now differ
 across replicas — desirable for distributed exploration.
+
+### 10. Admin Console Page URLs Renamed (v0.2.0 / `32f4040`)
+
+Three admin pages whose names all contained "用量" are renamed to
+disambiguate the dimension. Old page URLs now return 404 —
+bookmarks and hard-coded links must be updated. JSON API paths are
+unchanged (programs are unaffected).
+
+| Old URL | New URL | Dimension |
+|---|---|---|
+| `/admin/usage` | `/admin/user-usage` | 下游用户用量 |
+| `/admin/monitoring` | `/admin/channel-monitor` | 上游渠道 · 本地计量 |
+| `/admin/subscriptions` | `/admin/subscription-quota` | 上游 · 厂商报告 |
+
+**Detection**:
+```bash
+grep -rn 'admin/usage\|admin/monitoring\|admin/subscriptions' \
+  --include='*.html' --include='*.js' your-frontend/ 2>/dev/null
+```
+
+**Fix**: use the new URLs (sidebar links are updated automatically);
+user-side `/account/usage` keeps its name.
 
 ## Silent Improvements
 

@@ -13,6 +13,13 @@ server:
   # password immediately via /admin/users or set admin_password to
   # disable the default. Keep this true only in trusted networks.
   allow_default_admin_password: true
+  # Prometheus /metrics 独立监听地址。空 = 关闭（默认）。
+  # 只绑内网/回环（如 127.0.0.1:9090），不要暴露公网。
+  # metrics_addr: "127.0.0.1:9090"
+  # 反代部署（nginx 等）时置 true，让限速/日志/蜜罐拿到真实客户端 IP；
+  # trusted_proxy_cidrs 限定只信任哪些代理来源（防 X-Forwarded-For 伪造）。
+  # trust_proxy_headers: false
+  # trusted_proxy_cidrs: ["127.0.0.1/32"]
 
 database:
   driver: sqlite
