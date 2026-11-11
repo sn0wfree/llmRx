@@ -4,53 +4,19 @@ All notable changes to llmRx are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — P22
+## [Unreleased]
 
-厂商侧订阅用量监控（详见 [docs/P22-SUBSCRIPTION-USAGE.md](docs/P22-SUBSCRIPTION-USAGE.md)）。
+（空——下一组变更从这里开始。）
 
-### Changed
+## [v0.2.0] — 2026-11-11
 
-- **页面改名，消除「用量」歧义**：三个都含「用量」的页面现在按维度区分
-  ——「用量」（下游用户）→ **用户用量** `/admin/user-usage`；
-  「用量监控」（上游渠道 · 本地计量）→ **渠道监控** `/admin/channel-monitor`；
-  「订阅用量」（上游 · 厂商报告）→ **订阅配额** `/admin/subscription-quota`。
-  旧 URL 不保留（直接 404）。JSON API 路径不变（`/admin/api/v1/usage/*`、
-  `/admin/api/v1/subscriptions*`）—— 它们是给程序用的，稳定优先。
-  用户侧「用量」（`/account/usage`）保持原名。
+P21 渠道用量监控 + P22 厂商侧订阅用量 + 架构重构 + 公网部署加固。
+首个公网部署实例：`llmrx.tokenhub.top`。
 
-### Added
-
-- **订阅配额页** `/admin/subscription-quota`：按渠道展示厂商报告的套餐窗口（Key 限额 / 日 / 周 / 月 /
-  5h 滚动 / 余额），含已用·上限·剩余·进度条·重置倒计时，并与 P21 本地估算并列对照；
-  侧边栏「监控」区新增入口。
-- **用量探针** `Channel.UsageProbe`：`openrouter_key`（官方 `/api/v1/key`，多窗口开箱即用）/
-  `zhipu_web`（GLM Coding Plan Cookie 抓取，实验性）/ `custom`（通用 JSONPath）。
-  配置存 `channels.usage_probe`，最近报告缓存于 `channels.usage_state`。
-- **新包 `internal/subusage`**：窗口模型 `UsagePoint`（Ratio 优先采用厂商 remaining）、
-  可插拔解析器注册表、P14 同构轮询循环（jitter / 单渠道间隔 / 失败保留上次成功值 /
-  历史 10 分钟去重 / 90 天保留）。
-- **历史表 `channel_usage_points`**：每窗口一条，供订阅页趋势与消耗速率分析。
-- **Admin API**：`GET /subscriptions`、`POST /subscriptions/{id}/refresh`、
-  `GET /subscriptions/{id}/history`、`GET /subscription-parsers`。
-
-### Changed
-
-- **路由优先采用厂商数据**：`usage.Tracker` 新增 `SourceRatio`，L2.5 guard 在厂商报告可用且
-  未过期时改用它；RouterPath 区分 `L2.5(quota)`（本地）与 `L2.5(quota,src)`（厂商）。
-- 探针 Cookie 经 AES-256-GCM 加密存储，字段 `json:"-"` 不回显；未配置 master key 时拒绝保存。
-
-### Fixed
-
-- **P14 余额刷新按钮在生产环境失效**：`main()` 在 `server.New()` 之后才调用
-  `SetBalanceMonitor`，而 webui handler 在 `New()` 内已构造完毕，拿到的永远是 nil。
-  `Server` 现在保留 webui 引用并在 setter 中回推（同一修复覆盖 P22 的 usage monitor）。
-
-## [Unreleased] — P21
+### Added — P21 渠道用量监控
 
 渠道用量监控 + 上游套餐配额 + 配额感知路由（详见
 [docs/P21-USAGE-MONITOR.md](docs/P21-USAGE-MONITOR.md)）。
-
-### Added
 
 - **渠道监控页** `/admin/channel-monitor`：各渠道 prompt/completion/cached/reasoning token
   用量（24h/7d/30d）、双成本、错误率、上游套餐配额进度条、按渠道堆叠的 token 趋势图、
@@ -67,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **运行时配置**：`quota_guard_enabled`（默认 true）、`quota_soft_threshold`（默认 0.8）、
   `cost_strategy` 白名单扩展 `quota_aware`/`weighted_random`/`latency`/`cost_latency_blend`。
 
-### Changed
+### Changed — P21
 
 - **logstore meta 升级 v2**：meta 汇总增加 prompt/completion/cached/reasoning 拆分与
   per-group 错误数；旧版 meta 首次读取时自动重扫重建。
@@ -75,6 +41,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Postgres 三后端），供用量恢复与监控聚合使用。
 - Admin `/config` 的 `cost_strategy` 校验从 cheapest|fastest|balanced 扩展为全策略集合
   （原来仅运行时白名单三个，其余只能经 YAML 启动设定）。
+
+### Added — P22 厂商侧订阅用量
+
+厂商侧订阅用量监控（详见 [docs/P22-SUBSCRIPTION-USAGE.md](docs/P22-SUBSCRIPTION-USAGE.md)）。
+
+- **订阅配额页** `/admin/subscription-quota`：按渠道展示厂商报告的套餐窗口（Key 限额 / 日 / 周 / 月 /
+  5h 滚动 / 余额），含已用·上限·剩余·进度条·重置倒计时，并与 P21 本地估算并列对照；
+  侧边栏「监控」区新增入口。
+- **用量探针** `Channel.UsageProbe`：`openrouter_key`（官方 `/api/v1/key`，多窗口开箱即用）/
+  `zhipu_web`（GLM Coding Plan Cookie 抓取，实验性）/ `custom`（通用 JSONPath）。
+  配置存 `channels.usage_probe`，最近报告缓存于 `channels.usage_state`。
+- **新包 `internal/subusage`**：窗口模型 `UsagePoint`（Ratio 优先采用厂商 remaining）、
+  可插拔解析器注册表、P14 同构轮询循环（jitter / 单渠道间隔 / 失败保留上次成功值 /
+  历史 10 分钟去重 / 90 天保留）。
+- **历史表 `channel_usage_points`**：每窗口一条，供订阅页趋势与消耗速率分析。
+- **Admin API**：`GET /subscriptions`、`POST /subscriptions/{id}/refresh`、
+  `GET /subscriptions/{id}/history`、`GET /subscription-parsers`。
+
+### Changed — P22
+
+- **页面改名，消除「用量」歧义**：三个都含「用量」的页面现在按维度区分
+  ——「用量」（下游用户）→ **用户用量** `/admin/user-usage`；
+  「用量监控」（上游渠道 · 本地计量）→ **渠道监控** `/admin/channel-monitor`；
+  「订阅用量」（上游 · 厂商报告）→ **订阅配额** `/admin/subscription-quota`。
+  旧 URL 不保留（直接 404）。JSON API 路径不变（`/admin/api/v1/usage/*`、
+  `/admin/api/v1/subscriptions*`）—— 它们是给程序用的，稳定优先。
+  用户侧「用量」（`/account/usage`）保持原名。
+- **路由优先采用厂商数据**：`usage.Tracker` 新增 `SourceRatio`，L2.5 guard 在厂商报告可用且
+  未过期时改用它；RouterPath 区分 `L2.5(quota)`（本地）与 `L2.5(quota,src)`（厂商）。
+- 探针 Cookie 经 AES-256-GCM 加密存储，字段 `json:"-"` 不回显；未配置 master key 时拒绝保存。
+
+### Changed — 架构重构
+
+- **巨型文件拆分**：`internal/api/router.go`（2740 行/85 函数）按端点域拆为
+  handler/chat/chat_auto/models/embeddings/images/audio/rerank/billing/request/
+  httpio/buffers；`internal/store/sqlite.go`（2649 行/129 函数）按实体拆为
+  channel/key/token/plan/user/alert/settings/byok/providerdef/combo/guardrail/mcp
+  等 `*_sql.go`（核心开库/迁移逻辑留在 sqlite.go）。均为纯代码移动。
+- **依赖解耦**：admin 不再 import webui——两侧共享 `store.Reader` 读取接口；
+  usage 与 subusage 解耦，路由侧 `quotaProvider` 组合（厂商报告优先、本地计数兜底）。
+- **熔断配置改推送**：`PrimeChannel/PrimeAll` 在启动与 admin 更新时推送覆盖，
+  `cfgFor` 纯缓存解析——请求路径零 store IO；回归测试钉住契约。
+- **logstore 单一 SQL 源**：SQLite/Postgres 双驱动共享 `sql_shared.go`
+  （建表 DDL 经 `dialect.RewriteDDL` 翻译），`postgres_ddl_test.go` 钉住两 schema 不漂移。
+
+### Fixed
+
+- **P14 余额刷新按钮在生产环境失效**：`main()` 在 `server.New()` 之后才调用
+  `SetBalanceMonitor`，而 webui handler 在 `New()` 内已构造完毕，拿到的永远是 nil。
+  `Server` 现在保留 webui 引用并在 setter 中回推（同一修复覆盖 P22 的 usage monitor）。
+- **登出后浏览器后退仍显示已登录页**：认证响应原先无任何缓存控制头，Back 渲染的是
+  bfcache 快照而不请求服务器。全局中间件统一 `Cache-Control: no-store` + `Vary: Cookie`，
+  共享布局加 `pageshow` 强制刷新兜底（bfcache 恢复即重新请求）。
+- **`TestDailyWindow` 午夜 flaky**：观察点跨 UTC 日界会合法重置计数器，锚定正午修复。
+- **cluster 心跳假指标**：`collectMetrics` 由硬编码 0.25/0.45/100/10 改为实测
+  CPU（/proc 增量）、RSS/内存占比、QPS、在途连接、平均延迟（`MetricsMiddleware`）。
+- 单元测试补齐：breaker 推送语义、配额组合器四象限、engine 启动预热、
+  logstore 共享 SQL/参数绑定、admin wiring setters 与缓存端点。
+
+### Added — 部署与文档
+
+- **公网部署加固包** `deploy/nginx-hardened/`：nginx 蜜罐（wp-login/.env/.git 等假响应，
+  fail2ban 首次命中即封）、登录端点 5r/m 限速 + 429 封禁、安全响应头；
+  含多站点共存服务器的站点文件变体。配套手册见该目录 README。
+- **远程部署手册** `deploy/REMOTE-DEPLOY.md` + 一键推送脚本 `deploy/remote-push.sh`。
+- **账号与口令安全说明** `docs/ACCOUNT-SECURITY.md`（改密/会话吊销/首启凭据流程/应急处置）。
+- **交互式架构分层图** `docs/architecture.html`（graphify AST 实测：7 层 41 包）。
+- `.gitattributes`：`*.sh` 强制 LF（修复 Windows 检出后 WSL/Git Bash 执行失败）。
+
+### Ops
+
+- 首个公网实例 `llmrx.tokenhub.top` 升级至本版本：公网直连 8787 已堵死
+  （绑定 127.0.0.1），Portainer 管理面（19000）公网暴露关闭，fail2ban 三 jail
+  （蜜罐/登录/sshd-journal-backend）启用，操作者 IP 加 ignoreip 白名单。
 
 ## [v0.1.1] — 2026-11-02
 
