@@ -165,6 +165,7 @@ func (s *Server) registerMiddleware() {
 		})
 	})
 	s.engine.Use(requestid.Middleware)
+	s.engine.Use(noStore)
 	s.engine.Use(requestLogger)
 	s.engine.Use(cluster.MetricsMiddleware)
 	s.engine.Use(chimw.Recoverer)
@@ -182,6 +183,23 @@ func (s *Server) registerMiddleware() {
 	if len(s.cfg.Server.CORSAllowedOrigins) > 0 {
 		s.engine.Use(cors.Handler(s.corsOptions()))
 	}
+}
+
+// noStore marks every response as uncacheable. Authenticated HTML
+// (admin console, account pages) and per-key JSON must never be
+// served from the browser's back/forward or HTTP cache: after
+// logout, Back would otherwise render the stale logged-in snapshot
+// without asking the server. Vary: Cookie keeps any shared cache
+// from mixing sessions. Registered globally so no route can opt in
+// to caching by omission.
+func noStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+		h.Set("Pragma", "no-cache")
+		h.Add("Vary", "Cookie")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // requestLogger is a lightweight replacement for chimw.Logger.
