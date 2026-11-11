@@ -116,9 +116,9 @@ func TestUserRoutes_AdminAllowed(t *testing.T) {
 // --- MePage rendering ------------------------------------------------------
 
 // TestMePage_WelcomeAndSections verifies the enhanced home page renders all
-// the new sections: welcome banner, balance card, today stats card,
+// the sections: welcome banner, gradient balance hero, today stats card,
 // recent activity section, API credentials, quick-start curl block, and
-// the 4-button action grid.
+// the hero action row.
 func TestMePage_WelcomeAndSections(t *testing.T) {
 	h, _ := newTestWebUI(t)
 	_, cookie := seedUserWithPlan(t, h, h.store, "bob", model.RoleUser, 50, 12.5)
@@ -132,15 +132,15 @@ func TestMePage_WelcomeAndSections(t *testing.T) {
 	body := rec.Body.String()
 
 	want := []string{
-		"欢迎回来，bob",       // welcome banner
-		"账户余额",            // balance card
-		"今日统计",            // today stats card
-		"API 凭据",            // credentials card
-		"快速开始",            // quick-start card
+		"欢迎回来，bob",             // welcome banner
+		"剩余额度",                 // gradient balance hero
+		"今日统计",                 // today stats card
+		"API 凭据",               // credentials card
+		"快速开始",                 // quick-start card
 		"/v1/chat/completions", // curl example
-		"复制命令",            // copy button on curl example
-		"导出 CSV",            // action grid
-		"登出",                // logout button
+		"复制命令",                 // copy button on curl example
+		"导出 CSV",               // hero action
+		"登出",                   // logout button
 	}
 	for _, w := range want {
 		if !contains(body, w) {
@@ -149,7 +149,7 @@ func TestMePage_WelcomeAndSections(t *testing.T) {
 	}
 }
 
-// TestMePage_LowBalanceWarning verifies the yellow warning banner shows when
+// TestMePage_LowBalanceWarning verifies the hero warn strip shows when
 // remaining balance drops below $1.
 func TestMePage_LowBalanceWarning(t *testing.T) {
 	h, _ := newTestWebUI(t)
@@ -162,8 +162,8 @@ func TestMePage_LowBalanceWarning(t *testing.T) {
 	h.UserRoutes().ServeHTTP(rec, req)
 	assertStatus(t, rec, http.StatusOK)
 
-	if !contains(rec.Body.String(), "余额不足") {
-		t.Error("low-balance warning banner should appear when remaining < $1")
+	if !contains(rec.Body.String(), "余额偏低") {
+		t.Error("low-balance warn strip should appear when remaining < $1")
 	}
 }
 
@@ -180,8 +180,8 @@ func TestMePage_NoLowBalanceWarning(t *testing.T) {
 	h.UserRoutes().ServeHTTP(rec, req)
 	assertStatus(t, rec, http.StatusOK)
 
-	if contains(rec.Body.String(), "余额不足") {
-		t.Error("low-balance warning should NOT appear when remaining >= $1")
+	if contains(rec.Body.String(), "余额偏低") {
+		t.Error("low-balance warn strip should NOT appear when remaining >= $1")
 	}
 }
 
@@ -281,8 +281,11 @@ func TestMePage_PercentTextRenders(t *testing.T) {
 	h.UserRoutes().ServeHTTP(rec, req)
 	assertStatus(t, rec, http.StatusOK)
 
-	if !contains(rec.Body.String(), "已使用 10.0%") {
-		t.Errorf("expected '已使用 10.0%%' in body, got: %s", rec.Body.String())
+	if !contains(rec.Body.String(), "width: 10.0%") {
+		t.Errorf("expected hero progress bar 'width: 10.0%%' in body, got: %s", rec.Body.String())
+	}
+	if !contains(rec.Body.String(), "（10.0%）") {
+		t.Error("expected usage caption '（10.0%）' in body")
 	}
 }
 
