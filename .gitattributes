@@ -1,0 +1,6 @@
+# Shell scripts must have LF line endings: a CRLF shebang
+# (`#!/bin/sh^M`) fails with "No such file or directory" when the
+# script is executed from WSL or Git Bash on a Windows checkout with
+# core.autocrlf=true. Force LF in the working tree regardless of the
+# platform's autocrlf setting.
+*.sh text eol=lf
