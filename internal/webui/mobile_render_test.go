@@ -290,3 +290,60 @@ func TestAccountEmptyStateNoAPIKey(t *testing.T) {
 		t.Error("empty state card missing")
 	}
 }
+
+// asideSegment extracts the <aside ...> opening tag of the sidebar.
+func asideSegment(out string) string {
+	i := strings.Index(out, "<aside")
+	if i < 0 {
+		return ""
+	}
+	j := strings.Index(out[i:], ">")
+	if j < 0 {
+		return ""
+	}
+	return out[i : i+j+1]
+}
+
+// TestSidebarBranchClasses: the sidebar hides below md for user-center
+// users and stays always-visible for admins.
+func TestSidebarBranchClasses(t *testing.T) {
+	user := asideSegment(renderMobile(t, "me_body", nil))
+	if !strings.Contains(user, "hidden md:flex") {
+		t.Error("user sidebar should carry hidden md:flex")
+	}
+
+	admin := asideSegment(renderAdmin(t, "me_body"))
+	if admin == "" {
+		t.Fatal("admin sidebar missing")
+	}
+	if strings.Contains(admin, "hidden") {
+		t.Error("admin sidebar should not be hidden on mobile")
+	}
+}
+
+// TestUsagePageChartAndSummaryHiddenWithoutData: with no series the
+// chart card and its script are skipped entirely; with no TodaySummary
+// the stats card is skipped too.
+func TestUsagePageChartAndSummaryHiddenWithoutData(t *testing.T) {
+	out := renderMobile(t, "me_usage_body", map[string]any{
+		"Range":      "24h",
+		"Summary":    usageSummary{Requests: 1},
+		"SeriesJSON": "[]",
+	})
+	if strings.Contains(out, "花费趋势") {
+		t.Error("chart card should be omitted without series data")
+	}
+	if strings.Contains(out, `id="usage-chart"`) {
+		t.Error("chart canvas should be omitted without series data")
+	}
+	if !strings.Contains(out, "用量统计") {
+		t.Error("usage page title should still render")
+	}
+
+	out = renderMobile(t, "me_body", map[string]any{
+		"Active": "me",
+	})
+	if strings.Contains(out, "今日统计") {
+		t.Error("today stats card should be omitted without TodaySummary")
+	}
+}

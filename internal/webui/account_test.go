@@ -444,6 +444,116 @@ func TestMeTopupPage_LinksToHome(t *testing.T) {
 	}
 }
 
+// --- Mobile dock / range pill highlighting ---------------------------------
+
+// TestMePage_DockActivePerRoute: each account route highlights its own
+// bottom-dock tab (billing.go sets the Active flag the dock template
+// reads).
+func TestMePage_DockActivePerRoute(t *testing.T) {
+	h, _ := newTestWebUI(t)
+	_, cookie := seedUserWithPlan(t, h, h.store, "dock", model.RoleUser, 50, 0)
+
+	cases := []struct{ path, want string }{
+		{"/", "/account"},
+		{"/usage", "/account/usage"},
+		{"/topup", "/account/topup"},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: cookie})
+		rec := httptest.NewRecorder()
+		h.UserRoutes().ServeHTTP(rec, req)
+		assertStatus(t, rec, http.StatusOK)
+
+		seg := dockSegment(rec.Body.String())
+		if seg == "" {
+			t.Fatalf("%s: dock not rendered", tc.path)
+		}
+		for _, href := range []string{"/account", "/account/usage", "/account/topup"} {
+			want := href == tc.want
+			if got := tabIsActive(seg, href); got != want {
+				t.Errorf("%s: tab %s active = %v, want %v", tc.path, href, got, want)
+			}
+		}
+	}
+}
+
+// TestMeUsagePage_RangePillHighlight: exactly the pill matching ?range=
+// carries the selected classes; the others stay neutral.
+func TestMeUsagePage_RangePillHighlight(t *testing.T) {
+	h, _ := newTestWebUI(t)
+	_, cookie := seedUserWithPlan(t, h, h.store, "pill", model.RoleUser, 50, 0)
+
+	get := func(path string) string {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: cookie})
+		rec := httptest.NewRecorder()
+		h.UserRoutes().ServeHTTP(rec, req)
+		assertStatus(t, rec, http.StatusOK)
+		return rec.Body.String()
+	}
+
+	all := []string{
+		`href="/account/usage?range=24h"`,
+		`href="/account/usage?range=7d"`,
+		`href="/account/usage?range=30d"`,
+		`href="/account/usage"`, // 全部
+	}
+	cases := []struct{ query, active string }{
+		{"?range=24h", all[0]},
+		{"?range=7d", all[1]},
+		{"?range=30d", all[2]},
+		{"", all[3]},
+	}
+	for _, tc := range cases {
+		body := get("/usage" + tc.query)
+		for _, href := range all {
+			got := strings.Contains(body, href+` class="px-3.5 py-2 rounded-md bg-blue-600 text-white"`)
+			want := href == tc.active
+			if got != want {
+				t.Errorf("range %q: pill %s active = %v, want %v", tc.query, href, got, want)
+			}
+		}
+	}
+}
+
+// TestMeUsagePage_MobileChartScriptWithLogs: with log data the chart card
+// renders and the canvas is sized via the element (regression guard for
+// the sizing bug that silently blanked the trend chart).
+func TestMeUsagePage_MobileChartScriptWithLogs(t *testing.T) {
+	h, st := newTestWebUI(t)
+	_, cookie := seedUserWithPlan(t, h, st, "chart", model.RoleUser, 50, 0)
+	tok, _ := st.GetTokenByName("chart")
+	if err := h.logStore.Insert(&model.Log{
+		TokenID:    tok.ID,
+		Model:      "gpt-4",
+		StatusCode: 200,
+		CreatedAt:  time.Now(),
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	h.logStore.Flush()
+
+	req := httptest.NewRequest(http.MethodGet, "/usage", nil)
+	req.AddCookie(&http.Cookie{Name: "llmrx_session", Value: cookie})
+	rec := httptest.NewRecorder()
+	h.UserRoutes().ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		"用量趋势",
+		"el.width = (el.clientWidth||600) * dpr",
+		`hidden md:block`,
+		`md:hidden`,
+		"gpt-4",
+	} {
+		if !contains(body, want) {
+			t.Errorf("usage page missing %q", want)
+		}
+	}
+}
+
 // --- Routes() should NOT expose /me anymore -------------------------------
 
 // TestRoutes_NoLegacyMePath ensures the old /admin/me path was removed from
