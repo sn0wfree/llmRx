@@ -992,13 +992,10 @@ POST /v1/embeddings                           OpenAI 兼容
 
 ## 附录 C：升级路径
 
-- **当前**：P7+ 闭环 + 多租户 + 热重载 + P0 master key 加密 + 13 MB scratch 镜像
-- **下一个里程碑**（Postgres backend）：
-  - 支持 Postgres / MySQL，QPS 10× 提升
-  - 多实例 + 共享 session
-  - 已有代码通过 `database.driver` 切换，迁移工具自动生成 schema diff
-- **再下一个**（P10 可观测 + P11 MCP）：
-  - Prometheus / OpenTelemetry exporter
-  - MCP server（暴露 llmRx 内部能力给 IDE / Agent）
+- **当前**：P0 → P22 全部完成（含 Postgres backend、P10 Prometheus/OTel、P11 MCP、P21 渠道用量、P22 订阅用量）+ 13 MB scratch 镜像
+- **下一个里程碑**（P12+ 集群模式）：
+  - 多节点同步 / 共享 session
+  - 集群心跳已带真实 CPU/内存/QPS 指标
+- **再往后**：架构持续打磨（剩余巨型文件 `admin/handler.go` 拆分等）
 
 完整路线图见 [README.md → 路线图](../README.md)。
