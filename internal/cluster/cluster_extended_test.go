@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -248,7 +249,7 @@ func TestManager_ConcurrentRegister(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func(id int) {
 			req := &NodeRegisterRequest{
-				NodeID:    "node-" + itoa(id),
+				NodeID:    "node-" + strconv.Itoa(id),
 				Address:   "localhost",
 				Port:      8787 + id,
 				Role:      "replica",
@@ -287,7 +288,7 @@ func TestManager_ConcurrentHeartbeat(t *testing.T) {
 	// 注册 10 个节点
 	for i := 0; i < 10; i++ {
 		manager.Register(&NodeRegisterRequest{
-			NodeID:    "node-" + itoa(i),
+			NodeID:    "node-" + strconv.Itoa(i),
 			Address:   "localhost",
 			Port:      8787 + i,
 			Role:      "replica",
@@ -301,7 +302,7 @@ func TestManager_ConcurrentHeartbeat(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func(id int) {
 			req := &HeartbeatRequest{
-				NodeID:    "node-" + itoa(id),
+				NodeID:    "node-" + strconv.Itoa(id),
 				Timestamp: NowUnix(),
 				Status:    "healthy",
 			}
@@ -339,7 +340,7 @@ func TestManager_LeaderElection(t *testing.T) {
 	// 注册 3 个节点，启动时间不同
 	for i := 0; i < 3; i++ {
 		manager.Register(&NodeRegisterRequest{
-			NodeID:    "node-" + itoa(i),
+			NodeID:    "node-" + strconv.Itoa(i),
 			Address:   "localhost",
 			Port:      8787 + i,
 			Role:      "replica",

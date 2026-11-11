@@ -3,13 +3,14 @@ package api
 import (
 	"context"
 	"io"
+	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/logging"
 	"github.com/sn0wfree/llmRx/internal/observability"
 	"github.com/sn0wfree/llmRx/internal/provider"
 	"github.com/sn0wfree/llmRx/internal/router"
-	"net/http"
 )
 
 // AudioSpeech handles POST /v1/audio/speech. Returns raw audio bytes
@@ -71,7 +72,7 @@ func (h *Handler) AudioSpeech(w http.ResponseWriter, r *http.Request) {
 	}
 	ct := "audio/" + format
 	w.Header().Set("Content-Type", ct)
-	w.Header().Set("Content-Length", itoa(len(audio)))
+	w.Header().Set("Content-Length", strconv.Itoa(len(audio)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(audio)
 }

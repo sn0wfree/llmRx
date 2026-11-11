@@ -128,27 +128,3 @@ func isBodyTooLarge(err error) bool {
 	}
 	return strings.Contains(err.Error(), "http: request body too large")
 }
-
-// itoa formats an int as decimal string without importing strconv
-// just for one call.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
-}

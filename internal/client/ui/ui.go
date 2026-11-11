@@ -15,6 +15,7 @@ import (
 	"embed"
 	"html/template"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -288,7 +289,7 @@ func formatRate(st cache.Stats) string {
 	}
 	// Integer math keeps this allocation-free on the render path.
 	pct := st.Hits * 1000 / total
-	return itoa(pct/10) + "." + itoa(pct%10) + "%"
+	return strconv.FormatInt(pct/10, 10) + "." + strconv.FormatInt(pct%10, 10) + "%"
 }
 
 func parseInt(s string) int {
@@ -306,20 +307,6 @@ func parseInt(s string) int {
 		}
 	}
 	return n
-}
-
-func itoa(n int64) string {
-	if n == 0 {
-		return "0"
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(b[i:])
 }
 
 func urlEncode(s string) string {

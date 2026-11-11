@@ -3,8 +3,7 @@ package cluster
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
-	
+
 	"github.com/go-chi/chi/v5"
 )
 
@@ -163,9 +162,4 @@ func writeError(w http.ResponseWriter, statusCode int, message, code string) {
 			"message": message,
 		},
 	})
-}
-
-// itoa 整数转字符串
-func itoa(i int) string {
-	return strconv.Itoa(i)
 }

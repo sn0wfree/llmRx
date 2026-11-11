@@ -2,8 +2,8 @@ package admin
 
 import (
 	"encoding/json"
-	"math"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/sn0wfree/llmRx/internal/model"
@@ -126,7 +126,7 @@ func (h *Handler) DeletePlan(w http.ResponseWriter, r *http.Request) {
 			tokens[i].PlanID = 0
 			if err := h.store.UpdateToken(&tokens[i]); err != nil {
 				writeErr(w, http.StatusInternalServerError,
-					"unlink token "+itoa(tokens[i].ID)+": "+err.Error())
+					"unlink token "+strconv.FormatInt(tokens[i].ID, 10)+": "+err.Error())
 				return
 			}
 		}
@@ -140,36 +140,4 @@ func (h *Handler) DeletePlan(w http.ResponseWriter, r *http.Request) {
 		h.fireReload()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-// itoa is a tiny int64→string helper to keep this file free of
-// strconv noise (one usage above). On math.MinInt64, -n would
-// overflow back to math.MinInt64, so we short-circuit to a literal
-// to avoid an infinite loop. (In practice database IDs are always
-// positive, but the guard is cheap and prevents footguns if this
-// helper is ever reused elsewhere.)
-func itoa(n int64) string {
-	if n == 0 {
-		return "0"
-	}
-	const minInt64Str = "-9223372036854775808"
-	if n == math.MinInt64 {
-		return minInt64Str
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }

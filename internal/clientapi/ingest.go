@@ -2,6 +2,7 @@ package clientapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -301,8 +302,11 @@ func (ing *Ingestor) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	// %q (not concatenation): messages embed upstream err.Error() which
+	// can contain quotes/newlines — raw concatenation produced invalid
+	// or spoofable JSON bodies.
 	if !strings.HasPrefix(strings.TrimSpace(msg), "{") {
-		msg = `{"error":{"message":"` + msg + `"}}`
+		msg = fmt.Sprintf(`{"error":{"message":%q}}`, msg)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

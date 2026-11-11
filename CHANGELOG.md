@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **会话/API token 生成三处实现合并**（`internal/auth`）：admin/api 的 24 字节
+  变体曾忽略 `crypto/rand` 错误，webui 为 32 字节；统一为 32 字节（256-bit）
+  并返回错误。存量 token 不受影响——仅新签发的会话与 API key 采用更长格式
+  （64 / 67 字符）。
+- **clientapi 错误响应 JSON 注入**：`writeJSONError` 用字符串拼接嵌上游
+  `err.Error()`，含引号/换行时产出非法 JSON；改 `%q` 转义（与 client 同构）。
+
+### Changed
+
+- **清理三份手写 `itoa`**（admin/api/cluster/client-ui）：死代码或以
+  `strconv` 替代；cluster 的包装函数删除。
 （空——下一组变更从这里开始。）
 
 ## [v0.2.0] — 2026-11-11
