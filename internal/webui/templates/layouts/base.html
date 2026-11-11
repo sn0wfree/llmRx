@@ -12,6 +12,14 @@
     .htmx-request .htmx-indicator { opacity: 1; }
     .htmx-request.htmx-indicator { opacity: 1; }
   </style>
+  <script>
+    // 后退/前进从 bfcache 恢复时强制重新请求：登出后按后退不会
+    // 渲染缓存里的旧登录态页面（响应头 Cache-Control: no-store
+    // 已阻止现代浏览器进入 bfcache，本脚本兜底仍恢复快照的旧内核）。
+    window.addEventListener('pageshow', function (e) {
+      if (e.persisted) { window.location.reload(); }
+    });
+  </script>
 </head>
 <body class="bg-gray-100 h-screen overflow-hidden">
   {{if .User}}
