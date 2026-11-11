@@ -166,6 +166,7 @@ func (s *Server) registerMiddleware() {
 	})
 	s.engine.Use(requestid.Middleware)
 	s.engine.Use(requestLogger)
+	s.engine.Use(cluster.MetricsMiddleware)
 	s.engine.Use(chimw.Recoverer)
 	s.engine.Use(chimw.RealIP)
 	s.engine.Use(chimw.Timeout(120 * time.Second))

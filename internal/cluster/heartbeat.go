@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -31,6 +32,12 @@ type HeartbeatClient struct {
 	
 	// leaderAddr 主节点地址
 	leaderAddr string
+
+	// metrics sampler state: delta-based CPU and QPS across heartbeats
+	cpu     cpuSample
+	mu      sync.Mutex
+	prevTot int64
+	prevAt  time.Time
 }
 
 // NewHeartbeatClient 创建心跳客户端
@@ -138,14 +145,36 @@ func (c *HeartbeatClient) sendHeartbeat() {
 	}
 }
 
-// collectMetrics 收集节点指标
+// collectMetrics 收集节点指标：CPU 为两次心跳间的 /proc 增量占比，
+// 内存为 RSS/系统总量，QPS 为心跳间隔内的平均请求速率。
 func (c *HeartbeatClient) collectMetrics() *NodeMetrics {
-	// TODO: 实际收集 CPU、内存、QPS 等指标
+	total := defaultMetrics.total.Load()
+	active := int(defaultMetrics.active.Load())
+	latN := defaultMetrics.latencyN.Load()
+	latSum := defaultMetrics.latencySum.Load()
+
+	now := time.Now()
+	c.mu.Lock()
+	var qps int64
+	if !c.prevAt.IsZero() {
+		if elapsed := now.Sub(c.prevAt).Seconds(); elapsed > 0 {
+			qps = int64(float64(total-c.prevTot) / elapsed)
+		}
+	}
+	c.prevTot, c.prevAt = total, now
+	c.mu.Unlock()
+
+	var avgMs int64
+	if latN > 0 {
+		avgMs = latSum / latN
+	}
+
 	return &NodeMetrics{
-		CPUUsage:    0.25,
-		MemoryUsage: 0.45,
-		QPS:         100,
-		ActiveConn:  10,
+		CPUUsage:       c.cpu.Usage(),
+		MemoryUsage:    memUsageRatio(),
+		QPS:            qps,
+		ActiveConn:     active,
+		ResponseTimeMs: avgMs,
 	}
 }
 
