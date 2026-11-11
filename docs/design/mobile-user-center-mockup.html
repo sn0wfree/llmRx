@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>llmRx 用户中心手机版 - 预览</title>
+<style>
+  body { margin: 0; padding: 24px 12px; background: #eef1f6; }
+</style>
+</head>
+<body>
+<div class="viz-carousel viz-dotted-background" id="rx-mock" aria-label="llmRx 用户中心手机版设计稿" data-previous-label="‹ 上一版" data-next-label="下一版 ›">
+
+  <!-- ============ 方向 A：卡片流 ============ -->
+  <section class="rx-stage" data-variant="卡片流" aria-label="卡片流设计：延续现有白卡片风格">
+    <div class="rx-phone" data-phone="a">
+
+      <div class="rx-status">
+        <span class="rx-num">9:41</span>
+        <span class="rx-sicons">
+          <i data-lucide="signal" aria-hidden="true"></i>
+          <i data-lucide="wifi" aria-hidden="true"></i>
+          <i data-lucide="battery-full" aria-hidden="true"></i>
+        </span>
+      </div>
+
+      <div class="rx-header">
+        <div class="rx-brand">llmRx <small>用户中心</small></div>
+        <button class="rx-linkbtn cursor-interaction" type="button">修改密码</button>
+      </div>
+
+      <div class="rx-body">
+
+        <!-- 首页 -->
+        <div class="rx-page" data-page="home">
+          <div class="rx-greet">
+            <div>
+              <div class="rx-h1">下午好，sn0wfree</div>
+              <div class="rx-sub">账户概览与 API 接入</div>
+            </div>
+          </div>
+
+          <div class="rx-warn">
+            <i data-lucide="triangle-alert" aria-hidden="true"></i>
+            <span class="rx-warn-t"><b>余额不足</b><em>剩余 $3.56，充值前请求可能中断</em></span>
+            <button class="rx-warnbtn cursor-interaction" type="button" data-goto="topup">充值</button>
+          </div>
+
+          <div class="rx-card">
+            <div class="rx-cap">剩余额度</div>
+            <div class="rx-big rx-num rx-red">$3.56</div>
+            <div class="rx-track"><div class="rx-fill-red" style="width:92.9%"></div></div>
+            <div class="rx-row"><span>预算 $50.00</span><span>已用 $46.44 · 92.9%</span></div>
+            <div class="rx-actions">
+              <button class="rx-btn rx-btn-primary cursor-interaction" type="button" data-goto="topup"><i data-lucide="wallet" aria-hidden="true"></i>立即充值</button>
+              <button class="rx-btn cursor-interaction" type="button"><i data-lucide="download" aria-hidden="true"></i>导出 CSV</button>
+            </div>
+          </div>
+
+          <div class="rx-card">
+            <div class="rx-cap rx-mb4">今日统计</div>
+            <div class="rx-grid2">
+              <div class="rx-tile"><span class="rx-cap">请求数</span><b class="rx-num">47</b></div>
+              <div class="rx-tile"><span class="rx-cap">花费</span><b class="rx-num">$1.8340</b></div>
+              <div class="rx-tile"><span class="rx-cap">输入 Token</span><b class="rx-num">128,450</b><span class="rx-sub2">输出 32,117</span></div>
+              <div class="rx-tile"><span class="rx-cap">缓存命中</span><b class="rx-num">12</b></div>
+            </div>
+          </div>
+
+          <div class="rx-card">
+            <div class="rx-caprow"><span class="rx-cap">最近活动</span><button class="rx-linkbtn cursor-interaction" type="button" data-goto="usage">查看全部</button></div>
+            <div class="rx-log"><div><div class="rx-mono rx-logm">claude-sonnet-4-5</div><div class="rx-sub2">14:32 · 8,421 tok</div></div><div class="rx-log-r"><span class="rx-cost rx-num">$0.0291</span><span class="rx-badge rx-okb">200</span></div></div>
+            <div class="rx-log"><div><div class="rx-mono rx-logm">gpt-4o-mini</div><div class="rx-sub2">14:28 · 1,902 tok</div></div><div class="rx-log-r"><span class="rx-cost rx-num">$0.0012</span><span class="rx-badge rx-okb">200</span></div></div>
+            <div class="rx-log"><div><div class="rx-mono rx-logm">gemini-2.5-pro</div><div class="rx-sub2">14:15 · 23,110 tok</div></div><div class="rx-log-r"><span class="rx-cost rx-num">$0.0780</span><span class="rx-badge rx-okb">200</span></div></div>
+            <div class="rx-log"><div><div class="rx-mono rx-logm">claude-opus-4</div><div class="rx-sub2">13:58 · 5,320 tok</div></div><div class="rx-log-r"><span class="rx-cost rx-num">$0.2010</span><span class="rx-badge rx-errb">429</span></div></div>
+            <div class="rx-log"><div><div class="rx-mono rx-logm">gpt-4o-mini</div><div class="rx-sub2">13:40 · 934 tok</div></div><div class="rx-log-r"><span class="rx-cost rx-num">$0.0006</span><span class="rx-badge rx-okb">200</span></div></div>
+          </div>
+
+          <div class="rx-card">
+            <div class="rx-cap rx-mb4">API 凭据</div>
+            <div class="rx-keyrow"><code class="rx-code">sk-rx-9f3e-****-****-c21b</code><button class="rx-copybtn cursor-interaction" type="button" data-copy="sk-rx-9f3e-demo-key-c21b" aria-label="复制 API Key"><i data-lucide="copy" aria-hidden="true"></i></button></div>
+            <div class="rx-keyrow"><code class="rx-code">https://api.llmrx.dev/v1</code><button class="rx-copybtn cursor-interaction" type="button" data-copy="https://api.llmrx.dev/v1" aria-label="复制 Base URL"><i data-lucide="copy" aria-hidden="true"></i></button></div>
+            <div class="rx-sub2 rx-mt6">请求头：<code class="rx-inline">Authorization: Bearer &lt;key&gt;</code></div>
+          </div>
+
+          <details class="rx-details">
+            <summary class="cursor-interaction"><i data-lucide="book-open" aria-hidden="true"></i>快速开始（curl 测试）<i data-lucide="chevron-down" aria-hidden="true" class="rx-chev"></i></summary>
+            <pre class="rx-pre"><code>curl https://api.llmrx.dev/v1/chat/completions \
+  -H "Authorization: Bearer sk-rx-…" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o-mini",
+       "messages":[{"role":"user",
+       "content":"Hello!"}]}'</code></pre>
+          </details>
+
+          <button class="rx-linkbtn rx-center cursor-interaction" type="button">登出</button>
+        </div>
+
+        <!-- 用量 -->
+        <div class="rx-page" data-page="usage" hidden data-range="7d">
+          <div class="rx-greet">
+            <div>
+              <div class="rx-h1">用量统计</div>
+              <div class="rx-sub">请求、Token 与花费明细</div>
+            </div>
+          </div>
+
+          <div class="rx-seg" role="group" aria-label="时间范围">
+            <button class="cursor-interaction" type="button" data-range="24h" aria-pressed="false">24h</button>
+            <button class="cursor-interaction is-on" type="button" data-range="7d" aria-pressed="true">7d</button>
+            <button class="cursor-interaction" type="button" data-range="30d" aria-pressed="false">30d</button>
+            <button class="cursor-interaction" type="button" data-range="all" aria-pressed="false">全部</button>
+          </div>
+
+          <div class="rx-grid2 rx-mt">
+            <div class="rx-tile"><span class="rx-cap">请求</span><b class="rx-num rx-stat" data-k="req">312</b></div>
+            <div class="rx-tile"><span class="rx-cap">花费</span><b class="rx-num rx-stat" data-k="cost">$12.4062</b><span class="rx-sub2 rx-stat" data-k="realsub">实付 $9.8730</span></div>
+            <div class="rx-tile"><span class="rx-cap">Token</span><b class="rx-num rx-stat" data-k="tok">892,300</b><span class="rx-sub2 rx-stat" data-k="toksub">输出 214,550</span></div>
+            <div class="rx-tile"><span class="rx-cap">缓存命中</span><b class="rx-num rx-stat" data-k="hit">84</b></div>
+          </div>
+
+          <div class="rx-card">
+            <div class="rx-cap rx-mb4">花费趋势</div>
+            <div class="rx-chartwrap"><div class="rx-chart"></div></div>
+          </div>
+
+          <div class="rx-card">
+            <div class="rx-cap rx-mb4">按模型统计</div>
+            <div class="rx-model"><div><div class="rx-mono rx-logm">claude-sonnet-4-5</div><div class="rx-sub2">486 次 · 1.42M tok</div></div><span class="rx-cost rx-num">$21.3180</span></div>
+            <div class="rx-model"><div><div class="rx-mono rx-logm">gpt-4o-mini</div><div class="rx-sub2">512 次 · 620K tok</div></div><span class="rx-cost rx-num">$2.4120</span></div>
+            <div class="rx-model"><div><div class="rx-mono rx-logm">gemini-2.5-pro</div><div class="rx-sub2">96 次 · 480K tok</div></div><span class="rx-cost rx-num">$15.8600</span></div>
+            <div class="rx-model"><div><div class="rx-mono rx-logm">claude-opus-4</div><div class="rx-sub2">42 次 · 210K tok</div></div><span class="rx-cost rx-num">$6.1040</span></div>
+            <div class="rx-model"><div><div class="rx-mono rx-logm">text-embedding-3-small</div><div class="rx-sub2">72 次 · 672K tok</div></div><span class="rx-cost rx-num">$0.7440</span></div>
+          </div>
+
+          <button class="rx-btn rx-block rx-mt cursor-interaction" type="button"><i data-lucide="download" aria-hidden="true"></i>导出 CSV</button>
+        </div>
+
+        <!-- 充值 -->
+        <div class="rx-page" data-page="topup" hidden>
+          <div class="rx-greet">
+            <div>
+              <div class="rx-h1">充值</div>
+              <div class="rx-sub">使用充值码增加账户预算</div>
+            </div>
+          </div>
+
+          <div class="rx-card rx-center-t">
+            <div class="rx-cap">当前余额</div>
+            <div class="rx-big rx-num">$3.56</div>
+            <div class="rx-sub2">预算 $50.00 · 已用 $46.44</div>
+          </div>
+
+          <div class="rx-card">
+            <div class="rx-cap rx-mb4">输入充值码</div>
+            <p class="rx-sub2 rx-mt0">充值码向管理员购买，格式 <code class="rx-inline">RXM-XXXXXXXX</code></p>
+            <input class="rx-input rx-mono" type="text" placeholder="RXM-XXXXXXXX" aria-label="充值码" autocomplete="off" spellcheck="false">
+            <button class="rx-btn rx-btn-primary rx-block rx-mt cursor-interaction" type="button" data-redeem>兑换</button>
+            <div class="rx-result" aria-live="polite"></div>
+          </div>
+        </div>
+
+      </div>
+
+      <nav class="rx-tabbar" aria-label="页面导航">
+        <button class="rx-tab cursor-interaction is-active" type="button" data-tab="home" aria-current="page"><i data-lucide="house" aria-hidden="true"></i>首页</button>
+        <button class="rx-tab cursor-interaction" type="button" data-tab="usage" aria-current="false"><i data-lucide="activity" aria-hidden="true"></i>用量</button>
+        <button class="rx-tab cursor-interaction" type="button" data-tab="topup" aria-current="false"><i data-lucide="wallet" aria-hidden="true"></i>充值</button>
+      </nav>
+
+    </div>
+  </section>
+
+  <!-- ============ 方向 B：渐变焦点 ============ -->
+  <section class="rx-stage" data-variant="渐变焦点" aria-label="渐变焦点设计：余额为主角的现代 App 风格">
+    <div class="rx-phone rx-phone-b" data-phone="b">
+
+      <div class="rx-status">
+        <span class="rx-num">9:41</span>
+        <span class="rx-sicons">
+          <i data-lucide="signal" aria-hidden="true"></i>
+          <i data-lucide="wifi" aria-hidden="true"></i>
+          <i data-lucide="battery-full" aria-hidden="true"></i>
+        </span>
+      </div>
+
+      <div class="rx-body rx-body-b">
+
+        <!-- 首页 -->
+        <div class="rx-page" data-page="home">
+          <div class="rx-greet-b">
+            <div class="rx-ava">S</div>
+            <div>
+              <div class="rx-h1">晚上好，sn0wfree</div>
+              <div class="rx-sub"><span class="rx-dot"></span>服务正常 · 用户中心</div>
+            </div>
+            <button class="rx-iconbtn cursor-interaction" type="button" aria-label="登出"><i data-lucide="log-out" aria-hidden="true"></i></button>
+          </div>
+
+          <div class="rx-hero">
+            <div class="rx-hero-cap">剩余额度</div>
+            <div class="rx-hero-big rx-num">$3.56</div>
+            <div class="rx-hero-track"><div style="width:92.9%"></div></div>
+            <div class="rx-hero-row">预算 $50.00 · 已用 $46.44（92.9%）</div>
+            <div class="rx-hero-warn"><i data-lucide="triangle-alert" aria-hidden="true"></i>余额偏低，建议尽快充值</div>
+            <div class="rx-hero-actions">
+              <button class="rx-hero-btn cursor-interaction" type="button" data-goto="topup"><i data-lucide="wallet" aria-hidden="true"></i>立即充值</button>
+              <button class="rx-hero-btn rx-hero-ghost cursor-interaction" type="button"><i data-lucide="download" aria-hidden="true"></i>导出</button>
+            </div>
+          </div>
+
+          <div class="rx-cap rx-mt">今日统计</div>
+          <div class="rx-grid2 rx-mt4">
+            <div class="rx-tile2"><span class="rx-cap">请求数</span><b class="rx-num">47</b></div>
+            <div class="rx-tile2"><span class="rx-cap">花费</span><b class="rx-num">$1.8340</b></div>
+            <div class="rx-tile2"><span class="rx-cap">输入 Token</span><b class="rx-num">128,450</b><span class="rx-sub2">输出 32,117</span></div>
+            <div class="rx-tile2"><span class="rx-cap">缓存命中</span><b class="rx-num">12</b></div>
+          </div>
+
+          <div class="rx-sec">
+            <div class="rx-caprow"><span class="rx-cap">最近活动</span><button class="rx-linkbtn cursor-interaction" type="button" data-goto="usage">查看全部</button></div>
+            <div class="rx-logb"><span class="rx-dotok"></span><div><div class="rx-mono rx-logm">claude-sonnet-4-5</div><div class="rx-sub2">14:32 · 8,421 tok</div></div><span class="rx-cost rx-num">$0.0291</span></div>
+            <div class="rx-logb"><span class="rx-dotok"></span><div><div class="rx-mono rx-logm">gpt-4o-mini</div><div class="rx-sub2">14:28 · 1,902 tok</div></div><span class="rx-cost rx-num">$0.0012</span></div>
+            <div class="rx-logb"><span class="rx-dotok"></span><div><div class="rx-mono rx-logm">gemini-2.5-pro</div><div class="rx-sub2">14:15 · 23,110 tok</div></div><span class="rx-cost rx-num">$0.0780</span></div>
+            <div class="rx-logb"><span class="rx-doterr"></span><div><div class="rx-mono rx-logm">claude-opus-4</div><div class="rx-sub2">13:58 · 5,320 tok · 429</div></div><span class="rx-cost rx-num">$0.2010</span></div>
+            <div class="rx-logb"><span class="rx-dotok"></span><div><div class="rx-mono rx-logm">gpt-4o-mini</div><div class="rx-sub2">13:40 · 934 tok</div></div><span class="rx-cost rx-num">$0.0006</span></div>
+          </div>
+
+          <div class="rx-sec">
+            <div class="rx-cap rx-mb4">API 凭据</div>
+            <div class="rx-keyrow"><code class="rx-code">sk-rx-9f3e-****-****-c21b</code><button class="rx-copybtn cursor-interaction" type="button" data-copy="sk-rx-9f3e-demo-key-c21b" aria-label="复制 API Key"><i data-lucide="copy" aria-hidden="true"></i></button></div>
+            <div class="rx-keyrow"><code class="rx-code">https://api.llmrx.dev/v1</code><button class="rx-copybtn cursor-interaction" type="button" data-copy="https://api.llmrx.dev/v1" aria-label="复制 Base URL"><i data-lucide="copy" aria-hidden="true"></i></button></div>
+          </div>
+
+          <details class="rx-details">
+            <summary class="cursor-interaction"><i data-lucide="book-open" aria-hidden="true"></i>快速开始（curl 测试）<i data-lucide="chevron-down" aria-hidden="true" class="rx-chev"></i></summary>
+            <pre class="rx-pre"><code>curl https://api.llmrx.dev/v1/chat/completions \
+  -H "Authorization: Bearer sk-rx-…" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o-mini",
+       "messages":[{"role":"user",
+       "content":"Hello!"}]}'</code></pre>
+          </details>
+        </div>
+
+        <!-- 用量 -->
+        <div class="rx-page" data-page="usage" hidden data-range="7d">
+          <div class="rx-greet">
+            <div>
+              <div class="rx-h1">用量统计</div>
+              <div class="rx-sub">请求、Token 与花费明细</div>
+            </div>
+          </div>
+
+          <div class="rx-seg" role="group" aria-label="时间范围">
+            <button class="cursor-interaction" type="button" data-range="24h" aria-pressed="false">24h</button>
+            <button class="cursor-interaction is-on" type="button" data-range="7d" aria-pressed="true">7d</button>
+            <button class="cursor-interaction" type="button" data-range="30d" aria-pressed="false">30d</button>
+            <button class="cursor-interaction" type="button" data-range="all" aria-pressed="false">全部</button>
+          </div>
+
+          <div class="rx-grid2 rx-mt">
+            <div class="rx-tile2"><span class="rx-cap">请求</span><b class="rx-num rx-stat" data-k="req">312</b></div>
+            <div class="rx-tile2"><span class="rx-cap">花费</span><b class="rx-num rx-stat" data-k="cost">$12.4062</b><span class="rx-sub2 rx-stat" data-k="realsub">实付 $9.8730</span></div>
+            <div class="rx-tile2"><span class="rx-cap">Token</span><b class="rx-num rx-stat" data-k="tok">892,300</b><span class="rx-sub2 rx-stat" data-k="toksub">输出 214,550</span></div>
+            <div class="rx-tile2"><span class="rx-cap">缓存命中</span><b class="rx-num rx-stat" data-k="hit">84</b></div>
+          </div>
+
+          <div class="rx-sec">
+            <div class="rx-cap rx-mb4">花费趋势</div>
+            <div class="rx-chartwrap"><div class="rx-chart"></div></div>
+          </div>
+
+          <div class="rx-sec">
+            <div class="rx-cap rx-mb4">按模型统计</div>
+            <div class="rx-model"><div><div class="rx-mono rx-logm">claude-sonnet-4-5</div><div class="rx-sub2">486 次 · 1.42M tok</div></div><span class="rx-cost rx-num">$21.3180</span></div>
+            <div class="rx-model"><div><div class="rx-mono rx-logm">gpt-4o-mini</div><div class="rx-sub2">512 次 · 620K tok</div></div><span class="rx-cost rx-num">$2.4120</span></div>
+            <div class="rx-model"><div><div class="rx-mono rx-logm">gemini-2.5-pro</div><div class="rx-sub2">96 次 · 480K tok</div></div><span class="rx-cost rx-num">$15.8600</span></div>
+            <div class="rx-model"><div><div class="rx-mono rx-logm">claude-opus-4</div><div class="rx-sub2">42 次 · 210K tok</div></div><span class="rx-cost rx-num">$6.1040</span></div>
+            <div class="rx-model"><div><div class="rx-mono rx-logm">text-embedding-3-small</div><div class="rx-sub2">72 次 · 672K tok</div></div><span class="rx-cost rx-num">$0.7440</span></div>
+          </div>
+
+          <button class="rx-btn rx-block rx-mt cursor-interaction" type="button"><i data-lucide="download" aria-hidden="true"></i>导出 CSV</button>
+        </div>
+
+        <!-- 充值 -->
+        <div class="rx-page" data-page="topup" hidden>
+          <div class="rx-greet">
+            <div>
+              <div class="rx-h1">充值</div>
+              <div class="rx-sub">使用充值码增加账户预算</div>
+            </div>
+          </div>
+
+          <div class="rx-sec rx-center-t">
+            <div class="rx-cap">当前余额</div>
+            <div class="rx-big rx-num">$3.56</div>
+            <div class="rx-sub2">预算 $50.00 · 已用 $46.44</div>
+          </div>
+
+          <div class="rx-sec">
+            <div class="rx-cap rx-mb4">输入充值码</div>
+            <p class="rx-sub2 rx-mt0">充值码向管理员购买，格式 <code class="rx-inline">RXM-XXXXXXXX</code></p>
+            <input class="rx-input rx-mono" type="text" placeholder="RXM-XXXXXXXX" aria-label="充值码" autocomplete="off" spellcheck="false">
+            <button class="rx-btn rx-btn-primary rx-block rx-mt cursor-interaction" type="button" data-redeem>兑换</button>
+            <div class="rx-result" aria-live="polite"></div>
+          </div>
+        </div>
+
+      </div>
+
+      <nav class="rx-tabbar-b" aria-label="页面导航">
+        <div class="rx-dock">
+          <button class="rx-tab cursor-interaction is-active" type="button" data-tab="home" aria-current="page"><i data-lucide="house" aria-hidden="true"></i>首页</button>
+          <button class="rx-tab cursor-interaction" type="button" data-tab="usage" aria-current="false"><i data-lucide="activity" aria-hidden="true"></i>用量</button>
+          <button class="rx-tab cursor-interaction" type="button" data-tab="topup" aria-current="false"><i data-lucide="wallet" aria-hidden="true"></i>充值</button>
+        </div>
+      </nav>
+
+    </div>
+  </section>
+
+</div>
+
+<style>
+  /* ===== 手机外框与产品主题（不使用可视化工具类） ===== */
+  .rx-stage { display: flex; justify-content: center; padding: 18px 8px 12px; }
+  .rx-phone {
+    --rx-bg: light-dark(#f3f4f6, #10131b);
+    --rx-card: light-dark(#ffffff, #1a202e);
+    --rx-tile: light-dark(#f9fafb, #232a3a);
+    --rx-tileb: light-dark(#eef4ff, #1b2743);
+    --rx-fg: light-dark(#111827, #f3f4f6);
+    --rx-muted: light-dark(#6b7280, #9aa4b8);
+    --rx-border: light-dark(#e5e7eb, #2a3145);
+    --rx-accent: light-dark(#2563eb, #4f8ef7);
+    --rx-red: light-dark(#dc2626, #f87171);
+    --rx-redbg: light-dark(#fee2e2, #3a1d22);
+    --rx-green: light-dark(#16a34a, #4ade80);
+    --rx-greenbg: light-dark(#dcfce7, #16301f);
+    --rx-yellowbg: light-dark(#fef3c7, #352913);
+    --rx-yellowfg: light-dark(#92400e, #fbbf24);
+    color-scheme: light dark;
+    position: relative;
+    width: min(375px, 100%);
+    height: 680px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    background: var(--rx-bg);
+    color: var(--rx-fg);
+    border: 1px solid light-dark(#d1d5db, #39415a);
+    border-radius: 30px;
+    box-shadow: 0 18px 50px rgba(15, 23, 42, .18);
+    overflow: hidden;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    font-size: 13px;
+    line-height: 1.45;
+    text-align: left;
+  }
+  .rx-phone * { box-sizing: border-box; }
+  .rx-phone b { font-weight: 500; }
+  .rx-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace; }
+  .rx-num { font-variant-numeric: tabular-nums; }
+  .rx-phone svg.lucide { width: 16px; height: 16px; flex: none; }
+  .rx-mt { margin-top: 12px; }
+  .rx-mt4 { margin-top: 8px; }
+  .rx-mt6 { margin-top: 6px; }
+  .rx-mb4 { margin-bottom: 8px; }
+  .rx-mt0 { margin: 4px 0 10px; }
+  .rx-center-t { text-align: center; }
+
+  /* 状态栏 */
+  .rx-status { display: flex; align-items: center; justify-content: space-between; padding: 10px 18px 6px; font-size: 11px; color: var(--rx-muted); }
+  .rx-sicons { display: flex; gap: 5px; align-items: center; }
+  .rx-status svg.lucide { width: 12px; height: 12px; }
+
+  /* 顶栏 A */
+  .rx-header { display: flex; align-items: center; justify-content: space-between; padding: 6px 16px 10px; border-bottom: 1px solid var(--rx-border); }
+  .rx-brand { font-size: 15px; font-weight: 500; }
+  .rx-brand small { font-size: 11px; font-weight: 400; color: var(--rx-muted); margin-left: 6px; }
+
+  /* 内容区 */
+  .rx-body { flex: 1; overflow-y: auto; padding: 12px 14px 18px; }
+  .rx-body-b { padding: 12px 16px 18px; }
+  .rx-page { display: block; }
+  .rx-page[hidden] { display: none; }
+
+  .rx-h1 { font-size: 16px; font-weight: 500; }
+  .rx-sub { font-size: 11px; color: var(--rx-muted); margin-top: 1px; }
+  .rx-greet { display: flex; align-items: center; justify-content: space-between; padding: 2px 2px 10px; }
+  .rx-greet-b { display: flex; align-items: center; gap: 10px; padding: 2px 0 10px; }
+  .rx-ava { width: 34px; height: 34px; border-radius: 999px; background: var(--rx-accent); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 500; flex: none; }
+  .rx-dot { display: inline-block; width: 6px; height: 6px; border-radius: 999px; background: var(--rx-green); margin-right: 5px; vertical-align: 1px; }
+  .rx-iconbtn { margin-left: auto; width: 32px; height: 32px; border-radius: 9px; border: 1px solid var(--rx-border); background: var(--rx-card); color: var(--rx-muted); display: flex; align-items: center; justify-content: center; padding: 0; }
+
+  .rx-cap { font-size: 11px; color: var(--rx-muted); letter-spacing: .4px; font-weight: 500; }
+  .rx-caprow { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .rx-linkbtn { font-size: 11px; color: var(--rx-accent); background: none; border: 0; padding: 0; }
+  .rx-linkbtn:hover { text-decoration: underline; }
+  .rx-center { display: block; margin: 16px auto 2px; color: var(--rx-muted); font-size: 11px; }
+
+  /* 低余额警示 */
+  .rx-warn { display: flex; align-items: center; gap: 8px; background: var(--rx-yellowbg); color: var(--rx-yellowfg); border-radius: 12px; padding: 9px 10px; margin-top: 4px; }
+  .rx-warn svg.lucide { width: 15px; height: 15px; }
+  .rx-warn-t { flex: 1; min-width: 0; }
+  .rx-warn-t b { display: block; font-size: 12px; }
+  .rx-warn-t em { display: block; font-style: normal; font-size: 11px; opacity: .85; }
+  .rx-warnbtn { flex: none; background: light-dark(#d97706, #b45309); color: #fff; border: 0; border-radius: 8px; padding: 5px 11px; font-size: 12px; font-weight: 500; }
+
+  /* 卡片 A */
+  .rx-card { background: var(--rx-card); border: 1px solid var(--rx-border); border-radius: 14px; padding: 12px; margin-top: 10px; }
+  .rx-big { font-size: 26px; font-weight: 500; margin: 2px 0 8px; }
+  .rx-red { color: var(--rx-red); }
+  .rx-track { height: 6px; border-radius: 999px; background: var(--rx-tile); overflow: hidden; }
+  .rx-track > div, .rx-fill-red { display: block; height: 100%; border-radius: 999px; }
+  .rx-fill-red { background: var(--rx-red); }
+  .rx-row { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--rx-muted); margin-top: 6px; }
+
+  .rx-actions { display: flex; gap: 8px; margin-top: 12px; }
+  .rx-btn { height: 38px; border-radius: 10px; border: 1px solid var(--rx-border); background: var(--rx-card); color: var(--rx-fg); font-size: 13px; font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 0 12px; }
+  .rx-btn svg.lucide { width: 15px; height: 15px; }
+  .rx-actions .rx-btn { flex: 1; min-width: 0; }
+  .rx-btn-primary { background: var(--rx-accent); border-color: transparent; color: #fff; }
+  .rx-block { width: 100%; }
+
+  .rx-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .rx-tile { background: var(--rx-tile); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 2px; }
+  .rx-tile2 { background: var(--rx-tileb); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 2px; }
+  .rx-tile b, .rx-tile2 b, .rx-stat { font-size: 16px; font-weight: 500; }
+  .rx-sub2 { font-size: 11px; color: var(--rx-muted); }
+
+  /* 最近活动 */
+  .rx-log, .rx-model { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--rx-border); }
+  .rx-log:first-of-type, .rx-model:first-of-type { border-top: 0; }
+  .rx-logm { font-size: 12px; }
+  .rx-log-r { display: flex; align-items: center; gap: 8px; flex: none; }
+  .rx-cost { font-size: 12px; flex: none; }
+  .rx-badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; flex: none; }
+  .rx-okb { background: var(--rx-greenbg); color: var(--rx-green); }
+  .rx-errb { background: var(--rx-redbg); color: var(--rx-red); }
+  .rx-logb { display: flex; align-items: center; gap: 9px; padding: 9px 0; border-top: 1px solid var(--rx-border); }
+  .rx-logb:first-of-type { border-top: 0; }
+  .rx-logb > div { flex: 1; min-width: 0; }
+  .rx-dotok, .rx-doterr { width: 7px; height: 7px; border-radius: 999px; flex: none; }
+  .rx-dotok { background: var(--rx-green); }
+  .rx-doterr { background: var(--rx-red); }
+
+  /* API 凭据 */
+  .rx-keyrow { display: flex; gap: 6px; margin-top: 6px; }
+  .rx-code { flex: 1; min-width: 0; background: var(--rx-tile); border-radius: 8px; padding: 7px 9px; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rx-inline { background: var(--rx-tile); border-radius: 5px; padding: 1px 5px; font-size: 11px; }
+  .rx-copybtn { width: 34px; height: 34px; flex: none; display: flex; align-items: center; justify-content: center; border-radius: 8px; border: 1px solid var(--rx-border); background: var(--rx-card); color: var(--rx-muted); padding: 0; }
+  .rx-copybtn svg.lucide { width: 15px; height: 15px; }
+  .rx-copybtn.is-done { color: var(--rx-green); border-color: var(--rx-green); }
+
+  /* 快速开始 */
+  .rx-details { border: 1px solid var(--rx-border); background: var(--rx-card); border-radius: 14px; margin-top: 10px; padding: 0 12px; }
+  .rx-details summary { display: flex; align-items: center; gap: 8px; padding: 11px 0; font-size: 12px; font-weight: 500; list-style: none; }
+  .rx-details summary::-webkit-details-marker { display: none; }
+  .rx-chev { margin-left: auto; color: var(--rx-muted); transition: transform .15s; }
+  .rx-details[open] .rx-chev { transform: rotate(180deg); }
+  .rx-pre { margin: 0 0 12px; background: light-dark(#0f172a, #0b0f19); color: light-dark(#e2e8f0, #cbd5e1); border-radius: 10px; padding: 10px; font-size: 11px; line-height: 1.55; overflow-x: auto; }
+
+  /* 分段控件 */
+  .rx-seg { display: flex; gap: 2px; background: var(--rx-tile); border-radius: 10px; padding: 3px; }
+  .rx-seg button { flex: 1; height: 30px; border: 0; background: transparent; color: var(--rx-muted); font-size: 12px; border-radius: 8px; padding: 0; }
+  .rx-seg button.is-on { background: var(--rx-card); color: var(--rx-accent); font-weight: 500; box-shadow: 0 1px 3px rgba(2, 6, 23, .12); }
+
+  /* 趋势图 */
+  .rx-chartwrap { width: 100%; }
+  .rx-chart { width: 100%; }
+  .rx-chart svg { display: block; }
+
+  /* 充值 */
+  .rx-input { width: 100%; height: 42px; border: 1px solid light-dark(#d1d5db, #39415a); border-radius: 10px; padding: 0 12px; font-size: 14px; letter-spacing: .5px; background: var(--rx-card); color: var(--rx-fg); }
+  .rx-input::placeholder { color: var(--rx-muted); letter-spacing: 1px; }
+  .rx-result:empty { display: none; }
+  .rx-okbox { display: flex; gap: 7px; align-items: flex-start; background: var(--rx-greenbg); color: var(--rx-green); border-radius: 10px; padding: 9px 10px; font-size: 12px; margin-top: 10px; }
+  .rx-okbox svg.lucide { width: 14px; height: 14px; margin-top: 2px; }
+
+  /* 底部导航 A：通栏 */
+  .rx-tabbar { display: flex; border-top: 1px solid var(--rx-border); background: var(--rx-card); flex: none; }
+  .rx-tab { flex: 1; height: 54px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; border: 0; background: none; color: var(--rx-muted); font-size: 11px; padding: 0; }
+  .rx-tab svg.lucide { width: 20px; height: 20px; }
+  .rx-tab.is-active { color: var(--rx-accent); font-weight: 500; }
+
+  /* 底部导航 B：悬浮胶囊 */
+  .rx-tabbar-b { flex: none; padding: 8px 12px 12px; }
+  .rx-dock { display: flex; gap: 4px; width: max-content; margin: 0 auto; background: var(--rx-card); border: 1px solid var(--rx-border); border-radius: 999px; padding: 4px; box-shadow: 0 10px 26px rgba(2, 6, 23, .16); }
+  .rx-phone-b .rx-tab { flex: none; flex-direction: row; height: 38px; padding: 0 16px; border-radius: 999px; gap: 6px; }
+  .rx-phone-b .rx-tab svg.lucide { width: 16px; height: 16px; }
+  .rx-phone-b .rx-tab.is-active { background: var(--rx-accent); color: #fff; }
+
+  /* 渐变焦点卡 B */
+  .rx-hero { background: linear-gradient(135deg, light-dark(#2563eb, #1e40af), light-dark(#4f46e5, #4338ca)); border-radius: 16px; padding: 14px; color: #fff; margin-top: 4px; }
+  .rx-hero-cap { font-size: 11px; color: rgba(255, 255, 255, .75); font-weight: 500; }
+  .rx-hero-big { font-size: 30px; font-weight: 500; margin: 2px 0 9px; }
+  .rx-hero-track { height: 6px; background: rgba(255, 255, 255, .28); border-radius: 999px; overflow: hidden; }
+  .rx-hero-track > div { display: block; height: 100%; background: #fff; border-radius: 999px; }
+  .rx-hero-row { font-size: 11px; color: rgba(255, 255, 255, .85); margin-top: 6px; }
+  .rx-hero-warn { display: flex; align-items: center; gap: 6px; margin-top: 9px; background: rgba(255, 255, 255, .15); border-radius: 9px; padding: 6px 8px; font-size: 11px; }
+  .rx-hero-warn svg.lucide { width: 13px; height: 13px; }
+  .rx-hero-actions { display: flex; gap: 8px; margin-top: 10px; }
+  .rx-hero-btn { flex: 1; min-width: 0; height: 36px; border-radius: 10px; border: 0; background: #fff; color: #1d4ed8; font-size: 13px; font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 6px; }
+  .rx-hero-btn svg.lucide { width: 15px; height: 15px; }
+  .rx-hero-ghost { background: rgba(255, 255, 255, .18); color: #fff; }
+
+  /* 平铺分区 B */
+  .rx-sec { padding: 13px 2px 5px; border-bottom: 1px solid var(--rx-border); margin-top: 6px; }
+</style>
+
+<script>
+(function () {
+  var root = document.getElementById('rx-mock');
+  if (!root) return;
+
+  var SERIES = {
+    '24h': { labels: ['0时', '2时', '4时', '6时', '8时', '10时', '12时', '14时', '16时', '18时', '20时', '22时'],
+             vals: [0.02, 0.01, 0.005, 0.04, 0.18, 0.35, 0.22, 0.41, 0.09, 0.28, 0.15, 0.03] },
+    '7d':  { labels: ['11/5', '11/6', '11/7', '11/8', '11/9', '11/10', '11/11'],
+             vals: [1.2, 2.1, 0.8, 3.4, 1.9, 2.5, 0.5] },
+    '30d': { labels: ['10/13', '10/16', '10/19', '10/22', '10/25', '10/28', '10/31', '11/3', '11/6', '11/9'],
+             vals: [3.2, 4.1, 2.6, 4.8, 3.5, 5.2, 4.1, 5.6, 6.3, 7.0] }
+  };
+  SERIES['all'] = SERIES['30d'];
+
+  var STATS = {
+    '24h': { req: '47',      cost: '$1.8340',  realsub: '实付 $1.4662',  tok: '160,567',   toksub: '输出 32,117',  hit: '12' },
+    '7d':  { req: '312',     cost: '$12.4062', realsub: '实付 $9.8730',  tok: '892,300',   toksub: '输出 214,550', hit: '84' },
+    '30d': { req: '1,208',   cost: '$46.4380', realsub: '实付 $37.1520', tok: '4,304,490', toksub: '输出 902,340', hit: '306' }
+  };
+  STATS['all'] = STATS['30d'];
+
+  function refreshIcons() {
+    try { if (window.lucide) window.lucide.createIcons({ attrs: { width: 16, height: 16 } }); } catch (e) {}
+  }
+
+  function niceMax(v) {
+    if (!(v > 0)) return 1;
+    var p = Math.pow(10, Math.floor(Math.log10(v)));
+    var steps = [1, 2, 2.5, 5, 10];
+    for (var i = 0; i < steps.length; i++) { if (steps[i] * p >= v) return steps[i] * p; }
+    return 10 * p;
+  }
+
+  function fmtY(v) { return '$' + (v >= 1 ? v.toFixed(1) : v.toFixed(2)); }
+
+  function drawChart(scope) {
+    var wrap = scope.querySelector('.rx-chartwrap');
+    var host = scope.querySelector('.rx-chart');
+    if (!wrap || !host) return;
+    var W = Math.max(wrap.clientWidth, 140), H = 150;
+    var d = SERIES[scope.dataset.range || '7d'] || SERIES['7d'];
+    var vals = d.vals, labs = d.labels, n = vals.length;
+    var pad = { l: 42, r: 12, t: 14, b: 24 };
+    var max = niceMax(Math.max.apply(null, vals) * 1.08);
+    var iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+    function X(i) { return pad.l + iw * (n > 1 ? i / (n - 1) : 0.5); }
+    function Y(v) { return pad.t + ih * (1 - v / max); }
+    var g = '';
+    [1, 0.5, 0].forEach(function (f) {
+      var yy = Y(max * f);
+      g += '<line x1="' + pad.l + '" y1="' + yy + '" x2="' + (W - pad.r) + '" y2="' + yy + '" stroke="var(--rx-border)" stroke-width="1"/>';
+      g += '<text x="' + (pad.l - 7) + '" y="' + (yy + 4) + '" text-anchor="end" font-size="11" fill="var(--rx-muted)">' + fmtY(max * f) + '</text>';
+    });
+    var idx = [];
+    [0, Math.round((n - 1) / 3), Math.round(2 * (n - 1) / 3), n - 1].forEach(function (i) { if (idx.indexOf(i) < 0) idx.push(i); });
+    idx.forEach(function (i) {
+      g += '<text x="' + X(i) + '" y="' + (H - 6) + '" text-anchor="middle" font-size="11" fill="var(--rx-muted)">' + labs[i] + '</text>';
+    });
+    var pts = vals.map(function (v, i) { return X(i) + ',' + Y(v); }).join(' ');
+    var peak = 0;
+    vals.forEach(function (v, i) { if (v > vals[peak]) peak = i; });
+    g += '<polygon points="' + X(0) + ',' + Y(0) + ' ' + pts + ' ' + X(n - 1) + ',' + Y(0) + '" fill="var(--rx-accent)" fill-opacity=".1"/>';
+    g += '<polyline points="' + pts + '" fill="none" stroke="var(--rx-accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
+    g += '<circle cx="' + X(peak) + '" cy="' + Y(vals[peak]) + '" r="3.5" fill="var(--rx-accent)" data-tooltip="峰值 $' + vals[peak].toFixed(2) + ' · ' + labs[peak] + '"/>';
+    host.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '" role="img" aria-label="花费趋势折线图">' + g + '</svg>';
+  }
+
+  function applyStats(scope, key) {
+    var s = STATS[key];
+    if (!s) return;
+    scope.querySelectorAll('.rx-stat').forEach(function (el) {
+      var k = el.dataset.k;
+      if (s[k] != null) el.textContent = s[k];
+    });
+  }
+
+  var state = { tabs: {} };
+  function loadState() {
+    try {
+      var pc = window.zcode && window.zcode.widgetState && window.zcode.widgetState.privateContent;
+      if (pc && pc.tabs) state.tabs = Object.assign({}, pc.tabs);
+    } catch (e) {}
+  }
+  function saveState() {
+    try {
+      if (window.zcode && window.zcode.setWidgetState) window.zcode.setWidgetState({ privateContent: { tabs: state.tabs } }).catch(function () {});
+    } catch (e) {}
+  }
+
+  var phones = Array.prototype.slice.call(document.querySelectorAll('.rx-phone'));
+
+  function showPage(phone, name, persist) {
+    var tabs = phone.querySelectorAll('.rx-tab');
+    var pages = phone.querySelectorAll('.rx-page');
+    Array.prototype.forEach.call(tabs, function (t) {
+      var on = t.dataset.tab === name;
+      t.classList.toggle('is-active', on);
+      t.setAttribute('aria-current', on ? 'page' : 'false');
+    });
+    Array.prototype.forEach.call(pages, function (p) { p.hidden = p.dataset.page !== name; });
+    var up = phone.querySelector('.rx-page[data-page="usage"]');
+    if (up && !up.hidden) drawChart(up);
+    if (persist) {
+      state.tabs[phone.dataset.phone] = name;
+      saveState();
+    }
+  }
+
+  function initPhone(phone) {
+    phone.querySelectorAll('.rx-tab').forEach(function (t) {
+      t.addEventListener('click', function () { showPage(phone, t.dataset.tab, true); });
+    });
+    phone.querySelectorAll('[data-goto]').forEach(function (el) {
+      el.addEventListener('click', function () { showPage(phone, el.dataset.goto, true); });
+    });
+    phone.querySelectorAll('[data-copy]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (btn.dataset.busy) return;
+        btn.dataset.busy = '1';
+        try { if (navigator.clipboard) navigator.clipboard.writeText(btn.dataset.copy || '').catch(function () {}); } catch (e) {}
+        var orig = btn.innerHTML;
+        btn.innerHTML = '<i data-lucide="check" aria-hidden="true"></i>';
+        btn.classList.add('is-done');
+        refreshIcons();
+        setTimeout(function () {
+          btn.innerHTML = orig;
+          btn.classList.remove('is-done');
+          delete btn.dataset.busy;
+          refreshIcons();
+        }, 1200);
+      });
+    });
+    phone.querySelectorAll('[data-redeem]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var scope = btn.closest('.rx-page');
+        var input = scope.querySelector('.rx-input');
+        var res = scope.querySelector('.rx-result');
+        var code = (input.value || '').trim() || 'RXM-DEMO2K26';
+        res.innerHTML = '<div class="rx-okbox"><i data-lucide="check" aria-hidden="true"></i><span>兑换成功：' + code + ' 已到账，新预算 <b class="rx-num">$13.56</b>（示例数据）</span></div>';
+        refreshIcons();
+      });
+    });
+    showPage(phone, state.tabs[phone.dataset.phone] || 'home', false);
+  }
+
+  phones.forEach(function (p) { initPhone(p); });
+
+  document.querySelectorAll('.rx-page[data-page="usage"] .rx-seg button').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var scope = btn.closest('.rx-page');
+      scope.dataset.range = btn.dataset.range;
+      scope.querySelectorAll('.rx-seg button').forEach(function (b) {
+        var on = b === btn;
+        b.classList.toggle('is-on', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+      applyStats(scope, btn.dataset.range);
+      drawChart(scope);
+    });
+  });
+
+  if ('ResizeObserver' in window) {
+    var raf = null;
+    var ro = new ResizeObserver(function () {
+      if (raf) return;
+      raf = requestAnimationFrame(function () {
+        raf = null;
+        phones.forEach(function (p) {
+          var up = p.querySelector('.rx-page[data-page="usage"]');
+          if (up && !up.hidden) drawChart(up);
+        });
+      });
+    });
+    document.querySelectorAll('.rx-chartwrap').forEach(function (w) { ro.observe(w); });
+  }
+
+  document.addEventListener('zcode:set_globals', function (e) {
+    try {
+      var pc = e.detail && e.detail.globals && e.detail.globals.widgetState;
+      if (pc && pc.privateContent && pc.privateContent.tabs) {
+        state.tabs = Object.assign({}, pc.privateContent.tabs);
+        phones.forEach(function (p) {
+          var t = state.tabs[p.dataset.phone];
+          if (t) showPage(p, t, false);
+        });
+      }
+    } catch (err) {}
+  });
+
+  loadState();
+})();
+</script>
+
+<script src="https://unpkg.com/lucide@latest"></script>
+<script>
+  // Minimal host stubs so the fragment runs outside the sandbox.
+  window.zcode = {
+    widgetState: { privateContent: null },
+    setWidgetState: function (s) {
+      this.widgetState = Object.assign({}, this.widgetState, s);
+      return Promise.resolve();
+    }
+  };
+  if (window.lucide) { window.lucide.createIcons({ attrs: { width: 16, height: 16 } }); }
+</script>
+</body>
+</html>
