@@ -73,7 +73,7 @@ footer code{background:var(--muted);padding:1px 5px;border-radius:4px;}
   <div class="arch-head">
     <div>
       <h2 class="arch-title">llmRx 架构分层</h2>
-      <p class="arch-sub">按包依赖实测（graphify AST 扫描：7833 符号 / 32381 边）· 悬停方块查看职责与依赖</p>
+      <p class="arch-sub">按包依赖实测（graphify AST 扫描：7887 符号 / 32467 边）· 悬停方块查看职责与依赖</p>
     </div>
     <div class="arch-legend" id="llmrx-legend"></div>
   </div>
@@ -108,7 +108,7 @@ footer code{background:var(--muted);padding:1px 5px;border-radius:4px;}
       { id: 'internal/router', label: 'internal/router', sub: 'L1–L5 管线', n: 278, role: 'L1 静态匹配 → L2 熔断（配置推送式，请求路径零 IO）→ L2.5 配额（quotaProvider：厂商报告优先、本地计数兜底）→ L3 成本 → L4 意图 → L5 Thompson' },
       { id: 'internal/pool', label: 'internal/pool', sub: 'key 轮询', n: 11, role: '渠道池与上游 Key 轮询选择' },
       { id: 'internal/intent', label: 'internal/intent', sub: '意图分类', n: 46, role: 'L4 意图分类器（keyword 后端 + 可选 Rust cdylib）' },
-      { id: 'internal/cluster', label: 'internal/cluster', sub: '多副本', n: 73, role: '集群模式：心跳、健康检查、PG NOTIFY 配置广播' }
+      { id: 'internal/cluster', label: 'internal/cluster', sub: '多副本', n: 81, role: '集群模式：心跳、健康检查、PG NOTIFY 配置广播、节点指标上报（CPU/内存/QPS 实测）' }
     ]},
     { name: '上游适配层', note: '出站', pkgs: [
       { id: 'internal/provider', label: 'internal/provider', sub: '多协议适配', n: 159, role: 'OpenAI / Anthropic / Gemini 协议适配、重试、余额与用量查询' },
@@ -125,7 +125,7 @@ footer code{background:var(--muted);padding:1px 5px;border-radius:4px;}
     ]},
     { name: '控制面', note: '管理与配置', pkgs: [
       { id: 'internal/admin', label: 'internal/admin', sub: 'JSON API', n: 177, role: '管理 JSON API（/admin/api/v1/*）：渠道、Token、Plan、告警、用量；经 store.Reader 访问数据（不再依赖 webui）' },
-      { id: 'internal/webui', label: 'internal/webui', sub: 'HTML 控制台', n: 252, role: '嵌入式管理后台（Go html/template + HTMX + Tailwind）' },
+      { id: 'internal/webui', label: 'internal/webui', sub: 'HTML 控制台', n: 253, role: '嵌入式管理后台（Go html/template + HTMX + Tailwind）' },
       { id: 'internal/alert', label: 'internal/alert', sub: '告警', n: 31, role: '告警规则评估与投递（webhook / 站内事件）' },
       { id: 'internal/runtime', label: 'internal/runtime', sub: '运行时配置', n: 49, role: '热配置原子读写与快照持久化' },
       { id: 'internal/config', label: 'internal/config', sub: 'YAML 配置', n: 30, role: 'config.yml 解析与默认值' },
@@ -145,7 +145,7 @@ footer code{background:var(--muted);padding:1px 5px;border-radius:4px;}
       { id: 'internal/rbac', label: 'internal/rbac', sub: 'RBAC', n: 9, role: '基于角色的访问控制' },
       { id: 'internal/tokencache', label: 'internal/tokencache', sub: 'token 缓存', n: 11, role: 'Bearer Token 内存缓存' },
       { id: 'internal/notify', label: 'internal/notify', sub: '通知', n: 3, role: '集群通知（PG NOTIFY）' },
-      { id: 'internal/server', label: 'internal/server', sub: 'HTTP 装配', n: 28, role: 'chi 路由装配、中间件链、优雅停机' },
+      { id: 'internal/server', label: 'internal/server', sub: 'HTTP 装配', n: 29, role: 'chi 路由装配、中间件链、优雅停机' },
       { id: 'cmd/gateway', label: 'cmd/gateway', sub: '启动入口', n: 39, role: '进程入口：配置加载、后台循环、服务器启动' }
     ]}
   ];
@@ -254,12 +254,12 @@ footer code{background:var(--muted);padding:1px 5px;border-radius:4px;}
     ['internal/webui', 'internal/provider', 29],
     ['internal/webui', 'internal/cache', 6],
     ['internal/webui', 'internal/prober', 3],
-    ['internal/webui', 'internal/logstore', 36],
+    ['internal/webui', 'internal/logstore', 35],
     ['internal/webui', 'internal/usage', 11],
     ['internal/webui', 'internal/subusage', 18],
     ['internal/webui', 'internal/modelmeta', 8],
-    ['internal/webui', 'internal/store', 203],
-    ['internal/webui', 'internal/model', 118],
+    ['internal/webui', 'internal/store', 201],
+    ['internal/webui', 'internal/model', 114],
     ['internal/webui', 'internal/secrets', 3],
     ['internal/webui', 'internal/auth', 8],
     ['internal/webui', 'internal/logging', 8],
@@ -276,28 +276,26 @@ footer code{background:var(--muted);padding:1px 5px;border-radius:4px;}
     ['internal/broker', 'internal/logging', 3],
     ['internal/tokencache', 'internal/middleware', 3],
     ['internal/tokencache', 'internal/model', 7],
-    ['internal/server', 'internal/clientapi', 5],
-    ['internal/server', 'internal/api', 18],
-    ['internal/server', 'internal/mcp', 16],
+    ['internal/server', 'internal/clientapi', 3],
+    ['internal/server', 'internal/api', 15],
+    ['internal/server', 'internal/mcp', 13],
     ['internal/server', 'internal/middleware', 4],
-    ['internal/server', 'internal/ratelimit', 5],
-    ['internal/server', 'internal/router', 12],
-    ['internal/server', 'internal/pool', 5],
-    ['internal/server', 'internal/cluster', 10],
-    ['internal/server', 'internal/provider', 9],
-    ['internal/server', 'internal/cache', 7],
+    ['internal/server', 'internal/ratelimit', 4],
+    ['internal/server', 'internal/router', 10],
+    ['internal/server', 'internal/pool', 4],
+    ['internal/server', 'internal/cluster', 9],
+    ['internal/server', 'internal/provider', 7],
+    ['internal/server', 'internal/cache', 4],
     ['internal/server', 'internal/prober', 4],
-    ['internal/server', 'internal/logstore', 10],
-    ['internal/server', 'internal/usage', 5],
-    ['internal/server', 'internal/subusage', 9],
-    ['internal/server', 'internal/balance', 3],
-    ['internal/server', 'internal/admin', 13],
-    ['internal/server', 'internal/webui', 27],
-    ['internal/server', 'internal/alert', 4],
+    ['internal/server', 'internal/logstore', 9],
+    ['internal/server', 'internal/usage', 4],
+    ['internal/server', 'internal/subusage', 8],
+    ['internal/server', 'internal/admin', 5],
+    ['internal/server', 'internal/webui', 19],
+    ['internal/server', 'internal/alert', 3],
     ['internal/server', 'internal/runtime', 4],
-    ['internal/server', 'internal/config', 4],
-    ['internal/server', 'internal/store', 35],
-    ['internal/server', 'internal/model', 6],
+    ['internal/server', 'internal/config', 3],
+    ['internal/server', 'internal/store', 33],
     ['internal/server', 'internal/logging', 6],
     ['internal/server', 'internal/observability', 3],
     ['internal/server', 'internal/broker', 3],
@@ -517,7 +515,7 @@ footer code{background:var(--muted);padding:1px 5px;border-radius:4px;}
 </div>
 
 <footer>
-本页由 graphify AST 扫描（<code>graphify extract . --code-only</code>：7833 符号 / 32381 边）实测包依赖生成，随仓库维护。<br>
+本页由 graphify AST 扫描（<code>graphify extract . --code-only</code>：7887 符号 / 32467 边）实测包依赖生成，随仓库维护。<br>
 交互版与本文件同源：<code>docs/architecture.html</code>；对话内可视化使用同一片段，由宿主提供主题变量。
 </footer>
 </div>
