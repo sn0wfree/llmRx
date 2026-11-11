@@ -73,7 +73,7 @@ footer code{background:var(--muted);padding:1px 5px;border-radius:4px;}
   <div class="arch-head">
     <div>
       <h2 class="arch-title">llmRx 架构分层</h2>
-      <p class="arch-sub">按包依赖实测（graphify AST 扫描：7808 符号 / 32271 边）· 悬停方块查看职责与依赖</p>
+      <p class="arch-sub">按包依赖实测（graphify AST 扫描：7833 符号 / 32381 边）· 悬停方块查看职责与依赖</p>
     </div>
     <div class="arch-legend" id="llmrx-legend"></div>
   </div>
@@ -218,7 +218,7 @@ footer code{background:var(--muted);padding:1px 5px;border-radius:4px;}
     ['internal/prober', 'internal/provider', 7],
     ['internal/prober', 'internal/model', 7],
     ['internal/prober', 'internal/logging', 7],
-    ['internal/logstore', 'internal/model', 66],
+    ['internal/logstore', 'internal/model', 62],
     ['internal/logstore', 'internal/logging', 8],
     ['internal/usage', 'internal/logstore', 19],
     ['internal/usage', 'internal/store', 34],
@@ -517,7 +517,7 @@ footer code{background:var(--muted);padding:1px 5px;border-radius:4px;}
 </div>
 
 <footer>
-本页由 graphify AST 扫描（<code>graphify extract . --code-only</code>：7808 符号 / 32271 边）实测包依赖生成，随仓库维护。<br>
+本页由 graphify AST 扫描（<code>graphify extract . --code-only</code>：7833 符号 / 32381 边）实测包依赖生成，随仓库维护。<br>
 交互版与本文件同源：<code>docs/architecture.html</code>；对话内可视化使用同一片段，由宿主提供主题变量。
 </footer>
 </div>
