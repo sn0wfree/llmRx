@@ -1,8 +1,6 @@
 package api
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -106,14 +104,6 @@ func (l *registerLimiter) allow(ip string) bool {
 	return true
 }
 
-// newSessionToken generates a hex session token (same shape as the
-// webui/admin sessions).
-func newSessionToken() string {
-	b := make([]byte, 24)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}
-
 // registerRequest is POST /api/v1/register.
 type registerRequest struct {
 	Username   string `json:"username"`
@@ -186,7 +176,11 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 
 	// Auto-login: issue a session cookie so the user lands on
 	// /account already authenticated.
-	tok := newSessionToken()
+	tok, err := auth.NewSessionToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "generate session token", "session_failed")
+		return
+	}
 	exp := time.Now().Add(sessionTTL).UTC()
 	res.User.SessionToken = tok
 	res.User.SessionExp = &exp

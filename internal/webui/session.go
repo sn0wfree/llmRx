@@ -2,12 +2,11 @@ package webui
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"html"
 	"net/http"
 	"time"
 
+	"github.com/sn0wfree/llmRx/internal/auth"
 	"github.com/sn0wfree/llmRx/internal/broker"
 	"github.com/sn0wfree/llmRx/internal/model"
 	"github.com/sn0wfree/llmRx/internal/store"
@@ -25,12 +24,15 @@ type ctxKey string
 
 const userCtxKey ctxKey = "admin_user"
 
+// newSessionToken delegates to auth.NewSessionToken — the single
+// generation point shared with admin/api. crypto/rand failure remains
+// fatal to this request path (panic), matching the previous behavior.
 func newSessionToken() string {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
+	t, err := auth.NewSessionToken()
+	if err != nil {
 		panic("webui: crypto/rand failed: " + err.Error())
 	}
-	return hex.EncodeToString(b)
+	return t
 }
 
 // newAPIToken generates a bearer token with the OpenAI-style "sk-"
@@ -39,7 +41,11 @@ func newSessionToken() string {
 // most upstream providers, and makes masked display in the admin UI
 // read sensibly.
 func newAPIToken() string {
-	return "sk-" + newSessionToken()
+	k, err := auth.NewAPIKey()
+	if err != nil {
+		panic("webui: crypto/rand failed: " + err.Error())
+	}
+	return k
 }
 
 func nowAdd(d time.Duration) time.Time {

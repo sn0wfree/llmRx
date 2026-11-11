@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -334,7 +333,11 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
-	tok := newSessionToken()
+	tok, err := auth.NewSessionToken()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "generate session token")
+		return
+	}
 	u.SessionToken = tok
 	exp := time.Now().Add(h.sessionTTL).UTC()
 	u.SessionExp = &exp
@@ -879,7 +882,11 @@ func (h *Handler) CreateToken(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	plain := newAPIToken()
+	plain, err := auth.NewAPIKey()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "generate api key")
+		return
+	}
 	t := &model.Token{
 		Key:             plain,
 		Name:            body.Name,
@@ -1679,21 +1686,6 @@ func maskKey(k string) string {
 		return k[:4] + "***" + k[len(k)-4:]
 	}
 	return k
-}
-
-func newSessionToken() string {
-	b := make([]byte, 24)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}
-
-// newAPIToken generates a bearer token with the OpenAI-style "sk-"
-// prefix. The prefix is conventional, not enforced by the auth
-// middleware, but it keeps the value consistent with the README and
-// most upstream providers, and makes masked display in the admin UI
-// read sensibly.
-func newAPIToken() string {
-	return "sk-" + newSessionToken()
 }
 
 func readCookie(r *http.Request, name string) string {

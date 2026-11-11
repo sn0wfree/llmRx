@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/sn0wfree/llmRx/internal/auth"
 )
 
 func TestMaskKey(t *testing.T) {
@@ -27,22 +29,35 @@ func TestMaskKey(t *testing.T) {
 }
 
 func TestNewSessionToken(t *testing.T) {
-	t1 := newSessionToken()
-	t2 := newSessionToken()
+	t1, err := auth.NewSessionToken()
+	if err != nil {
+		t.Fatalf("NewSessionToken: %v", err)
+	}
+	t2, err := auth.NewSessionToken()
+	if err != nil {
+		t.Fatalf("NewSessionToken: %v", err)
+	}
 	if t1 == "" || t2 == "" {
 		t.Fatal("tokens should not be empty")
 	}
 	if t1 == t2 {
 		t.Fatal("tokens should be unique")
 	}
-	if len(t1) != 48 {
-		t.Fatalf("token length: got %d, want 48", len(t1))
+	// 32 bytes of entropy hex-encoded = 64 characters.
+	if len(t1) != 64 {
+		t.Fatalf("token length: got %d, want 64", len(t1))
 	}
 }
 
 func TestNewAPIToken(t *testing.T) {
-	t1 := newAPIToken()
-	t2 := newAPIToken()
+	t1, err := auth.NewAPIKey()
+	if err != nil {
+		t.Fatalf("NewAPIKey: %v", err)
+	}
+	t2, err := auth.NewAPIKey()
+	if err != nil {
+		t.Fatalf("NewAPIKey: %v", err)
+	}
 	if t1 == "" || t2 == "" {
 		t.Fatal("tokens should not be empty")
 	}
@@ -55,9 +70,9 @@ func TestNewAPIToken(t *testing.T) {
 	if !strings.HasPrefix(t2, "sk-") {
 		t.Fatalf("api token missing sk- prefix: %q", t2)
 	}
-	// "sk-" (3) + 48 hex chars = 51
-	if len(t1) != 51 {
-		t.Fatalf("api token length: got %d, want 51", len(t1))
+	// "sk-" (3) + 64 hex chars = 67
+	if len(t1) != 67 {
+		t.Fatalf("api token length: got %d, want 67", len(t1))
 	}
 }
 
@@ -76,26 +91,6 @@ func TestReadCookie_NoCookies(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	if got := readCookie(req, "anything"); got != "" {
 		t.Fatalf("readCookie with no cookies: got %q", got)
-	}
-}
-
-func TestItoa(t *testing.T) {
-	tests := []struct {
-		input int64
-		want  string
-	}{
-		{0, "0"},
-		{1, "1"},
-		{42, "42"},
-		{-1, "-1"},
-		{-42, "-42"},
-		{9223372036854775807, "9223372036854775807"},
-	}
-	for _, tc := range tests {
-		got := itoa(tc.input)
-		if got != tc.want {
-			t.Errorf("itoa(%d): got %q, want %q", tc.input, got, tc.want)
-		}
 	}
 }
 
