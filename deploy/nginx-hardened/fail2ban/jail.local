@@ -1,0 +1,21 @@
+# llmRx 公网防护 jail — 追加到 /etc/fail2ban/jail.local
+#
+# 蜜罐：碰一下就封 1 小时（正常用户永远不会访问这些路径）。
+[llmrx-honeypot]
+enabled  = true
+filter   = llmrx-honeypot
+logpath  = /var/log/nginx/llmrx-honeypot.log
+maxretry = 1
+findtime = 10m
+bantime  = 1h
+port     = http,https
+
+# 登录撞库：10 分钟内 3 次 429（即约 15 次登录尝试）封 24 小时。
+[llmrx-login]
+enabled  = true
+filter   = llmrx-login
+logpath  = /var/log/nginx/llmrx-login.log
+maxretry = 3
+findtime = 10m
+bantime  = 24h
+port     = http,https
