@@ -98,25 +98,42 @@ cd <compose目录> && docker compose up -d
 
 ### 4.3 安装加固 nginx
 
-```bash
-# a) 证书 include：指向 §3.3 记下的现有通配符证书（不重签）
-sudo tee /etc/nginx/llmrx-certs.conf <<'EOF'
-ssl_certificate     /etc/letsencrypt/live/tokenhub.top/fullchain.pem;   # ← 按 §3.3 实际路径改
-ssl_certificate_key /etc/letsencrypt/live/tokenhub.top/privkey.pem;
-EOF
+**两种场景，选对应的：**
 
-# b) 换主配置（先备份）
+#### 场景 A：服务器只有一个 llmrx 站点（全新/独占机）
+
+用完整独立配置整体替换主配置（蜜罐/限速区必须在 http 块内）：
+
+```bash
 sudo cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak-$(date +%F)
 sudo cp /tmp/llmrx-deploy/nginx-hardened/nginx.conf /etc/nginx/nginx.conf
-sudo nano /etc/nginx/nginx.conf    # 改 server_name llmrx.tokenhub.top
+sudo nano /etc/nginx/nginx.conf    # 改 server_name；证书路径按 §3.3 填
+sudo tee /etc/nginx/llmrx-certs.conf <<'EOF'
+ssl_certificate     /etc/letsencrypt/live/<域名>/fullchain.pem;
+ssl_certificate_key /etc/letsencrypt/live/<域名>/privkey.pem;
+EOF
 sudo mkdir -p /var/www/llmrx
-
-# c) 测试 + 切换
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-> nginx.conf 是**完整独立配置**（events+http 自包含），整体替换主配置；
-> 蜜罐/限速区必须在 http 块内，站点片段放不了这些指令。
+#### 场景 B：服务器还有其他站点共存（本机实测走的这条）⚠️
+
+**不要整体替换 nginx.conf**（会杀掉其他 vhost）。改用站点文件变体：
+
+```bash
+# 限速区 → conf.d（http 上下文，经主配置的 include 生效）
+sudo cp /tmp/llmrx-deploy/nginx-hardened/conf.d-llmrx-hardening.conf /etc/nginx/conf.d/
+
+# 站点文件 → 替换 llmrx 站点（内含 80/llmrx443/frp443 三块，
+# 其中 80 与 frp 块是从原文件逐字节保留的——替换前先 diff 确认）
+sudo cp /etc/nginx/sites-available/llmrx /root/llmrx-backup/sites-available-llmrx.bak
+sudo cp /tmp/llmrx-deploy/nginx-hardened/site-llmrx.conf /etc/nginx/sites-available/llmrx
+sudo nano /etc/nginx/sites-available/llmrx   # 核对证书路径/其他站点块
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+> 证书路径直接内联在站点文件里（复用现有通配符证书，无需 include）。
+> `client_max_body_size`/`proxy_read_timeout` 保留原站数值，不放宽既有口径。
 
 ### 4.4 fail2ban 蜜罐封禁
 
@@ -124,8 +141,22 @@ sudo nginx -t && sudo systemctl reload nginx
 sudo apt install -y fail2ban
 sudo cp /tmp/llmrx-deploy/nginx-hardened/fail2ban/*.conf /etc/fail2ban/filter.d/
 sudo tee -a /etc/fail2ban/jail.local < /tmp/llmrx-deploy/nginx-hardened/fail2ban/jail.local
-sudo systemctl enable --now fail2ban && sudo systemctl restart fail2ban
-sudo fail2ban-client status llmrx-honeypot
+
+# ⚠️ 两个实战踩过的坑（不处理 fail2ban 会启动失败）：
+# 坑1：fail2ban 要求 jail 的 logpath 文件必须已存在
+sudo touch /var/log/nginx/llmrx-login.log /var/log/nginx/llmrx-honeypot.log
+# 坑2：Debian 默认 sshd jail enabled=true，但无 rsyslog 的机器上
+#       /var/log/auth.log 不存在 → 整个 fail2ban 起不来。
+#       修法：sshd jail 改用 systemd backend（直接读 journal）：
+printf '\n[sshd]\nenabled = true\nbackend = systemd\n\n' >> /etc/fail2ban/jail.local
+#       （需 python3-systemd：apt install python3-systemd）
+
+# ⚠️ 操作者 IP 白名单——防止蜜罐/登录限速把你自己的出口 IP 封掉
+#    （首次探测就误封过一次）。SSH 也受 sshd jail 保护，不加会锁死自己。
+sed -i '1i [DEFAULT]\nignoreip = 127.0.0.1/8 ::1 你的出口IP' /etc/fail2ban/jail.local
+
+sudo fail2ban-client -t && sudo systemctl enable --now fail2ban && sudo systemctl restart fail2ban
+sudo fail2ban-client status   # 应看到 llmrx-honeypot, llmrx-login, sshd
 ```
 
 ## §5 验证清单（全部通过才算完成）
@@ -172,3 +203,14 @@ sudo cp /etc/nginx/nginx.conf.bak-<日期> /etc/nginx/nginx.conf && sudo nginx -
 - 每个 API token 设 RPM/TPM/预算（防 key 泄露烧钱）
 - 余额/用量告警（管理台 Alerts）
 - `metrics_addr` 若需 Prometheus：绑 `127.0.0.1:9090`，不要公网
+
+## 附：2026-11-11 本次部署实录（llmrx.tokenhub.top）
+
+| 步骤 | 结果 |
+|---|---|
+| 备份 | `/root/llmrx-backup-2026-11-11-1637/`（db+key+config+旧 nginx 配置） |
+| 镜像 | `llmrx:local` → 新构建（486960e）；旧镜像留作 `llmrx:old` 可回滚 |
+| 容器 | 重建：`127.0.0.1:8787`（原 0.0.0.0 公网直连已堵死），数据/口令/master key 全保留，healthy |
+| nginx | 场景 B（站点文件变体），`nginx -t` 通过后 reload，frp/simnow 站点不受影响 |
+| fail2ban | 3 jail：llmrx-honeypot / llmrx-login / sshd(systemd backend)；ignoreip 含操作者 IP |
+| 验证 | ①版本头 ✓ ②直连8787 BLOCKED ✓ ③蜜罐假页+日志 ✓ ④登录第5次起429 ✓ ⑤models=401/admin=200 ✓ ⑥frp 未受影响 ✓ |
