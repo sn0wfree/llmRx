@@ -1,35 +1,35 @@
 {{define "me_usage_body"}}<div class="max-w-4xl mx-auto">
-  <div class="mb-6 flex justify-between items-end">
+  <div class="mb-6 flex flex-col sm:flex-row sm:justify-between sm:items-end gap-3">
     <div>
       <h1 class="text-2xl font-bold text-gray-900">用量统计</h1>
       <p class="mt-1 text-sm text-gray-500">请求、Token 与花费明细</p>
     </div>
-    <div class="flex gap-1 text-sm">
+    <div class="flex gap-1 text-sm flex-wrap">
       {{$r := or .Range ""}}
-      <a href="/account/usage?range=24h" class="px-3 py-1.5 rounded-md {{if eq $r "24h"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">24h</a>
-      <a href="/account/usage?range=7d" class="px-3 py-1.5 rounded-md {{if eq $r "7d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">7d</a>
-      <a href="/account/usage?range=30d" class="px-3 py-1.5 rounded-md {{if eq $r "30d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">30d</a>
-      <a href="/account/usage" class="px-3 py-1.5 rounded-md {{if eq $r ""}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">全部</a>
+      <a href="/account/usage?range=24h" class="px-3.5 py-2 rounded-md {{if eq $r "24h"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">24h</a>
+      <a href="/account/usage?range=7d" class="px-3.5 py-2 rounded-md {{if eq $r "7d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">7d</a>
+      <a href="/account/usage?range=30d" class="px-3.5 py-2 rounded-md {{if eq $r "30d"}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">30d</a>
+      <a href="/account/usage" class="px-3.5 py-2 rounded-md {{if eq $r ""}}bg-blue-600 text-white{{else}}bg-gray-100 text-gray-700 hover:bg-gray-200{{end}}">全部</a>
     </div>
   </div>
 
-  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-    <div class="bg-white shadow rounded-lg p-4 text-center">
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-6">
+    <div class="bg-blue-50 rounded-lg p-4 text-center">
       <div class="text-xs text-gray-400 uppercase">请求</div>
-      <div class="text-2xl font-bold text-gray-900 mt-1">{{.Summary.Requests}}</div>
+      <div class="text-2xl font-bold text-gray-900 mt-1 tabular-nums">{{.Summary.Requests}}</div>
     </div>
-    <div class="bg-white shadow rounded-lg p-4 text-center">
+    <div class="bg-blue-50 rounded-lg p-4 text-center">
       <div class="text-xs text-gray-400 uppercase">Token（入/出）</div>
-      <div class="text-2xl font-bold text-gray-900 mt-1">{{.Summary.PromptTokens}}</div>
+      <div class="text-2xl font-bold text-gray-900 mt-1 tabular-nums">{{.Summary.PromptTokens}}</div>
       <div class="text-xs text-gray-400">输出: {{.Summary.CompletionTokens}}</div>
     </div>
-    <div class="bg-white shadow rounded-lg p-4 text-center">
+    <div class="bg-blue-50 rounded-lg p-4 text-center">
       <div class="text-xs text-gray-400 uppercase">缓存命中</div>
-      <div class="text-2xl font-bold text-gray-900 mt-1">{{.Summary.CacheHits}}</div>
+      <div class="text-2xl font-bold text-gray-900 mt-1 tabular-nums">{{.Summary.CacheHits}}</div>
     </div>
-    <div class="bg-white shadow rounded-lg p-4 text-center">
+    <div class="bg-blue-50 rounded-lg p-4 text-center">
       <div class="text-xs text-gray-400 uppercase">花费 ($)</div>
-      <div class="text-2xl font-bold text-gray-900 mt-1">${{printf "%.4f" .Summary.BilledCostUSD}}</div>
+      <div class="text-2xl font-bold text-gray-900 mt-1 tabular-nums">${{printf "%.4f" .Summary.BilledCostUSD}}</div>
       <div class="text-xs text-gray-400">实付: ${{printf "%.4f" .Summary.RealCostUSD}}</div>
     </div>
   </div>
@@ -42,9 +42,9 @@
   {{end}}
 
   {{if .ByModel}}
-  <div class="bg-white shadow rounded-lg p-6 mb-6">
+  <div class="bg-white shadow rounded-lg p-5 md:p-6 mb-6">
     <h2 class="text-sm font-semibold text-gray-500 uppercase mb-3">按模型统计</h2>
-    <div class="overflow-x-auto">
+    <div class="hidden md:block overflow-x-auto">
       <table class="min-w-full divide-y divide-gray-200">
         <thead class="bg-gray-50">
           <tr>
@@ -66,12 +66,23 @@
         </tbody>
       </table>
     </div>
+    <ul class="md:hidden divide-y divide-gray-100">
+      {{range .ByModel}}
+      <li class="py-2.5 flex items-center gap-3">
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-mono text-gray-900 truncate">{{.Label}}</div>
+          <div class="text-xs text-gray-400 mt-0.5">{{.Count}} 次 · {{.Tokens}} tok</div>
+        </div>
+        <span class="text-sm text-gray-900 tabular-nums">${{printf "%.4f" .Cost}}</span>
+      </li>
+      {{end}}
+    </ul>
   </div>
   {{end}}
 
-  <div class="flex gap-3">
-    <a href="/account/export.csv?range={{.Range}}" class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-sm font-medium">导出 CSV</a>
-    <a href="/account" class="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 text-sm font-medium">← 返回首页</a>
+  <div class="flex flex-col sm:flex-row gap-3">
+    <a href="/account/export.csv?range={{.Range}}" class="h-10 px-4 inline-flex items-center justify-center bg-green-600 text-white rounded-md hover:bg-green-700 text-sm font-medium">导出 CSV</a>
+    <a href="/account" class="h-10 px-4 inline-flex items-center justify-center bg-white border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 text-sm font-medium">← 返回首页</a>
   </div>
 </div>
 <script>
@@ -84,9 +95,11 @@
   const cost = series.map(b => Number(b.billed_cost_usd.toFixed(4)));
   const canvas = el.getContext('2d');
   const dpr = window.devicePixelRatio || 1;
-  const W = canvas.width = (el.clientWidth||600) * dpr;
-  const H = canvas.height = 200 * dpr;
-  canvas.style.width = (el.clientWidth||600) + 'px';
+  // canvas 变量是绘图上下文；画布尺寸必须设在元素 el 上，
+  // 否则尺寸写入的是上下文的 expando 属性，且 el.style 抛错静默失败。
+  const W = el.width = (el.clientWidth||600) * dpr;
+  const H = el.height = 200 * dpr;
+  el.style.width = (el.clientWidth||600) + 'px';
   const pad = {l:50, r:10, t:10, b:24};
   const maxCost = Math.max(...cost, 0.0001);
   const plotW = W - pad.l - pad.r, plotH = H - pad.t - pad.b;
@@ -108,7 +121,10 @@
   });
   canvas.stroke();
   canvas.fillStyle = '#6b7280'; canvas.font = '10px sans-serif'; canvas.textAlign = 'center';
+  // 标签抽稀：桶数多时（30d 有 30 个）全画会互相重叠
+  const step = Math.max(1, Math.ceil(labels.length / 5));
   labels.forEach((lb, i) => {
+    if (i % step !== 0) return;
     const x = pad.l + plotW * (i / Math.max(labels.length - 1, 1));
     canvas.fillText(lb, x, H - 6);
   });

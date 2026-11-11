@@ -23,12 +23,25 @@
 </head>
 <body class="bg-gray-100 h-screen overflow-hidden">
   {{if .User}}
+  {{if lt .User.Role 10}}
+  <div class="flex h-full flex-col">
+    {{template "partials/mobile_topbar.html" .}}
+    <div class="flex flex-1 min-h-0">
+      {{template "partials/sidebar.html" .}}
+      <main class="flex-1 overflow-y-auto p-4 md:p-6">
+        {{renderPartial .Body .}}
+      </main>
+    </div>
+    {{template "partials/mobile_tabbar.html" .}}
+  </div>
+  {{else}}
   <div class="flex h-full">
     {{template "partials/sidebar.html" .}}
     <main class="flex-1 overflow-y-auto p-6">
       {{renderPartial .Body .}}
     </main>
   </div>
+  {{end}}
   {{else}}
   <main class="h-full flex items-center justify-center p-4">
     {{renderPartial .Body .}}

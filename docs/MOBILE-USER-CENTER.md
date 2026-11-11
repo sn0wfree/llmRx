@@ -103,3 +103,10 @@
 | `internal/webui/templates/user/usage.html` | 统计块 / 按模型统计移动端适配 |
 | `internal/webui/templates/user/topup.html` | 表单纵向堆叠 |
 | `internal/webui/billing.go` | 三个 handler 设置 `Active` |
+
+顺带修复（预先存在的问题，非本次设计引入）：
+
+- 用量趋势图脚本把画布尺寸写到了 2D 绘图上下文对象而不是 canvas 元素
+  （`canvas.width` / `canvas.height` / `canvas.style`），随后 `canvas.style`
+  为 undefined 抛错、图表一直静默绘制失败；现改为写入元素 `el`，
+  并对 x 轴标签抽稀（桶数多时全画会互相重叠，30d 桌面端同样受益）。

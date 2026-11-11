@@ -1,76 +1,69 @@
 {{define "me_body"}}<div class="max-w-3xl mx-auto">
-  <div class="mb-6 flex justify-between items-center">
-    <div>
-      <h1 class="text-2xl font-bold text-gray-900">欢迎回来，{{.User.Username}}</h1>
+  <div class="mb-5 flex justify-between items-center gap-3">
+    <div class="min-w-0">
+      <h1 class="text-xl md:text-2xl font-bold text-gray-900 truncate">欢迎回来，{{.User.Username}}</h1>
       <p class="mt-1 text-sm text-gray-500">账户概览与 API 接入</p>
     </div>
-    <a href="/admin/users/{{.User.ID}}/password" class="text-xs text-gray-500 hover:text-gray-700">修改密码 →</a>
+    <a href="/admin/users/{{.User.ID}}/password" class="text-xs text-gray-500 hover:text-gray-700 whitespace-nowrap">修改密码 →</a>
   </div>
 
   {{if .Me.APIKey}}
-  {{if lt .Me.RemainingUSD 1.0}}
-  <div class="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg flex items-start gap-3">
-    <svg class="w-5 h-5 text-yellow-600 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
-    <div class="flex-1">
-      <div class="text-sm font-medium text-yellow-800">余额不足</div>
-      <div class="text-xs text-yellow-700 mt-0.5">当前剩余 ${{printf "%.2f" .Me.RemainingUSD}}，建议尽快充值以避免请求中断。</div>
-    </div>
-    <a href="/account/topup" class="text-xs px-3 py-1 bg-yellow-600 text-white rounded hover:bg-yellow-700 whitespace-nowrap">立即充值</a>
-  </div>
-  {{end}}
-
-  <div class="bg-white shadow rounded-lg p-6 mb-4">
-    <h2 class="text-sm font-semibold text-gray-500 uppercase mb-3">账户余额</h2>
-    <div class="grid grid-cols-3 gap-4 text-center mb-3">
-      <div>
-        <div class="text-xs text-gray-400">预算</div>
-        <div class="text-xl font-bold text-gray-900 mt-1">${{printf "%.2f" .Me.BudgetUSD}}</div>
-      </div>
-      <div>
-        <div class="text-xs text-gray-400">已用</div>
-        <div class="text-xl font-bold text-gray-900 mt-1">${{printf "%.4f" .Me.UsedUSD}}</div>
-      </div>
-      <div>
-        <div class="text-xs text-gray-400">剩余</div>
-        <div class="text-xl font-bold {{if gt .Me.RemainingUSD 0.0}}text-green-600{{else}}text-red-600{{end}} mt-1">${{printf "%.2f" .Me.RemainingUSD}}</div>
-      </div>
-    </div>
+  {{$pct := percentage .Me.UsedUSD .Me.BudgetUSD}}
+  <div class="rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-700 text-white shadow-md shadow-blue-600/20 p-5 mb-4">
+    <div class="text-xs text-blue-100">剩余额度</div>
+    <div class="mt-1 text-3xl font-medium tabular-nums">${{printf "%.2f" .Me.RemainingUSD}}</div>
     {{if gt .Me.BudgetUSD 0.0}}
-    <div>
-      <div class="w-full bg-gray-200 rounded-full h-2">
-        <div class="bg-blue-600 h-2 rounded-full" style="width: {{printf "%.1f" (percentage .Me.UsedUSD .Me.BudgetUSD)}}%"></div>
-      </div>
-      <div class="mt-1 text-xs text-gray-400 text-right">已使用 {{printf "%.1f" (percentage .Me.UsedUSD .Me.BudgetUSD)}}%</div>
+    <div class="mt-3 h-1.5 bg-white/25 rounded-full overflow-hidden">
+      <div class="h-full bg-white rounded-full" style="width: {{printf "%.1f" $pct}}%"></div>
+    </div>
+    <div class="mt-2 text-xs text-blue-100">预算 ${{printf "%.2f" .Me.BudgetUSD}} · 已用 ${{printf "%.4f" .Me.UsedUSD}}（{{printf "%.1f" $pct}}%）</div>
+    {{else}}
+    <div class="mt-2 text-xs text-blue-100">预算 ${{printf "%.2f" .Me.BudgetUSD}} · 已用 ${{printf "%.4f" .Me.UsedUSD}}</div>
+    {{end}}
+    {{if or (lt .Me.RemainingUSD 1.0) (ge $pct 90.0)}}
+    <div class="mt-3 flex items-center gap-2 bg-white/15 rounded-lg px-3 py-2 text-xs">
+      <svg class="w-4 h-4 flex-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+      <span>余额偏低，建议尽快充值以避免请求中断</span>
     </div>
     {{end}}
+    <div class="mt-4 flex gap-3">
+      <a href="/account/topup" class="flex-1 min-w-0 h-10 inline-flex items-center justify-center gap-2 bg-white text-blue-700 rounded-lg text-sm font-medium hover:bg-blue-50">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        立即充值
+      </a>
+      <a href="/account/export.csv" class="flex-1 min-w-0 h-10 inline-flex items-center justify-center gap-2 bg-white/15 text-white rounded-lg text-sm font-medium hover:bg-white/25">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+        导出 CSV
+      </a>
+    </div>
   </div>
 
   {{if .TodaySummary}}
-  <div class="bg-white shadow rounded-lg p-6 mb-4">
+  <div class="bg-white shadow rounded-lg p-5 mb-4">
     <h2 class="text-sm font-semibold text-gray-500 uppercase mb-3">今日统计</h2>
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-      <div class="p-3 bg-gray-50 rounded-lg text-center">
+      <div class="p-3 bg-blue-50 rounded-lg text-center">
         <div class="text-xs text-gray-400">请求数</div>
-        <div class="text-xl font-bold text-gray-900 mt-1">{{.TodaySummary.Requests}}</div>
+        <div class="text-xl font-bold text-gray-900 mt-1 tabular-nums">{{.TodaySummary.Requests}}</div>
       </div>
-      <div class="p-3 bg-gray-50 rounded-lg text-center">
+      <div class="p-3 bg-blue-50 rounded-lg text-center">
         <div class="text-xs text-gray-400">花费</div>
-        <div class="text-xl font-bold text-gray-900 mt-1">${{printf "%.4f" .TodaySummary.BilledCostUSD}}</div>
+        <div class="text-xl font-bold text-gray-900 mt-1 tabular-nums">${{printf "%.4f" .TodaySummary.BilledCostUSD}}</div>
       </div>
-      <div class="p-3 bg-gray-50 rounded-lg text-center">
+      <div class="p-3 bg-blue-50 rounded-lg text-center">
         <div class="text-xs text-gray-400">Token 用量</div>
-        <div class="text-xl font-bold text-gray-900 mt-1">{{.TodaySummary.PromptTokens}}</div>
+        <div class="text-xl font-bold text-gray-900 mt-1 tabular-nums">{{.TodaySummary.PromptTokens}}</div>
         <div class="text-xs text-gray-400">输出: {{.TodaySummary.CompletionTokens}}</div>
       </div>
-      <div class="p-3 bg-gray-50 rounded-lg text-center">
+      <div class="p-3 bg-blue-50 rounded-lg text-center">
         <div class="text-xs text-gray-400">缓存命中</div>
-        <div class="text-xl font-bold text-gray-900 mt-1">{{.TodaySummary.CacheHits}}</div>
+        <div class="text-xl font-bold text-gray-900 mt-1 tabular-nums">{{.TodaySummary.CacheHits}}</div>
       </div>
     </div>
   </div>
   {{end}}
 
-  <div class="bg-white shadow rounded-lg p-6 mb-4">
+  <div class="bg-white shadow rounded-lg p-5 mb-4">
     <div class="flex justify-between items-center mb-3">
       <h2 class="text-sm font-semibold text-gray-500 uppercase">最近活动</h2>
       {{if .RecentLogs}}
@@ -78,7 +71,7 @@
       {{end}}
     </div>
     {{if .RecentLogs}}
-    <div class="overflow-x-auto">
+    <div class="hidden md:block overflow-x-auto">
       <table class="min-w-full divide-y divide-gray-200 text-sm">
         <thead>
           <tr class="text-xs text-gray-500 uppercase">
@@ -110,17 +103,29 @@
         </tbody>
       </table>
     </div>
+    <ul class="md:hidden divide-y divide-gray-100">
+      {{range .RecentLogs}}
+      <li class="py-2.5 flex items-center gap-2.5">
+        <span class="w-2 h-2 rounded-full flex-none {{if eq .StatusCode 0}}bg-gray-300{{else if and (ge .StatusCode 200) (lt .StatusCode 400)}}bg-green-500{{else}}bg-red-500{{end}}"></span>
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-mono text-gray-900 truncate">{{if .Model}}{{.Model}}{{else}}-{{end}}</div>
+          <div class="text-xs text-gray-400 mt-0.5">{{formatTime .CreatedAt}} · {{add .PromptTokens .CompletionTokens}} tok</div>
+        </div>
+        <span class="text-sm text-gray-900 tabular-nums">${{printf "%.4f" .BilledCostUSD}}</span>
+      </li>
+      {{end}}
+    </ul>
     {{else}}
     <p class="text-sm text-gray-500 text-center py-4">暂无请求记录。复制下方示例命令测试 API。</p>
     {{end}}
   </div>
 
-  <div class="bg-white shadow rounded-lg p-6 mb-4">
+  <div class="bg-white shadow rounded-lg p-5 mb-4">
     <h2 class="text-sm font-semibold text-gray-500 uppercase mb-3">API 凭据</h2>
     <div class="mb-3">
       <label class="block text-xs font-medium text-gray-400">API Key</label>
       <div class="mt-1 flex items-center gap-2">
-        <code id="api-key" class="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded text-sm break-all font-mono">{{.Me.APIKey}}</code>
+        <code id="api-key" class="flex-1 min-w-0 px-3 py-2 bg-gray-50 border border-gray-200 rounded text-sm break-all font-mono">{{.Me.APIKey}}</code>
         <button onclick="navigator.clipboard.writeText(document.getElementById('api-key').textContent).then(()=>{this.textContent='已复制';setTimeout(()=>this.textContent='复制',1500)})"
                 class="px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded text-sm whitespace-nowrap">复制</button>
       </div>
@@ -132,27 +137,22 @@
     </div>
   </div>
 
-  <div class="bg-white shadow rounded-lg p-6 mb-4">
-    <h2 class="text-sm font-semibold text-gray-500 uppercase mb-3">快速开始</h2>
-    <p class="text-sm text-gray-600 mb-3">复制以下命令测试你的 API Key 是否正常：</p>
-    <div class="relative">
-      <pre id="curl-example" class="bg-gray-900 text-gray-100 p-4 rounded text-xs overflow-x-auto"><code>curl {{.BaseURL}}/v1/chat/completions \
+  <div class="bg-white shadow rounded-lg p-5 mb-4">
+    <details open>
+      <summary class="cursor-pointer select-none list-none text-sm font-semibold text-gray-500 uppercase [&::-webkit-details-marker]:hidden">快速开始</summary>
+      <p class="text-sm text-gray-600 mb-3 mt-3">复制以下命令测试你的 API Key 是否正常：</p>
+      <div class="relative">
+        <pre id="curl-example" class="bg-gray-900 text-gray-100 p-4 rounded text-xs overflow-x-auto"><code>curl {{.BaseURL}}/v1/chat/completions \
   -H "Authorization: Bearer {{.Me.APIKey}}" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-3.5-turbo",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'</code></pre>
-      <button onclick="navigator.clipboard.writeText(document.getElementById('curl-example').textContent).then(()=>{this.textContent='已复制';setTimeout(()=>this.textContent='复制命令',1500)})"
-              class="absolute top-2 right-2 px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white text-xs rounded">复制命令</button>
-    </div>
-  </div>
-
-  <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-    <a href="/account/usage" class="block text-center px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium">详细用量</a>
-    <a href="/account/topup" class="block text-center px-4 py-3 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">充值</a>
-    <a href="/account/export.csv" class="block text-center px-4 py-3 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">导出 CSV</a>
-    <a href="/admin/login" class="block text-center px-4 py-3 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">登出</a>
+        <button onclick="navigator.clipboard.writeText(document.getElementById('curl-example').textContent).then(()=>{this.textContent='已复制';setTimeout(()=>this.textContent='复制命令',1500)})"
+                class="absolute top-2 right-2 px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white text-xs rounded">复制命令</button>
+      </div>
+    </details>
   </div>
 
   {{else}}

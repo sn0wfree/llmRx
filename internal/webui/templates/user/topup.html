@@ -15,10 +15,10 @@
   <div class="bg-white shadow rounded-lg p-6 mb-4">
     <h2 class="text-sm font-semibold text-gray-500 uppercase mb-3">输入充值码</h2>
     <p class="text-sm text-gray-500 mb-4">充值码请向管理员购买，格式为 <code class="bg-gray-100 px-1 rounded">RXM-XXXXXXXX</code></p>
-    <form id="redeem-form" class="flex gap-2">
+    <form id="redeem-form" class="flex flex-col sm:flex-row gap-2">
       <input type="text" id="redeem-code" required placeholder="RXM-XXXXXXXX"
-             class="flex-1 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 font-mono">
-      <button type="submit" class="px-5 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium whitespace-nowrap">兑换</button>
+             class="flex-1 h-11 px-3 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 font-mono">
+      <button type="submit" class="h-11 px-6 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium whitespace-nowrap">兑换</button>
     </form>
     <div id="redeem-result" class="mt-3"></div>
   </div>

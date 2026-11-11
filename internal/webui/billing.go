@@ -57,6 +57,7 @@ func (h *Handler) MePage(w http.ResponseWriter, r *http.Request) {
 		"Title":        "首页 · llmRx",
 		"User":         userToView(user),
 		"Me":           me,
+		"Active":       "me",
 		"RecentLogs":   recentLogs,
 		"TodaySummary": todaySummary,
 		"BaseURL":      "http://" + r.Host,
@@ -95,6 +96,7 @@ func (h *Handler) MeUsagePage(w http.ResponseWriter, r *http.Request) {
 		"Title":      "用量统计 · llmRx",
 		"User":       userToView(user),
 		"Me":         me,
+		"Active":     "me-usage",
 		"Range":      rangeVal,
 		"Summary":    summary,
 		"ByModel":    byModel,
@@ -115,10 +117,11 @@ func (h *Handler) MeTopupPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]any{
-		"Body":  "me_topup_body",
-		"Title": "充值 · llmRx",
-		"User":  userToView(user),
-		"Me":    me,
+		"Body":   "me_topup_body",
+		"Title":  "充值 · llmRx",
+		"User":   userToView(user),
+		"Me":     me,
+		"Active": "me-topup",
 	}
 	if err := h.renderer.Render(w, "me_topup_body", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
