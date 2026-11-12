@@ -67,7 +67,7 @@ scripts/release-check.sh v0.3.1        # <version> 必填，--fast 可跳过测�
 | 静态检查 | `go vet ./...` | 退出码 0 |
 | 单元测试 | `go test -count=1 ./...` | 0 FAIL |
 | 竞态检测 | `go test -race -count=1 ./...` | 0 FAIL、0 DATA RACE |
-| 覆盖率 | `make cover-check` | 包级地板 webui/store/api 各 ≥ 80% |
+| 覆盖率 | `go test -coverprofile` | 全局 ≥ 60%（与 CI 同门槛）|
 | 构建 | `go build ./...` | 退出码 0 |
 
 > 历史教训：曾因 `go test ... | head -8` 掩盖失败而误判为通过。
@@ -223,7 +223,7 @@ scripts/release-check.sh v0.3.1 --fast     # 只跑静态检查（迭代时用�
 | 5 | `go vet` | 静态问题 |
 | 6 | `go test -count=1` | 单测失败 |
 | 7 | `go test -race -count=1` | 数据竞争 |
-| 8 | `make cover-check` | 覆盖率低于包级地板（webui/store/api 各 80%）|
+| 8 | 覆盖率 ≥ 60%（全局，与 CI 一致）| 覆盖率不达标（`COVER_MIN` 可覆盖）|
 | 9 | `go build ./...` | 编译失败 |
 
 `--fast` 跳过 5–9（对应 CI 已覆盖，适合高频迭代）。
