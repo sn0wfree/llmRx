@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 （空——下一组变更从这里开始。）
 
+## [v0.3.1] — 2026-11-12
+
+发布流程工具化（无运行时行为变更，patch 版本）。
+
+### Added
+
+- **`docs/RELEASE-PROCESS.md`**：8 步发布流程手册——变更盘点、全量闸门、
+  semver 决策、文档同步清单、提交打标、推送、推送后验证、可选部署；
+  含闸门硬标准表与常见失败处理表。
+- **`scripts/release-check.sh` 加固**：原有 4 项前置检查（工作区干净 /
+  tag 未占用 / CHANGELOG 已定版 / go.mod 对齐 CI）之外，补全 5 道代码闸门
+  ——`go vet`、单测、`-race`、`make cover-check` 覆盖率地板、`go build`。
+  所有退出码直接捕获（管道会掩盖失败，本项目踩过）。
+- **`scripts/push-retry.sh`**：GitHub 443 抖动时的探活重试推送；
+  `--all-tags` 补齐 `--follow-tags` 覆盖不到的本地标签。
+- **Makefile**：`make release-check V=x.y.z` / `make push-retry`。
+
+### Changed
+
+- `.gitignore` 忽略 `.zcode/`（agent/编辑器会话目录）。
+
 ## [v0.3.0] — 2026-11-12
 
 安全与一致性加固：认证状态码语义、token 生成统一、路由清单、错误转义。
