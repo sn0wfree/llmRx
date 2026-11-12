@@ -14,6 +14,7 @@ Install](#fresh-install) section.
 | v2.2 lifecycle | `789ef7f`..`34b50de` | Graceful shutdown, runtime live updates |
 | v2.3 ops | `c5edf98`..`42ad785` | Env interpolation, master key fail-closed, Thompson persistence |
 | v0.2.0 usage | `v0.1.1`..`v0.2.0` | P21 channel usage, P22 vendor subscriptions, admin page renames, architecture refactors, deployment hardening |
+| v0.3.0 hardening | `v0.2.0`..`v0.3.0` | RFC 7235 auth status codes, single token generator, route inventory, escaping fix |
 
 ## Breaking Changes
 
@@ -200,6 +201,41 @@ grep -rn 'admin/usage\|admin/monitoring\|admin/subscriptions' \
 
 **Fix**: use the new URLs (sidebar links are updated automatically);
 user-side `/account/usage` keeps its name.
+
+### 11. Authentication Failures Return 401, Not 403 (v0.3.0 / `ca2c6e3`)
+
+Credential failures were split between 401 and 403 depending on which
+middleware branch rejected the request — the same `invalid_token` code
+could arrive as either status. Per RFC 7235 all authentication
+failures are now 401; 403 is reserved for a valid credential whose
+role or permission is insufficient.
+
+| Scenario | Before | After |
+|---|---|---|
+| Unknown bearer token | 403 `invalid_token` | **401** `invalid_token` |
+| Token expired | 403 `token_expired` | **401** `token_expired` |
+| Invalid admin session | 403 `invalid_session` | **401** `invalid_session` |
+| BYOK disabled / prefix mismatch / upstream rejected key | 403 | **401** |
+| Role / permission insufficient | 403 | 403 (unchanged) |
+| IP not whitelisted, BYOK IP conflict | 403 | 403 (unchanged) |
+
+**Detection** — find clients or scripts that key re-authentication on
+403:
+
+```bash
+grep -rn '403' --include='*.py' --include='*.ts' --include='*.go' \
+  your-client-code/ | grep -i 'auth\|token\|reauth'
+```
+
+**Fix**: key re-authentication and key-refresh logic on **401**. Code
+that treats 403 as "authenticated but forbidden" is now correct as-is.
+Note the prior behavior was inconsistent — some unknown-token paths
+already returned 401, so a client relying on 403 was already
+intermittently broken.
+
+**Related fix**: `WithLimits(lookup, nil)` (no rate limiter wired)
+returned the bare token chain and skipped the expiry check entirely,
+contradicting the documented contract. Expiry is now always enforced.
 
 ## Silent Improvements
 

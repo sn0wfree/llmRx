@@ -21,6 +21,18 @@
 
 约定：`{id}` 为路径参数；`?query` 为可选过滤参数。
 
+### 鉴权失败状态码（v0.3.0 起统一，RFC 7235）
+
+| 状态码 | 含义 | 触发场景 |
+|---|---|---|
+| **401** | 认证失败——凭据缺失/格式错/未知/过期 | 无 `Authorization` 头、非 Bearer、未知 token、`token_expired`、`invalid_session`、BYOK 关闭/前缀不符/上游拒绝 key |
+| **403** | 授权失败——凭据有效但权限不足 | `insufficient_role`、`permission_denied`、IP 未白名单（`byok_ip_blocked`）、BYOK IP 冲突 |
+| 402 | 预算耗尽 | `budget_exceeded`（plan 预算）|
+| 429 | 限流 | `rate_limited`（RPM/TPM）|
+
+错误体统一为 `{"error":{"message","type","code"}}`（OpenAI 兼容）。
+契约测试：`internal/middleware/auth_contract_test.go`。
+
 ## 1. LLM API — `/v1`（兼容 OpenAI）
 
 ```

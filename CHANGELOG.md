@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+（空——下一组变更从这里开始。）
+
+## [v0.3.0] — 2026-11-12
+
+安全与一致性加固：认证状态码语义、token 生成统一、路由清单、错误转义。
+
 ### Changed — ⚠️ BREAKING
 
 - **认证失败状态码统一（RFC 7235）**：凭据缺失/格式错/未知/过期一律 **401**；
@@ -22,13 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   影响：按 401 触发重新认证的客户端（OpenAI SDK 等）现在行为一致。此前
   同一个 `invalid_token` 码在两条路径分别返回 401 和 403。
   兼容性：若你的客户端对 403 做了特判来触发重认证，需改为 401。
+  迁移见 [docs/UPGRADE.md #11](docs/UPGRADE.md)。
 
 ### Fixed
 
 - **`WithLimits(lookup, nil)` 跳过 token 过期检查**：nil enforcer 走的是
   裸 `Token()` 链路，与 `WithLimits` 文档承诺的「Enforcer 可为 nil 但过期
   始终强制」矛盾。过期检查现在先于 enforcer 分支执行（带契约测试钉住）。
-
 - **会话/API token 生成三处实现合并**（`internal/auth`）：admin/api 的 24 字节
   变体曾忽略 `crypto/rand` 错误，webui 为 32 字节；统一为 32 字节（256-bit）
   并返回错误。存量 token 不受影响——仅新签发的会话与 API key 采用更长格式
@@ -40,7 +46,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **清理三份手写 `itoa`**（admin/api/cluster/client-ui）：死代码或以
   `strconv` 替代；cluster 的包装函数删除。
-（空——下一组变更从这里开始。）
+
+### Added
+
+- **`docs/ROUTES.md`**：九个面（LLM API / 自服务 / 管理 JSON / 控制台页面 /
+  账户页 / 集群 / 边缘上报 / liveness / metrics）的全量路由清单，含鉴权要求、
+  公网暴露映射、已知不一致清单。
+- **路由审计测试**：`TestDumpRouteTable` / `TestDumpWebPages`（`DUMP_ROUTES=1`
+  导出真实 chi 路由树）；`TestAdminPageRoutes_Contract` 钉住 v0.2.0 页面改名
+  （旧路径 404、新路径可达）。
+- **认证契约测试** `TestAuthContract_StatusMatrix`：每个失败模式一个状态码，
+  含 nil-enforcer 过期用例。
+- **`docs/ACCOUNT-SECURITY.md`**、`deploy/nginx-hardened/`、`deploy/REMOTE-DEPLOY.md`
+  已在前序提交落地，本轮补充 api-reference / OPERATIONS / config.yml 的
+  P21/P22 端点与新增 server 配置项。
 
 ## [v0.2.0] — 2026-11-11
 

@@ -18,6 +18,19 @@ llmRx 是一个 LLM API 网关，提供 OpenAI 兼容的 API 接口。本文档�
 Authorization: Bearer <your-api-key>
 ```
 
+**失败状态码**（v0.3.0 起遵循 RFC 7235）：
+
+| 状态码 | 含义 | error.code |
+|---|---|---|
+| 401 | 认证失败：凭据缺失/格式错/未知/过期 | `missing_authorization` `invalid_authorization` `invalid_token` `token_expired` |
+| 402 | Plan 预算耗尽 | `budget_exceeded` |
+| 403 | 凭据有效但权限不足（角色 / IP 白名单 / BYOK IP 冲突）| `insufficient_role` `permission_denied` `byok_ip_blocked` |
+| 429 | 限流（RPM / TPM）| `rate_limited` |
+
+错误体统一形状：`{"error":{"message":"…","type":"…","code":"…"}}`
+
+> 客户端重认证/刷新 key 的逻辑应以 **401** 为准（403 是权限问题，重试无意义）。
+
 ## 二、LLM API 端点
 
 ### 2.1 聊天补全
