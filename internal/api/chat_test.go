@@ -55,8 +55,8 @@ func TestChat_BadToken(t *testing.T) {
 	r2.Header.Set("Content-Type", "application/json")
 	r2.Header.Set("Authorization", "Bearer bogus")
 	app.Mux.ServeHTTP(rec2, r2)
-	if rec2.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d %s", rec2.Code, rec2.Body.String())
+	if rec2.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d %s", rec2.Code, rec2.Body.String())
 	}
 }
 

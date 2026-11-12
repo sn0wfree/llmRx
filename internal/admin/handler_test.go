@@ -115,8 +115,8 @@ func TestAdmin_LogoutInvalidatesSession(t *testing.T) {
 		t.Fatalf("logout: %d", rec.Code)
 	}
 	rec = do(t, app.Admin.Routes(), http.MethodGet, "/dashboard", sess, "")
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("reused session: expected 403, got %d", rec.Code)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("reused session: expected 401, got %d", rec.Code)
 	}
 }
 
@@ -324,8 +324,8 @@ func TestAdmin_LogsList(t *testing.T) {
 func TestAdmin_AdminOnlyMiddlewareOnInvalidSession(t *testing.T) {
 	app := testhelper.New(t)
 	rec := do(t, app.Admin.Routes(), http.MethodGet, "/dashboard", "garbage-session", "")
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for invalid session, got %d", rec.Code)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for invalid session, got %d", rec.Code)
 	}
 	body := rec.Body.String()
 	if !strings.Contains(body, "invalid_session") {
@@ -371,8 +371,8 @@ func TestAdmin_SessionExpiry(t *testing.T) {
 	// Wait past TTL
 	time.Sleep(300 * time.Millisecond)
 	rec = do(t, app.Admin.Routes(), http.MethodGet, "/dashboard", sess, "")
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expired session: expected 403, got %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expired session: expected 401, got %d %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -982,8 +982,8 @@ func TestAdmin_ChangePassword(t *testing.T) {
 
 	// Old session should no longer work.
 	rec = do(t, app.Admin.Routes(), http.MethodGet, "/dashboard", sess, "")
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("stale session: expected 403, got %d", rec.Code)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("stale session: expected 401, got %d", rec.Code)
 	}
 
 	// New password should work.

@@ -140,7 +140,9 @@ func (t TokenInfo) HasIPAccess(ip string) bool {
 }
 
 // TokenLookup resolves a bearer token to its TokenInfo. Returning
-// ok=false yields a 403 response.
+// ok=false yields a 401 response: a token the gateway doesn't
+// recognise is an authentication failure (RFC 7235), not a
+// permission problem.
 type TokenLookup func(key string) (TokenInfo, bool)
 
 // UnknownTokenHook is invoked when a request presents a bearer
@@ -149,7 +151,7 @@ type TokenLookup func(key string) (TokenInfo, bool)
 // prefix, (b) verify it via the upstream's test endpoint, (c)
 // auto-create a (BYOK) channel row, and (d) proceed with the
 // request using the consumer's key. When the hook is nil the
-// default 403 response is returned. The hook must be safe for
+// default 401 response is returned. The hook must be safe for
 // concurrent use.
 type UnknownTokenHook func(w http.ResponseWriter, r *http.Request, rawKey string)
 
@@ -183,7 +185,10 @@ func TokenWithOptions(lookup TokenLookup, onUnknown UnknownTokenHook) func(http.
 					onUnknown(w, r, token)
 					return
 				}
-				writeAuthError(w, http.StatusForbidden, "invalid token", "invalid_token")
+				// 401, not 403: an unrecognised credential is an
+				// authentication failure (RFC 7235). 403 stays
+				// reserved for authenticated-but-insufficient-role.
+				writeAuthError(w, http.StatusUnauthorized, "invalid token", "invalid_token")
 				return
 			}
 
@@ -221,25 +226,30 @@ func WithLimits(lookup TokenLookup, enforcer LimitEnforcer) func(http.Handler) h
 
 // WithLimitsAndOptions is the same as WithLimits but also accepts
 // an UnknownTokenHook for Phase 1.5 BYOK. The hook is invoked when
-// the token is not in the cache; the default 403 path is taken if
+// the token is not in the cache; the default 401 path is taken if
 // hook is nil.
 func WithLimitsAndOptions(lookup TokenLookup, enforcer LimitEnforcer, onUnknown UnknownTokenHook) func(http.Handler) http.Handler {
 	base := TokenWithOptions(lookup, onUnknown)
-	if enforcer == nil {
-		return base
-	}
 	return func(next http.Handler) http.Handler {
 		return base(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			info, _ := lookup(extractBearer(r))
+			// Expiry is enforced whether or not a limiter is wired:
+			// WithLimits documents "Enforcer may be nil (limits
+			// ignored) but expiry is always enforced".
+			if !info.ExpiresAt.IsZero() && time.Now().After(info.ExpiresAt) {
+				writeAuthError(w, http.StatusUnauthorized, "token expired", "token_expired")
+				return
+			}
+			// nil enforcer = no limits to enforce; behave like Token().
+			if enforcer == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
 			if info.ID == 0 {
 				// Defense-in-depth: base middleware should have
 				// rejected this, but if we somehow got here,
 				// reject rather than bypass rate limiting.
 				writeAuthError(w, http.StatusUnauthorized, "missing or invalid token", "invalid_token")
-				return
-			}
-			if !info.ExpiresAt.IsZero() && time.Now().After(info.ExpiresAt) {
-				writeAuthError(w, http.StatusForbidden, "token expired", "token_expired")
 				return
 			}
 			// The middleware can't know the prompt size yet; it
@@ -292,7 +302,7 @@ func AdminOnly(lookup func(session string) (any, bool)) func(http.Handler) http.
 			}
 			u, ok := lookup(tok)
 			if !ok {
-				writeAuthError(w, http.StatusForbidden, "invalid session", "invalid_session")
+				writeAuthError(w, http.StatusUnauthorized, "invalid session", "invalid_session")
 				return
 			}
 			ctx := context.WithValue(r.Context(), UserKey, u)

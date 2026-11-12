@@ -6,7 +6,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed — ⚠️ BREAKING
+
+- **认证失败状态码统一（RFC 7235）**：凭据缺失/格式错/未知/过期一律 **401**；
+  403 仅用于「凭据有效但角色或权限不足」。
+
+  | 场景 | 之前 | 现在 |
+  |---|---|---|
+  | 未知 Bearer token | **403** `invalid_token` | **401** `invalid_token` |
+  | token 已过期 | 403 `token_expired` | **401** `token_expired` |
+  | 无效管理会话 | 403 `invalid_session` | **401** `invalid_session` |
+  | BYOK 关闭 / 前缀不符 / 上游拒绝 key | 403 | **401** |
+  | 角色/权限不足（RoleAdmin→root 端点等）| 403 | 403（不变）|
+
+  影响：按 401 触发重新认证的客户端（OpenAI SDK 等）现在行为一致。此前
+  同一个 `invalid_token` 码在两条路径分别返回 401 和 403。
+  兼容性：若你的客户端对 403 做了特判来触发重认证，需改为 401。
+
 ### Fixed
+
+- **`WithLimits(lookup, nil)` 跳过 token 过期检查**：nil enforcer 走的是
+  裸 `Token()` 链路，与 `WithLimits` 文档承诺的「Enforcer 可为 nil 但过期
+  始终强制」矛盾。过期检查现在先于 enforcer 分支执行（带契约测试钉住）。
 
 - **会话/API token 生成三处实现合并**（`internal/auth`）：admin/api 的 24 字节
   变体曾忽略 `crypto/rand` 错误，webui 为 32 字节；统一为 32 字节（256-bit）

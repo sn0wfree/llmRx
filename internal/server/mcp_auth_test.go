@@ -48,11 +48,11 @@ func TestMCPEndpointAuth(t *testing.T) {
 		t.Fatalf("no token: status = %d, want 401", rr.Code)
 	}
 
-	// Unknown token -> 403 (no BYOK hook wired).
+	// Unknown token -> 401 (no BYOK hook wired).
 	rr = httptest.NewRecorder()
 	engine.ServeHTTP(rr, req("Bearer sk-nope"))
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("bad token: status = %d, want 403", rr.Code)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("bad token: status = %d, want 401", rr.Code)
 	}
 
 	// Valid token -> the handler runs.

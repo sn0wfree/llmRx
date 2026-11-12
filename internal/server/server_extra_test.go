@@ -176,8 +176,8 @@ func TestNew_NoBYOKHook_Gives403(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer sk-unknown-bearer")
 	s.engine.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 invalid_token without hook, got %d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 invalid_token without hook, got %d body=%s", rec.Code, rec.Body.String())
 	}
 	var body struct {
 		Error struct {

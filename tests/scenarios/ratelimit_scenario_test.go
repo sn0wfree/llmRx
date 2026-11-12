@@ -66,8 +66,8 @@ func TestScenario_InvalidToken(t *testing.T) {
 	app.AddChannel("ch1", "openai", "https://api.openai.com/v1", []string{"gpt-4o"}, "sk-key-1")
 
 	code, body := doChat(t, app, "sk-invalid", "gpt-4o", userMsg("hi"))
-	if code != 403 {
-		t.Fatalf("invalid token: got %d, want 403 (body=%v)", code, body)
+	if code != 401 {
+		t.Fatalf("invalid token: got %d, want 401 (body=%v)", code, body)
 	}
 	if c := errorCode(body); c != "invalid_token" {
 		t.Fatalf("error code: got %s, want invalid_token", c)

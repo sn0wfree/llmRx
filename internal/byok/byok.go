@@ -71,7 +71,7 @@ func New(cfg Config, store Store, secretsMgr *secrets.Manager) *Manager {
 func (m *Manager) Hook() middleware.UnknownTokenHook {
 	return func(w http.ResponseWriter, r *http.Request, rawKey string) {
 		if !m.cfg.Enabled {
-			writeErr(w, http.StatusForbidden, "invalid token", "invalid_token")
+			writeErr(w, http.StatusUnauthorized, "invalid token", "invalid_token")
 			return
 		}
 		ip := clientIP(r)
@@ -80,7 +80,7 @@ func (m *Manager) Hook() middleware.UnknownTokenHook {
 			return
 		}
 		if !StringHasAnyPrefix(rawKey, m.cfg.ProviderPrefixes) {
-			writeErr(w, http.StatusForbidden, "invalid token", "invalid_token")
+			writeErr(w, http.StatusUnauthorized, "invalid token", "invalid_token")
 			return
 		}
 
@@ -105,7 +105,9 @@ func (m *Manager) Hook() middleware.UnknownTokenHook {
 			return
 		}
 		if err := probe(ctx, rawKey, baseURL); err != nil {
-			writeErr(w, http.StatusForbidden, "upstream rejected key: "+err.Error(), "byok_invalid_key")
+			// The credential failed upstream validation — an
+			// authentication failure, not a permission problem.
+			writeErr(w, http.StatusUnauthorized, "upstream rejected key: "+err.Error(), "byok_invalid_key")
 			return
 		}
 

@@ -47,8 +47,8 @@ func TestAuth_InvalidFormat(t *testing.T) {
 
 func TestAuth_InvalidToken(t *testing.T) {
 	rec := do(t, Token(func(string) (TokenInfo, bool) { return TokenInfo{}, false })(passthrough()), "Bearer wrong")
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", rec.Code)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
 	}
 }
 
@@ -115,8 +115,8 @@ func TestAdminOnly_BadSession(t *testing.T) {
 	req.Header.Set("X-Session-Token", "bad")
 	rec := httptest.NewRecorder()
 	AdminOnly(func(string) (any, bool) { return nil, false })(passthrough()).ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", rec.Code)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
 	}
 }
 

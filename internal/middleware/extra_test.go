@@ -17,8 +17,8 @@ func TestWithLimitsAndOptions_ExpiredToken(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer sk-test")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("code=%d want 403 (expired)", rec.Code)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("code=%d want 401 (expired)", rec.Code)
 	}
 }
 

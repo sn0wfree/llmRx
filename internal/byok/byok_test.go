@@ -46,8 +46,8 @@ func TestManager_RejectsUnknownPrefix(t *testing.T) {
 	req.RemoteAddr = "127.0.0.1:54321"
 	w := httptest.NewRecorder()
 	mgr.Hook()(w, req, "wrongprefix-xxx")
-	if w.Code != 403 {
-		t.Fatalf("got %d, want 403", w.Code)
+	if w.Code != 401 {
+		t.Fatalf("got %d, want 401", w.Code)
 	}
 }
 
@@ -58,8 +58,8 @@ func TestManager_RejectsDisabledBYOK(t *testing.T) {
 	req.RemoteAddr = "127.0.0.1:54321"
 	w := httptest.NewRecorder()
 	mgr.Hook()(w, req, "sk-test")
-	if w.Code != 403 {
-		t.Fatalf("got %d, want 403", w.Code)
+	if w.Code != 401 {
+		t.Fatalf("got %d, want 401", w.Code)
 	}
 }
 
@@ -138,8 +138,8 @@ func TestManager_UpstreamRejects(t *testing.T) {
 	req.RemoteAddr = "127.0.0.1:54321"
 	w := httptest.NewRecorder()
 	mgr.Hook()(w, req, "sk-1234567890abcd")
-	if w.Code != 403 {
-		t.Fatalf("got %d, want 403", w.Code)
+	if w.Code != 401 {
+		t.Fatalf("got %d, want 401", w.Code)
 	}
 	if len(store.created) != 0 {
 		t.Fatal("channel should not be created when upstream rejects")
