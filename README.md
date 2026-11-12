@@ -417,6 +417,7 @@ go test -v ./internal/admin ./internal/api
 | [docs/REAL-DATA-TEST.md](docs/REAL-DATA-TEST.md) | **真实数据测试操作指南**: OpenRouter / 智谱 探针的逐步配置与验证手册 |
 | [docs/ACCOUNT-SECURITY.md](docs/ACCOUNT-SECURITY.md) | **账号与口令安全说明**: 改密操作、会话吊销、远程部署凭据流程、应急处置 |
 | [docs/ROUTES.md](docs/ROUTES.md) | **路由与端点全景**: 9 个面的全量路由清单（chi 遍历实测）、公网暴露映射、已知不一致 |
+| [docs/RELEASE-PROCESS.md](docs/RELEASE-PROCESS.md) | **发布流程**: 8 步闸门（全量测试 → 版本号 → 文档 → 打标 → 推送验证），含 `release-check.sh` / `push-retry.sh` 用法 |
 | [deploy/nginx-hardened/README.md](deploy/nginx-hardened/README.md) | **公网部署加固手册**: 攻击面评估、nginx 蜜罐 + 限速 + fail2ban |
 | [docs/architecture.html](docs/architecture.html) | **交互式架构分层图**: 7 层 41 包，悬停查看职责与依赖（graphify AST 扫描实测） |
 | [CHANGELOG.md](CHANGELOG.md) | 各 Phase 变更记录 |

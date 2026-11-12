@@ -7,9 +7,17 @@
 #     to the version being released)
 #   - the tag already exists
 #   - the Go version in go.mod does not match the CI version
+#   - go vet / unit tests / race detector / coverage floors / build fail
+#
+# All gate exit codes are captured directly — never piped through
+# head/tail, which masks failures (a real incident: `go test ... |
+# head -8` printed "success" while the suite was red).
+#
+# See docs/RELEASE-PROCESS.md for the full runbook.
 #
 # Usage:
-#   scripts/release-check.sh v0.1.0
+#   scripts/release-check.sh v0.1.0            # full gate suite
+#   scripts/release-check.sh v0.1.0 --fast     # static checks only
 
 set -eu
 
@@ -102,12 +110,50 @@ fi
 
 # 5. Tests must pass (skipped with --fast)
 if [ "${2:-}" != "--fast" ]; then
-    echo ">>> running tests (pass --fast as 2nd arg to skip)"
-    if go test ./... > /tmp/release-check-test.log 2>&1; then
+    echo ">>> running gate suite (pass --fast as 2nd arg to skip)"
+
+    # 5a. vet
+    if go vet ./... > /tmp/release-check-vet.log 2>&1; then
+        echo "ok: go vet ./..."
+    else
+        echo "FAIL: go vet ./... failed (see /tmp/release-check-vet.log)"
+        tail -20 /tmp/release-check-vet.log
+        fail=1
+    fi
+
+    # 5b. unit tests
+    if go test -count=1 ./... > /tmp/release-check-test.log 2>&1; then
         echo "ok: go test ./..."
     else
         echo "FAIL: go test ./... failed (see /tmp/release-check-test.log)"
         tail -20 /tmp/release-check-test.log
+        fail=1
+    fi
+
+    # 5c. race detector
+    if go test -race -count=1 ./... > /tmp/release-check-race.log 2>&1; then
+        echo "ok: go test -race ./..."
+    else
+        echo "FAIL: go test -race ./... failed (see /tmp/release-check-race.log)"
+        tail -20 /tmp/release-check-race.log
+        fail=1
+    fi
+
+    # 5d. per-package coverage floors (make cover-check)
+    if make cover-check > /tmp/release-check-cover.log 2>&1; then
+        echo "ok: coverage floors (make cover-check)"
+    else
+        echo "FAIL: coverage floors below minimum (see /tmp/release-check-cover.log)"
+        tail -20 /tmp/release-check-cover.log
+        fail=1
+    fi
+
+    # 5e. build (the release artifact must compile)
+    if go build ./... > /tmp/release-check-build.log 2>&1; then
+        echo "ok: go build ./..."
+    else
+        echo "FAIL: go build ./... failed (see /tmp/release-check-build.log)"
+        tail -20 /tmp/release-check-build.log
         fail=1
     fi
 fi

@@ -17,7 +17,7 @@ LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(BU
 # no JavaScript build step: just `go build`. The Makefile has no
 # web-sync / web-build / npm targets.
 
-.PHONY: all build build-client build-client-all test test-race cover cover-check run clean build-go-only intent-rust version
+.PHONY: all build build-client build-client-all test test-race cover cover-check run clean build-go-only intent-rust version release-check push-retry
 
 all: build
 
@@ -59,6 +59,17 @@ test:
 
 test-race:
 	$(GO) test -race $(PKG)
+
+# Pre-tag gate suite: dirty-tree / tag-exists / CHANGELOG cut / Go version
+# matching, then vet + unit + race + coverage floors + build.
+# See docs/RELEASE-PROCESS.md. Usage: make release-check V=0.3.1
+release-check:
+	@test -n "$(V)" || { echo "usage: make release-check V=0.3.1"; exit 2; }
+	sh scripts/release-check.sh v$(V)
+
+# Push the current branch plus any tags with connectivity probing.
+push-retry:
+	sh scripts/push-retry.sh --all-tags
 
 cover:
 	$(GO) test -coverprofile=/tmp/llmrx.cov.out $(PKG)
