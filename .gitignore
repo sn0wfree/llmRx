@@ -72,3 +72,6 @@ graphify-out/
 "*.egg-info/"  
 "clients/python/src/*.egg-info/"  
 clients/python/src/*.egg-info/
+
+# Editor/agent session state (per-developer, never committed)
+.zcode/
