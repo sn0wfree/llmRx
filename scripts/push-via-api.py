@@ -57,6 +57,13 @@ def git(*args):
         capture_output=True, check=True).stdout
 
 
+def git_ok(*args):
+    """True when the git command succeeds (exit code 0)."""
+    return subprocess.run(
+        ["git", "-C", REPO_DIR] + list(args),
+        capture_output=True).returncode == 0
+
+
 def api(path, method="GET", body=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(
@@ -156,8 +163,7 @@ def push_branch(name):
     if remote == head:
         print("  already up to date")
         return
-    if remote is not None and \
-            git("merge-base", "--is-ancestor", remote, name).returncode != 0:
+    if remote is not None and not git_ok("merge-base", "--is-ancestor", remote, name):
         raise SystemExit(f"FATAL: {name} is not a fast-forward of {remote}")
 
     commits = git("rev-list", "--reverse", f"{remote}..{head}").decode().split()
