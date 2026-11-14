@@ -134,6 +134,21 @@ scripts/push-retry.sh master v0.3.1
 scripts/push-retry.sh --all-tags
 ```
 
+**网络按 SNI 过滤时**（`git push` 一直 GnuTLS 握手失败 / 连接重置，
+但 `curl https://api.github.com` 正常）：改走 REST API 上传对象，
+`scripts/push-via-api.py`：
+
+```bash
+export GH_TOKEN=$(gh auth token)
+scripts/push-via-api.py master v0.3.1
+```
+
+它把 blob/tree/commit/tag 逐个经 Git Database API 上传，**每个对象都
+回验 SHA 与本地一致**，不一致就在动 ref 之前中止——远端历史不会与本地
+分叉。分支更新走 fast-forward（拒绝 force）。注意 GitHub 的
+create-commit 会把 epoch 按时区偏移平移却保留原时区标签，脚本已补偿
+这个差异。
+
 > 注意：不要用轻量标签，不要分多次推送分支和标签（中间态会让 CI 看到
 > 无标签的 master）。
 
@@ -201,6 +216,7 @@ cd /tmp/vX.Y.Z && sh scripts/build-docker.sh llmrx:local
 |---|---|
 | `scripts/release-check.sh` | 全部闸门顺序执行，任一失败即停，输出真实退出码 |
 | `scripts/push-retry.sh` | 探活 + 重试推送 |
+| `scripts/push-via-api.py` | 网络按 SNI 过滤时的 REST API 推送兜底（SHA 全回验） |
 
 ### `scripts/release-check.sh <version>`
 

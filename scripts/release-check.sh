@@ -182,4 +182,10 @@ fi
 
 echo
 echo "release-check: all clear. Next:"
-echo "  git tag $VERSION && git push origin $VERSION"
+# Annotated tag, not a lightweight one: the release notes and the
+# author identity live in the tag object, and release.yml keys off it.
+echo "  git tag -a $VERSION -m \"llmRx $VERSION — <one-line summary>\""
+echo "  scripts/push-retry.sh $VERSION"
+echo
+echo "  (if git push keeps failing on a filtered network, see"
+echo "   scripts/push-via-api.py — the GitHub REST API fallback)"
