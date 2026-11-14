@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 （空——下一组变更从这里开始。）
 
+## [v0.3.2] — 2026-11-14
+
+发布流水线修复（无运行时行为变更）。
+
+### Fixed
+
+- **CI：`build-darwin` job 一启动就被取消**——`macos-14` runner 镜像已退役，
+  创建 runner 时报 `The configuration 'macos-14-arm64-us-default' is not
+  supported`，导致三个 tag 的 release 运行全部 cancelled、无产物。
+  改用 `macos-15`（显式锁定 major，镜像退役时会在此处大声失败）。
+  注意：已推送的 v0.2.0 / v0.3.0 / v0.3.1 标签的 release 运行使用的是
+  各自 tag 里的旧工作流文件，重跑也无法修复——重新发布需打新标签。
+
 ## [v0.3.1] — 2026-11-12
 
 发布流程工具化（无运行时行为变更，patch 版本）。

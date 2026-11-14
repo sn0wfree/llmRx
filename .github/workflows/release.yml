@@ -99,7 +99,12 @@ jobs:
 
   # ------------------------------------------------------------ build: darwin
   build-darwin:
-    runs-on: macos-14
+    # macos-14's arm64 image was retired ("The configuration
+    # 'macos-14-arm64-us-default' is not supported"); macos-15 is the
+    # current default. Pin the major version so a future image
+    # retirement fails loudly here instead of silently changing
+    # runners.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
         with:
